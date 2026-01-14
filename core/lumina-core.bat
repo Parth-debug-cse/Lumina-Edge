@@ -1,58 +1,77 @@
 @echo off
 setlocal enabledelayedexpansion
-title LUMINA EDGE  CORE CONTROLLER v1.0
+title LUMINA EDGE : CORE CONTROLLER [VULKAN-V7]
 color 0B
 
- 1. Initial Resource Reclamation
-echo [SYSTEM] Initiating pre-flight memory purge...
-powershell -ExecutionPolicy Bypass -File ..scriptsoptimize_system.ps1
+:: Navigate to project root to handle relative paths
+cd /d "%~dp0.."
 
-menu
+:: --- BOOT SEQUENCE ---
 cls
-echo ============================================================
-echo   LUMINA EDGE LOW-LATENCY INFERENCE FRAMEWORK
-echo ============================================================
-echo   [PROFILE SELECTION]
-echo   1. LIGHTWEIGHT  (Llama-3.2 1B  - Optimized for Speed)
-echo   2. BALANCED     (Qwen-2.5 1.5B - Optimized for Logic)
-echo   3. ANALYTICAL   (Mistral 7B    - Deep Analysis Mode)
-echo   4. RECLAIM      (Manual Resource Reclamation)
-echo   5. EXIT
-echo ============================================================
+echo [  OK  ] INITIALIZING LUMINA KERNEL...
+timeout /t 1 >nul
+echo [  OK  ] MAPPING DIRECTORIES: /bin, /models, /scripts...
+timeout /t 1 >nul
+echo [  OK  ] VULKAN RPC BACKEND DETECTED...
+timeout /t 1 >nul
+echo [  OK  ] LOADING MEMORY RECLAMATION PROTOCOLS...
+timeout /t 1 >nul
 echo.
-set p choice=Select Hardware-Optimized Profile [1-5] 
+echo SYSTEM READY.
+timeout /t 1 >nul
 
-if %choice%==1 set model=Llama-3.2-1B-Instruct-Q8_0.gguf & set ctx=4096 & goto launch
-if %choice%==2 set model=Qwen2.5-1.5B-Instruct-Q6_K.gguf & set ctx=3072 & goto launch
-if %choice%==3 set model=Mistral-7B-v0.3-Q4_K_M.gguf & set ctx=2048 & goto launch
-if %choice%==4 goto reclaim
-if %choice%==5 exit
+:menu
+cls
+echo  ##########################################
+echo  #          LUMINA : CORE CONTROL          #
+echo  #        [ VULKAN STABLE / 8GB ]          #
+echo  ##########################################
+echo.
+echo  1. [ T-MODE ] - Theoretical and Reasoning
+echo  2. [ B-MODE ] - Technical / Code
+echo  3. [ R-MODE ] - Data-Link (Read Data from notes.txt)
+echo.
+echo  4. [ PURGE  ] - RAM / Sector Clean
+echo  5. [ EXIT   ] - Return to Terminal
+echo.
+echo  [SYSTEM] Status: STABLE ^| GPU: Intel UHD 620
+echo.
+set /p choice="core@lumina:~# "
+
+if "%choice%"=="1" goto tmode
+if "%choice%"=="2" goto bmode
+if "%choice%"=="3" goto rmode
+if "%choice%"=="4" goto purge
+if "%choice%"=="5" exit
 goto menu
 
-launch
+:tmode
 cls
-echo [ENGINE] Initializing llama.cpp backend via Vulkan...
-echo [INFO] Target Model %model%
-echo [INFO] Allocated Context %ctx% tokens
-echo.
-
-..binllama-cli.exe ^
-  -m ..models%model% ^
-  --vulkan ^
-  -c %ctx% ^
-  -t 4 ^
-  -b 128 ^
-  --color ^
-  -cnv ^
-  --multiline-input ^
-  -sys You are Lumina, a high-efficiency AI assistant running on edge hardware. Provide concise, technically accurate responses.
-
+".\bin\llama-cli.exe" -m ".\models\mistral-v0.3-7b.Q4_K_M.gguf" -t 4 -c 3072 --vram-budget 2048 --color on -cnv --multiline-input -sys "You are an expert academic tutor."
 pause
 goto menu
 
-reclaim
-echo [SYSTEM] Re-executing kernel-level resource reclamation...
-powershell -ExecutionPolicy Bypass -File ..scriptsoptimize_system.ps1
-echo [SUCCESS] Standby list cleared.
+:bmode
+cls
+".\bin\llama-cli.exe" -m ".\models\qwen-2.5-1.5b.Q6_K.gguf" -t 4 -c 3072 --vram-budget 2048 --color on -cnv --multiline-input -sys "You are a senior software engineer."
+pause
+goto menu
+
+:rmode
+cls
+if not exist ".\models\notes.txt" (echo [!] notes.txt missing in /models & pause & goto menu)
+echo [!] R-MODE : DATA-LINK ACTIVE
+echo [!] LOADING NOTES INTO VULKAN CACHE...
+echo [!] READY: Type your question, then \ and hit ENTER.
+echo.
+".\bin\llama-cli.exe" -m ".\models\llama-3.2-1b.Q8_0.gguf" -t 4 -c 3072 --vram-budget 2048 --color on -cnv -r "User:" --multiline-input -f ".\models\notes.txt" -sys "You are a study assistant. Answer using ONLY the provided notes."
+pause
+goto menu
+
+:purge
+cls
+echo [!] INITIALIZING KERNEL RECLAMATION...
+powershell -ExecutionPolicy Bypass -File ".\scripts\optimize_system.ps1"
+echo [!] READY.
 pause
 goto menu
