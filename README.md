@@ -66,8 +66,9 @@ Run the optimization script as Administrator to reclaim system resources:
 Place your .gguf models in the /models directory, then launch the controller at: .\core\lumina-core.bat
 
 ### 5.Performance Benchmarks (8GB RAM / Intel UHD 620)
-Architecture	Parameter Count		Quantization	Tokens Per Second
-Llama-3.2	1B			Q8_0		Ultra-Fast,~15 t/s
-Qwen-2.5	1.5B			Q6_K		Balanced,~9 t/s
-Mistral-v0.3	7B			Q4_K_M		Optimized,~1.8 t/s
-	
+
+| Architecture | Parameter Count | Quantization | Status | Tokens Per Second |
+| :--- | :--- | :--- | :--- | :--- |
+| **Llama-3.2** | 1B | Q8_0 | ⚡ Ultra-Fast | ~15 t/s |
+| **Qwen-2.5** | 1.5B | Q6_K | 🟢 Balanced | ~9 t/s |
+| **Mistral-v0.3** | 7B | Q4_K_M | 🟡 Optimized | ~3.8 t/s |
