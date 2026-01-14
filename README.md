@@ -5,72 +5,84 @@ Lumina Edge is a specialized optimization framework designed to facilitate Large
 
 ---
 
+## 🖼️ Framework in Action
+Below is a demonstration of the Lumina Edge framework managing high-parameter model inference on constrained hardware (8GB RAM / Intel UHD 620):
+
+![Lumina Edge in Action](assets/screenshot.png)
+
+---
+
 ## 📋 Prerequisites & Environment
 Before deploying the Lumina Edge framework, ensure the host system meets the following requirements:
 
 ### Software Requirements
-* **llama.cpp**: The core inference engine. (See the [Setup Guide](#-implementation-guide) below).
+* **llama.cpp**: The core inference engine.
 * **Vulkan SDK/Runtime**: Essential for offloading tensor operations to integrated graphics units (iGPU).
-* **C++ Redistributables**: Required for the stable execution of the inference binaries.
-* **PowerShell 5.1+**: Required for executing the system-level optimization scripts.
+* **C++ Redistributables**: Required for stable execution of inference binaries.
+* **PowerShell 5.1+**: Required for executing system-level optimization scripts.
+* Run the .bat file in admin mode for cleaning up the background processes allowing the model to run efficiently
 
 ### Hardware Requirements
 * **Memory**: Minimum 4GB Physical RAM (8GB recommended for 3B+ parameter models).
 * **GPU**: Integrated Graphics (Intel UHD/Iris or AMD Radeon) with Vulkan 1.2+ support.
-* **Storage**: High-speed SSD (Critical to minimize model loading latency and paging file bottlenecks).
+* **Storage**: High-speed SSD (Critical to minimize model loading latency).
 
 ---
 
 ## 🚀 Technical Architecture
-The framework addresses the primary bottleneck of local inference through a three-tiered engineering approach:
+The framework utilizes a **Tri-Model Execution Logic** within the `lumina-core.bat` controller, mapping specific LLM architectures to specialized task modes:
 
-### 1. Kernel-Level Resource Reclamation
-This module targets **Non-Critical System Services** and **Telemetry Overhead**. By programmatically suspending high-impact background processes (e.g., redundant Microsoft background services and OEM Telemetry), we minimize the OS memory footprint, ensuring maximum heap availability.
+### 📡 Multi-Mode Model Mapping
+| Mode | Model Profile | Target Architecture | Primary Use Case |
+| :--- | :--- | :--- | :--- |
+| **[T-MODE]** | **Mistral 7B** | `mistral-v0.3-7b.Q4_K_M.gguf` | Advanced Theory & Stress Testing |
+| **[B-MODE]** | **Qwen 1.5B** | `qwen-2.5-1.5b.Q6_K.gguf` | Technical Tasks & Coding |
+| **[R-MODE]** | **Llama 1B** | `llama-3.2-1b.Q8_0.gguf` | Data-Link (RAG) with `notes.txt` |
 
-### 2. Vulkan-Based Compute Abstraction
-Lumina Edge utilizes the **Vulkan RPC Backend** to interface with iGPUs. By configuring a minimal **UMA Frame Buffer (32MB)** in the BIOS, we allow the driver to utilize Shared System Memory dynamically, preventing static VRAM allocation from starving the CPU.
-
-### 3. Heuristic Context Management
-The controller implements a dynamic scaling algorithm for the **Key-Value (KV) Cache**. It evaluates the available system commit charge in real-time to adjust the `--ctx-size` parameter, mitigating Out-Of-Memory (OOM) exceptions.
+### Optimization Pillars
+1. **Kernel-Level Reclamation**: Programmatically suspends non-critical OS services to maximize heap availability.
+2. **Vulkan Abstraction**: Uses a minimal **UMA Frame Buffer (32MB)** to allow dynamic shared memory scaling via the iGPU driver.
+3. **Heuristic Context Management**: Dynamically scales KV Cache based on real-time system commit charge.
 
 ---
 
 ## 📂 Repository Structure
 - **`/bin`**: Target directory for `llama.cpp` binaries.
 - **`/core`**: Execution logic and automated batch controllers (`lumina-core.bat`).
-- **`/docs`**: Technical specifications for **UMA** and **System Optimization**.
+- **`/docs`**: Technical specifications for UMA and System Optimization.
 - **`/scripts`**: PowerShell automation for system state optimization.
-- **`/models`**: Target directory for `.gguf` quantized model files.
+- **`/models`**: Target directory for `.gguf` quantized model files and `notes.txt`.
 
 ---
 
 ## 🛡️ Implementation Guide
 
 ### 1. Hardware Pre-flight (BIOS)
-Access your System BIOS (usually F2/Del at boot) and set the **Pre-allocated Video Memory (UMA)** to **32MB**. This ensures the OS manages the RAM pool rather than hardware-locking it.
+Access your System BIOS and set the **Pre-allocated Video Memory (UMA)** to **32MB**. This ensures the OS manages the RAM pool rather than hardware-locking it.
 
-### 2. Installing the Inference Engine (llama.cpp)
-To install the latest Vulkan-optimized engine into the `/bin` folder:
-1. Go to the [Official llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases).
-2. Download the zip file named: `llama-bXXXX-bin-win-vulkan-x64.zip` (where XXXX is the latest version).
-3. Extract the contents of the zip file directly into the **`/bin`** folder of this repository. 
-   * *Note: Ensure `llama-cli.exe` is sitting inside `/bin`, not a sub-folder.*
+### 2. Installing the Inference Engine
+1. Download the latest **Vulkan-win-x64** binaries from the official `llama.cpp` releases.
+2. Extract the contents directly into the **`/bin`** folder.
 
-### 3. System State Optimization
-Run the optimization script as Administrator to reclaim system resources:
+### 3. Model Setup & Naming (CRITICAL)
+To ensure the Core Controller links correctly, download and rename your models as follows:
+* **Mistral 7B** ➔ `mistral-v0.3-7b.Q4_K_M.gguf`
+* **Qwen 1.5B** ➔ `qwen-2.5-1.5b.Q6_K.gguf`
+* **Llama 1B** ➔ `llama-3.2-1b.Q8_0.gguf`
+* *Place all files in the **`/models`** directory.*
+
+### 4. Initialization
 ```powershell
-# Navigate to scripts and run as Administrator
+# 1. Run System Optimization (As Administrator)
 .\scripts\optimize_system.ps1
+
+# 2. Launch Core Framework
+.\core\lumina-core.bat
 ```
-
-### 4.Initialization
-Place your .gguf models in the /models directory, then launch the controller at: .\core\lumina-core.bat
-
 ## 📈 Performance Benchmarks (8GB RAM / Intel UHD 620)
 
-| Architecture | Parameter Count | Quantization | Status | Tokens Per Second |
-| :--- | :--- | :--- | :--- | :--- |
-| **Llama-3.2** | 1B | Q8_0 | ⚡ Ultra-Fast | ~15 t/s |
-| **Qwen-2.5** | 1.5B | Q6_K | 🟢 Balanced | ~9 t/s |
-| **Mistral-v0.3** | 7B | Q4_K_M | 🟡 Optimized | ~3.8 t/s |
----
+| Architecture | Parameter Count | Quantization | Tokens Per Second |
+| :--- | :--- | :--- | :--- |
+| **Llama-3.2** | 1B | Q8_0 | ~15 t/s |
+| **Qwen-2.5** | 1.5B | Q6_K | ~9 t/s |
+| **Mistral-v0.3** | 7B | Q4_K_M | ~3.8 t/s |
