@@ -65,7 +65,7 @@ Run the optimization script as Administrator to reclaim system resources:
 ### 4.Initialization
 Place your .gguf models in the /models directory, then launch the controller at: .\core\lumina-core.bat
 
-### 5.Performance Benchmarks (8GB RAM / Intel UHD 620)
+## 📈 Performance Benchmarks (8GB RAM / Intel UHD 620)
 
 | Architecture | Parameter Count | Quantization | Status | Tokens Per Second |
 | :--- | :--- | :--- | :--- | :--- |
