@@ -1,0 +1,14 @@
+# Ignore huge model files (GitHub limit is 100MB)
+models/*.gguf
+models/*.bin
+
+# Ignore Windows system junk
+Thumbs.db
+Desktop.ini
+
+# Ignore binaries
+bin/*.exe
+bin/*.dll
+
+# Ignore personal notes
+models/notes.txt
