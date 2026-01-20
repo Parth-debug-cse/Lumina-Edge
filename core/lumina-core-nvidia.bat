@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion
-title LUMINA EDGE :: CORE CONTROLLER
-color 0A
+title LUMINA EDGE :: CORE CONTROLLER (NVIDIA)
+color 0B
 
 :: ==================================================
 :: LUMINA EDGE - ABSOLUTE PROJECT ROOT
@@ -45,19 +45,21 @@ if not defined MODEL (
 :: ==================================================
 cls
 echo ==================================================
-echo   LUMINA EDGE :: LOCAL LLM CONTROLLER
+echo   LUMINA EDGE :: LOCAL LLM CONTROLLER (CUDA)
 echo ==================================================
 echo.
 echo [OK] Project Root     : %ROOT%
 echo [OK] Model Loaded     : %MODEL%
-echo [OK] Vulkan Backend   : READY
-echo [OK] Memory Manager   : STANDBY
+echo [OK] CUDA Backend     : READY
+echo [OK] GPU Acceleration: ENABLED
+echo [OK] Memory Manager  : STANDBY
 echo.
 timeout /t 1 >nul
 
 :: ==================================================
 :: MENU
 :: ==================================================
+:menu
 echo --------------------------------------------------
 echo   1. Initialize Local LLM (RAM Clean + Launch)
 echo   2. Exit
@@ -85,15 +87,15 @@ timeout /t 1 >nul
 
 echo.
 echo ==================================================
-echo   STAGE 2 :: LLM INITIALIZATION
+echo   STAGE 2 :: LLM INITIALIZATION (CUDA)
 echo ==================================================
 echo.
 
 "%BIN%\llama-cli.exe" ^
  -m "%MODEL%" ^
- -t 4 ^
- -c 3072 ^
- --vram-budget 2048 ^
+ -t 8 ^
+ -c 4096 ^
+ --n-gpu-layers 99 ^
  --color on ^
  -cnv ^
  --multiline-input ^
