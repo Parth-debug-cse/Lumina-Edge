@@ -1,20 +1,44 @@
 @echo off
 setlocal EnableDelayedExpansion
-title LUMINA EDGE :: CORE CONTROLLER
-color 0A
+title LUMINA EDGE :: LOCAL API SERVER (iGPU / VULKAN)
+color 0B
 
 :: ==================================================
-:: LUMINA EDGE - ABSOLUTE PROJECT ROOT
+:: ABSOLUTE PATHS
 :: ==================================================
 set ROOT=C:\Lumina-Edge
 set BIN=%ROOT%\bin
 set MODELS=%ROOT%\models
-set SCRIPTS=%ROOT%\scripts
+set PORT=1234
 
 cd /d "%ROOT%"
 
 :: ==================================================
-:: LOCATE DEFAULT MODEL (NAMED "one")
+:: LOCATE SERVER EXECUTABLE
+:: ==================================================
+set SERVER_EXE=
+
+if exist "%BIN%\llama-server.exe" set SERVER_EXE=%BIN%\llama-server.exe
+if exist "%BIN%\server.exe" set SERVER_EXE=%BIN%\server.exe
+
+if not defined SERVER_EXE (
+    echo ==================================================
+    echo ERROR :: llama.cpp SERVER EXECUTABLE NOT FOUND
+    echo ==================================================
+    echo.
+    echo Expected one of:
+    echo   llama-server.exe
+    echo   server.exe
+    echo.
+    echo Location:
+    echo   %BIN%
+    echo.
+    pause
+    exit /b 1
+)
+
+:: ==================================================
+:: LOCATE MODEL (one.*)
 :: ==================================================
 set MODEL=
 
@@ -23,9 +47,8 @@ for %%F in ("%MODELS%\one.*") do (
 )
 
 if not defined MODEL (
-    cls
     echo ==================================================
-    echo   ERROR :: DEFAULT MODEL NOT FOUND
+    echo ERROR :: MODEL NOT FOUND
     echo ==================================================
     echo.
     echo Expected a model named:
@@ -34,73 +57,56 @@ if not defined MODEL (
     echo Location:
     echo   %MODELS%
     echo.
-    echo Rename your model to "one.gguf" and retry.
-    echo.
     pause
-    exit
+    exit /b 1
 )
 
 :: ==================================================
-:: BOOT SEQUENCE
+:: BOOT INFO
 :: ==================================================
 cls
 echo ==================================================
-echo   LUMINA EDGE :: LOCAL LLM CONTROLLER
+echo   LUMINA EDGE :: LOCAL API SERVER
 echo ==================================================
 echo.
-echo [OK] Project Root     : %ROOT%
-echo [OK] Model Loaded     : %MODEL%
-echo [OK] Vulkan Backend   : READY
-echo [OK] Memory Manager   : STANDBY
+echo [OK] Executable : %SERVER_EXE%
+echo [OK] Model      : %MODEL%
+echo [OK] Port       : %PORT%
+echo [OK] Backend    : Vulkan (Integrated GPU)
 echo.
+echo API Endpoint:
+echo   http://localhost:%PORT%/v1
+echo.
+echo Press CTRL+C to stop the server.
+echo ==================================================
 timeout /t 1 >nul
 
 :: ==================================================
-:: MENU
+:: START SERVER (BLOCKING)
 :: ==================================================
-echo --------------------------------------------------
-echo   1. Initialize Local LLM (RAM Clean + Launch)
-echo   2. Exit
-echo --------------------------------------------------
-echo.
-set /p choice="lumina@edge> "
-
-if "%choice%"=="1" goto init
-if "%choice%"=="2" exit
-goto menu
-
-:: ==================================================
-:: INITIALIZATION PIPELINE
-:: ==================================================
-:init
-cls
-echo ==================================================
-echo   STAGE 1 :: MEMORY RECLAMATION
-echo ==================================================
-echo.
-powershell -ExecutionPolicy Bypass -File "%SCRIPTS%\optimize_system.ps1"
-echo.
-echo [OK] Memory optimization complete.
-timeout /t 1 >nul
-
-echo.
-echo ==================================================
-echo   STAGE 2 :: LLM INITIALIZATION
-echo ==================================================
-echo.
-
-"%BIN%\llama-cli.exe" ^
+"%SERVER_EXE%" ^
  -m "%MODEL%" ^
- -t 4 ^
- -c 3072 ^
+ --host 127.0.0.1 ^
+ --port %PORT% ^
+ --ctx-size 3072 ^
+ --threads 4 ^
  --vram-budget 2048 ^
- --color on ^
- -cnv ^
- --multiline-input ^
- -sys "You are a precise, efficient AI assistant."
+ --parallel 1 ^
+ --verbose
 
+:: ==================================================
+:: ERROR FALLBACK
+:: ==================================================
 echo.
-echo [OK] LLM session ended.
-echo [INFO] Exiting controller.
-timeout /t 1 >nul
-exit
+echo ==================================================
+echo SERVER STOPPED OR FAILED
+echo ==================================================
+echo.
+echo Possible causes:
+echo - Port %PORT% already in use
+echo - Vulkan runtime missing or outdated
+echo - Insufficient shared memory
+echo - Incompatible model
+echo.
+pause
+exit /b
