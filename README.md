@@ -118,7 +118,7 @@ This is powered by `llama.cpp`’s built-in server mode and exposed locally.
 
 ---
 
-## 🌐 API Endpoint
+##  API Endpoint
 
 When running, the local API is available at:
 
@@ -130,7 +130,7 @@ This endpoint mirrors OpenAI’s `/v1` API structure.
 
 ---
 
-## ▶️ Starting the API Server
+##  Starting the API Server
 
 1. Ensure your model is correctly set up:
 
@@ -153,7 +153,7 @@ Once this appears, the server is live and blocking.
 
 ---
 
-## ✅ Verifying the Server (PowerShell)
+##  Verifying the Server (PowerShell)
 
 PowerShell is the **recommended shell on Windows**.
 
