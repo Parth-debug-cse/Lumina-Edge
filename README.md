@@ -1,6 +1,3 @@
----
-
-````markdown
 # 🌟 Lumina Edge
 
 Lumina Edge is a lightweight execution framework designed to make **local Large Language Model (LLM) inference and development practical on low-RAM, consumer-grade hardware**.
