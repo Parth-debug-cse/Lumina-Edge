@@ -1,29 +1,37 @@
 @echo off
 setlocal EnableDelayedExpansion
-title LUMINA EDGE :: CORE CONTROLLER (NVIDIA)
+title LUMINA EDGE :: LOCAL API SERVER (NVIDIA)
 color 0C
 
 :: ==================================================
-:: ABSOLUTE PROJECT PATHS
+:: ABSOLUTE PATHS
 :: ==================================================
 set ROOT=C:\Lumina-Edge
 set BIN=%ROOT%\bin
 set MODELS=%ROOT%\models
 set SCRIPTS=%ROOT%\scripts
+set PORT=1234
 
 cd /d "%ROOT%"
 
 :: ==================================================
-:: LOCATE llama-cli EXECUTABLE
+:: LOCATE SERVER EXECUTABLE
 :: ==================================================
-if not exist "%BIN%\llama-cli.exe" (
+if exist "%BIN%\llama-server.exe" (
+    set SERVER_EXE=%BIN%\llama-server.exe
+) else if exist "%BIN%\server.exe" (
+    set SERVER_EXE=%BIN%\server.exe
+) else (
     cls
     echo ==================================================
-    echo   ERROR :: llama-cli.exe NOT FOUND
+    echo ERROR :: llama-server executable not found
     echo ==================================================
     echo.
     echo Expected:
-    echo   %BIN%\llama-cli.exe
+    echo   llama-server.exe OR server.exe
+    echo.
+    echo Location:
+    echo   %BIN%
     echo.
     echo Install llama.cpp CUDA build and retry.
     echo.
@@ -32,7 +40,7 @@ if not exist "%BIN%\llama-cli.exe" (
 )
 
 :: ==================================================
-:: LOCATE DEFAULT MODEL (one.*)
+:: LOCATE MODEL (one.*)
 :: ==================================================
 set MODEL=
 
@@ -43,10 +51,10 @@ for %%F in ("%MODELS%\one.*") do (
 if not defined MODEL (
     cls
     echo ==================================================
-    echo   ERROR :: DEFAULT MODEL NOT FOUND
+    echo ERROR :: MODEL NOT FOUND
     echo ==================================================
     echo.
-    echo Expected a model named:
+    echo Expected:
     echo   one.gguf
     echo.
     echo Location:
@@ -57,80 +65,49 @@ if not defined MODEL (
 )
 
 :: ==================================================
-:: BOOT SCREEN
+:: BOOT INFO
 :: ==================================================
 cls
 echo ==================================================
-echo   LUMINA EDGE :: LOCAL LLM CONTROLLER
+echo   STAGE 2 :: STARTING API SERVER
 echo ==================================================
 echo.
-echo [OK] Project Root : %ROOT%
-echo [OK] Model Loaded : %MODEL%
-echo [OK] Backend      : NVIDIA CUDA
-echo [OK] Mode         : Local Chat
+echo OpenAI-compatible endpoint:
+echo   http://127.0.0.1:%PORT%/v1
 echo.
-timeout /t 1 >nul
+echo Model   : %MODEL%
+echo Backend : NVIDIA CUDA
+echo.
+echo Press Ctrl+C to stop the server.
+echo ==================================================
+echo.
 
 :: ==================================================
-:: MENU
+:: START SERVER (BLOCKING)
 :: ==================================================
-:menu
-cls
-echo ==================================================
-echo   LUMINA EDGE :: MAIN MENU
-echo ==================================================
-echo.
-echo   1. Initialize Local LLM (CUDA)
-echo   2. Exit
-echo.
-echo ==================================================
-echo.
-set /p choice="lumina@edge> "
-
-if "%choice%"=="1" goto init
-if "%choice%"=="2" exit
-goto menu
-
-:: ==================================================
-:: INITIALIZATION PIPELINE
-:: ==================================================
-:init
-cls
-echo ==================================================
-echo   STAGE 1 :: MEMORY RECLAMATION
-echo ==================================================
-echo.
-powershell -ExecutionPolicy Bypass -File "%SCRIPTS%\optimize_system.ps1"
-echo.
-echo [OK] Memory optimization complete.
-timeout /t 1 >nul
-
-cls
-echo ==================================================
-echo   STAGE 2 :: LLM INITIALIZATION (CUDA)
-echo ==================================================
-echo.
-echo Press CTRL+C to exit chat.
-echo ==================================================
-echo.
-
-"%BIN%\llama-cli.exe" ^
+"%SERVER_EXE%" ^
  -m "%MODEL%" ^
- -t 4 ^
- -c 4096 ^
+ --host 127.0.0.1 ^
+ --port %PORT% ^
+ --ctx-size 4096 ^
+ --threads 4 ^
  --n-gpu-layers 20 ^
- --color on ^
- -cnv ^
- --multiline-input ^
- -sys "You are a precise, efficient AI assistant."
+ --parallel 1 ^
+ --verbose
 
 :: ==================================================
-:: EXIT CLEANUP
+:: ERROR / EXIT HANDLING
 :: ==================================================
 echo.
 echo ==================================================
-echo   SESSION ENDED
+echo SERVER STOPPED
 echo ==================================================
+echo.
+echo If this was unexpected, possible causes:
+echo - Port %PORT% already in use
+echo - Insufficient GPU memory
+echo - CUDA drivers missing or outdated
+echo - Model incompatible
 echo.
 pause
-exit
+exit /b
