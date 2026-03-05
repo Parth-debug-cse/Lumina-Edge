@@ -4,15 +4,54 @@ title LUMINA EDGE :: LOCAL API SERVER (VULKAN)
 color 0B
 
 :: ==================================================
-:: ABSOLUTE PATHS
+:: AUTO-DETECT PROJECT ROOT
 :: ==================================================
-set ROOT=C:\Lumina-Edge
+set ROOT=%~dp0..
 set BIN=%ROOT%\bin
 set MODELS=%ROOT%\models
 set SCRIPTS=%ROOT%\scripts
 set PORT=1234
 
 cd /d "%ROOT%"
+
+:: ==================================================
+:: VALIDATE REQUIRED DIRECTORIES
+:: ==================================================
+if not exist "%BIN%" (
+    cls
+    echo ==================================================
+    echo ERROR :: bin directory not found
+    echo ==================================================
+    echo.
+    echo Expected at: %BIN%
+    echo.
+    pause
+    exit /b 1
+)
+
+if not exist "%MODELS%" (
+    cls
+    echo ==================================================
+    echo ERROR :: models directory not found
+    echo ==================================================
+    echo.
+    echo Expected at: %MODELS%
+    echo.
+    pause
+    exit /b 1
+)
+
+if not exist "%SCRIPTS%" (
+    cls
+    echo ==================================================
+    echo ERROR :: scripts directory not found
+    echo ==================================================
+    echo.
+    echo Expected at: %SCRIPTS%
+    echo.
+    pause
+    exit /b 1
+)
 
 :: ==================================================
 :: LOCATE SERVER EXECUTABLE
@@ -38,72 +77,176 @@ if exist "%BIN%\llama-server.exe" (
 )
 
 :: ==================================================
-:: LOCATE MODEL (one.*)
+:: MODEL SELECTION
 :: ==================================================
-set MODEL=
+:select_model
+cls
+echo ==================================================
+echo   LUMINA EDGE :: SELECT A MODEL
+echo ==================================================
+echo.
+echo Available models:
+echo.
 
-for %%F in ("%MODELS%\one.*") do (
-    set MODEL=%%F
+set MODEL_COUNT=0
+for %%F in ("%MODELS%\*.gguf") do (
+    set /a MODEL_COUNT+=1
+    set MODEL_!MODEL_COUNT!=%%F
+    set MODEL_NAME_!MODEL_COUNT!=%%~nxF
+    for %%G in ("%%F") do set MODEL_SIZE_!MODEL_COUNT!=%%~zG
+    echo   !MODEL_COUNT!. %%~nxF
+    echo      Size: %%~zG bytes
+    echo.
 )
 
-if not defined MODEL (
-    cls
-    echo ==================================================
-    echo ERROR :: MODEL NOT FOUND
-    echo ==================================================
-    echo.
-    echo Expected:
-    echo   one.gguf
-    echo.
-    echo Location:
+if %MODEL_COUNT% EQU 0 (
+    echo   No models found in:
     echo   %MODELS%
+    echo.
+    echo   Please download a model using model-manager.bat first.
     echo.
     pause
     exit /b 1
 )
 
+echo   D. Download a new model
+echo   0. Exit
+echo.
+echo ==================================================
+echo.
+set /p model_choice="Select model (1-%MODEL_COUNT%): "
+
+if /i "%model_choice%"=="D" (
+    start "" "%ROOT%\model-manager.bat"
+    goto select_model
+)
+if "%model_choice%"=="0" exit /b 0
+
+set MODEL=
+if defined MODEL_%model_choice% (
+    set MODEL=!MODEL_%model_choice%!
+    set SELECTED_NAME=!MODEL_NAME_%model_choice%!
+)
+
+if not defined MODEL (
+    echo.
+    echo   Invalid selection. Please try again.
+    timeout /t 2 >nul
+    goto select_model
+)
+
 :: ==================================================
-:: BOOT INFO
+:: MAIN MENU
 :: ==================================================
+:menu
+cls
+echo ==================================================
+echo   LUMINA EDGE :: API SERVER MENU
+echo ==================================================
+echo.
+echo   Current Model: %SELECTED_NAME%
+echo   Backend      : Vulkan (Integrated GPU)
+echo   Endpoint     : http://127.0.0.1:%PORT%/v1
+echo.
+echo   1. Start API Server
+echo   2. Change Model
+echo   3. Exit
+echo.
+echo ==================================================
+echo.
+set /p choice="lumina@edge> "
+if "%choice%"=="1" goto port_check
+if "%choice%"=="2" goto select_model
+if "%choice%"=="3" exit /b 0
+goto menu
+
+:: ==================================================
+:: PORT CONFLICT CHECK
+:: ==================================================
+:port_check
+cls
+echo ==================================================
+echo   CHECKING PORT %PORT%
+echo ==================================================
+echo.
+
+netstat -ano | findstr ":%PORT% " | findstr "LISTENING" >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    echo ==================================================
+    echo   ERROR :: PORT %PORT% IS ALREADY IN USE
+    echo ==================================================
+    echo.
+    echo Another process is already listening on port %PORT%.
+    echo.
+    echo To find and stop it, open a Command Prompt and run:
+    echo   netstat -ano ^| findstr ":%PORT%"
+    echo   taskkill /PID ^<PID^> /F
+    echo.
+    echo Or change the PORT variable at the top of this file.
+    echo.
+    pause
+    goto menu
+)
+
+echo [OK] Port %PORT% is available.
+timeout /t 1 >nul
+goto init
+
+:: ==================================================
+:: INITIALIZATION PIPELINE
+:: ==================================================
+:init
+cls
+echo ==================================================
+echo   STAGE 1 :: MEMORY RECLAMATION
+echo ==================================================
+echo.
+
+powershell -ExecutionPolicy Bypass -File "%SCRIPTS%\optimize_system.ps1"
+
+echo.
+echo [OK] Memory optimization complete.
+timeout /t 1 >nul
+
 cls
 echo ==================================================
 echo   STAGE 2 :: STARTING API SERVER
 echo ==================================================
 echo.
-echo OpenAI-compatible endpoint:
+echo   OpenAI-compatible endpoint:
 echo   http://127.0.0.1:%PORT%/v1
 echo.
-echo Model   : %MODEL%
-echo Backend : Vulkan (Integrated GPU)
+echo   Model   : %SELECTED_NAME%
+echo   Backend : Vulkan (Integrated GPU)
+echo   Context : 3072 tokens
+echo   Threads : 4
 echo.
 echo Press Ctrl+C to stop the server.
 echo ==================================================
 echo.
 
-:: ==================================================
-:: START SERVER (BLOCKING)
-:: ==================================================
 "%SERVER_EXE%" ^
- -m "%MODEL%" ^
- --host 127.0.0.1 ^
- --port %PORT% ^
- --ctx-size 3072 ^
- --threads 4 ^
- --parallel 1 ^
- --verbose
+-m "%MODEL%" ^
+--host 127.0.0.1 ^
+--port %PORT% ^
+--ctx-size 3072 ^
+--threads 4 ^
+--parallel 1 ^
+--verbose
 
 :: ==================================================
 :: ERROR / EXIT HANDLING
 :: ==================================================
 echo.
 echo ==================================================
-echo SERVER STOPPED
+echo   SERVER STOPPED
 echo ==================================================
 echo.
 echo If this was unexpected, possible causes:
-echo - Port %PORT% already in use
-echo - Model incompatible
-echo - Vulkan runtime missing
+echo   - Port %PORT% already in use
+echo   - Model incompatible
+echo   - Vulkan runtime missing
 echo.
-pause
-exit /b
+set /p restart="Return to menu? (Y/N): "
+if /i "%restart%"=="Y" goto menu
+exit /b 0

@@ -2,33 +2,115 @@
 # Lumina Edge: Kernel-Level Resource Reclamation Protocol
 # Objective: Minimize System Commit Charge and Interrupt Latency
 # ==============================================================================
+# NOTE: Services are stopped for this session only.
+#       Their original startup types are saved and restored on exit
+#       so that a reboot (or re-enabling) returns them to normal.
+# ==============================================================================
 
 Write-Host "[INIT] Executing Lumina Edge System Optimization..." -ForegroundColor Cyan
 
-# 1. Terminate Non-Critical System Services (Reduces Memory Footprint)
+# Services to temporarily suspend
 $TargetServices = @(
-    "WSearch",      # Windows Search Indexer
-    "WslService",   # Windows Subsystem for Linux
-    "SysMain",      # Superfetch/Prefetch
-    "DiagTrack",    # Connected User Experiences and Telemetry
-    "Dps"           # Diagnostic Policy Service
+    "WSearch",      # Windows Search Indexer      (~500MB)
+    "WslService",   # Windows Subsystem for Linux (~300MB)
+    "SysMain",      # Superfetch / Prefetch        (~300MB)
+    "DiagTrack",    # Connected User Experiences  (~200MB)
+    "Dps"           # Diagnostic Policy Service   (~200MB)
 )
 
-foreach ($Service in $TargetServices) {
-    if (Get-Service -Name $Service -ErrorAction SilentlyContinue) {
-        Write-Host "[-] Suspending $Service..." -ForegroundColor Yellow
-        Stop-Service -Name $Service -Force -ErrorAction SilentlyContinue
-        Set-Service -Name $Service -StartupType Disabled
+# ------------------------------------------------------------------
+# 1. Save original startup types, then stop & disable services
+#    (Disabled prevents Windows from restarting them mid-session)
+# ------------------------------------------------------------------
+$OriginalStartupTypes = @{}
+
+foreach ($ServiceName in $TargetServices) {
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($svc) {
+        # Save original startup type before touching it
+        $wmiSvc = Get-WmiObject -Class Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+        if ($wmiSvc) {
+            $OriginalStartupTypes[$ServiceName] = $wmiSvc.StartMode
+        } else {
+            $OriginalStartupTypes[$ServiceName] = "Manual"  # Safe fallback
+        }
+
+        Write-Host "[-] Suspending $ServiceName (was: $($OriginalStartupTypes[$ServiceName]))..." -ForegroundColor Yellow
+        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        # Set to Manual (not Disabled) so services can recover without a full reboot
+        Set-Service -Name $ServiceName -StartupType Manual -ErrorAction SilentlyContinue
+    } else {
+        Write-Host "[~] $ServiceName not found, skipping." -ForegroundColor DarkGray
     }
 }
 
-# 2. System Working Set & Standby List Purge
-# Programmatically triggers Garbage Collection and clears inactive memory pages
+# ------------------------------------------------------------------
+# 2. Working Set Purge via Windows API
+#    Releases memory pages held by the current (PowerShell) process
+# ------------------------------------------------------------------
 Write-Host "[+] Reclaiming Standby List and System Working Set..." -ForegroundColor Green
-[System.GC]::Collect()
 
+$signature = @"
+[DllImport("kernel32.dll")]
+public static extern IntPtr GetCurrentProcess();
+[DllImport("psapi.dll")]
+public static extern bool EmptyWorkingSet(IntPtr hProcess);
+"@
+
+Add-Type -MemberDefinition $signature -Name "Win32EmptyWorkingSet" -Namespace Win32Functions -ErrorAction SilentlyContinue
+
+try {
+    $process = [Win32Functions.Win32EmptyWorkingSet]::GetCurrentProcess()
+    [Win32Functions.Win32EmptyWorkingSet]::EmptyWorkingSet($process) | Out-Null
+} catch {
+    Write-Host "[~] Working set purge skipped (non-critical)." -ForegroundColor DarkGray
+}
+
+# ------------------------------------------------------------------
 # 3. Memory Compression Deactivation
-# Prevents CPU overhead during tensor dequantization cycles
-Disable-mmagent -mc -ErrorAction SilentlyContinue
+#    Reduces CPU overhead during tensor dequantization
+# ------------------------------------------------------------------
+Write-Host "[+] Disabling Memory Compression..." -ForegroundColor Green
+Disable-MMAgent -mc -ErrorAction SilentlyContinue
+
+# ------------------------------------------------------------------
+# 4. Register a cleanup handler to restore services when the
+#    PowerShell session that called this script exits.
+#    (Runs if the parent bat is closed with CTRL+C or exits normally)
+# ------------------------------------------------------------------
+$restoreBlock = {
+    param($ServiceMap)
+    foreach ($entry in $ServiceMap.GetEnumerator()) {
+        $name    = $entry.Key
+        $startup = $entry.Value
+        # Map WMI StartMode strings back to Set-Service enum values
+        $mapped = switch ($startup) {
+            "Auto"     { "Automatic" }
+            "Manual"   { "Manual" }
+            "Disabled" { "Disabled" }
+            default    { "Manual" }
+        }
+        Set-Service -Name $name -StartupType $mapped -ErrorAction SilentlyContinue
+    }
+}
+
+# Write restore script to a temp file so the bat can optionally call it on exit
+$TempRestore = "$env:TEMP\lumina_restore_services.ps1"
+$lines = @("# Auto-generated by optimize_system.ps1 - safe to delete")
+foreach ($entry in $OriginalStartupTypes.GetEnumerator()) {
+    $name    = $entry.Key
+    $startup = $entry.Value
+    $mapped = switch ($startup) {
+        "Auto"     { "Automatic" }
+        "Manual"   { "Manual" }
+        "Disabled" { "Disabled" }
+        default    { "Manual" }
+    }
+    $lines += "Set-Service -Name '$name' -StartupType $mapped -ErrorAction SilentlyContinue"
+    $lines += "Start-Service -Name '$name' -ErrorAction SilentlyContinue"
+}
+$lines | Set-Content -Path $TempRestore -Encoding UTF8
 
 Write-Host "[SUCCESS] Resources reclaimed. System state optimized for LLM inference." -ForegroundColor Cyan
+Write-Host "[INFO] Service restore script written to: $TempRestore" -ForegroundColor DarkGray
+Write-Host "[INFO] Services will restore on next reboot, or run the restore script manually." -ForegroundColor DarkGray
