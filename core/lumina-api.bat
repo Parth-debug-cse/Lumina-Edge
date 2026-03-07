@@ -114,10 +114,11 @@ echo   0. Exit
 echo.
 echo ==================================================
 echo.
+set "model_choice="
 set /p model_choice="Select model (1-%MODEL_COUNT%): "
 
 if /i "%model_choice%"=="D" (
-    start "" "%ROOT%\model-manager.bat"
+    start "" /d "%ROOT%" "%ROOT%\model-manager.bat"
     goto select_model
 )
 if "%model_choice%"=="0" exit /b 0
@@ -154,6 +155,7 @@ echo   3. Exit
 echo.
 echo ==================================================
 echo.
+set "choice="
 set /p choice="lumina@edge> "
 if "%choice%"=="1" goto port_check
 if "%choice%"=="2" goto select_model
@@ -247,6 +249,7 @@ echo   - Port %PORT% already in use
 echo   - Model incompatible
 echo   - Vulkan runtime missing
 echo.
+set "restart="
 set /p restart="Return to menu? (Y/N): "
 if /i "%restart%"=="Y" goto menu
 exit /b 0

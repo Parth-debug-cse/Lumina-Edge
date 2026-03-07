@@ -39,6 +39,7 @@ echo   0. Exit
 echo.
 echo ==================================================
 echo.
+set "choice="
 set /p choice="lumina@edge> "
 if "%choice%"=="1" goto download_menu
 if "%choice%"=="2" goto list_models
@@ -66,6 +67,7 @@ echo   0. Back
 echo.
 echo ==================================================
 echo.
+set "choice="
 set /p choice="Select model to download: "
 
 if "%choice%"=="1" (
@@ -109,6 +111,7 @@ echo https://huggingface.co/TheBloke/model-name-GGUF/resolve/main/model.Q4_K_M.g
 echo.
 echo ==================================================
 echo.
+set "MODEL_URL="
 set /p MODEL_URL="URL: "
 if "%MODEL_URL%"=="" goto download_menu
 
@@ -118,6 +121,7 @@ for %%F in ("%MODEL_URL%") do set MODEL_NAME=%%~nxF
 echo.
 echo Model will be saved as: %MODEL_NAME%
 echo.
+set "confirm="
 set /p confirm="Continue? (Y/N): "
 if /i "%confirm%" NEQ "Y" goto download_menu
 
@@ -144,6 +148,7 @@ echo.
 if exist "%MODELS%\%MODEL_NAME%" (
     echo [WARNING] Model already exists: %MODEL_NAME%
     echo.
+    set "overwrite="
     set /p overwrite="Overwrite? (Y/N): "
     if /i "!overwrite!" NEQ "Y" goto main_menu
 )
@@ -240,6 +245,7 @@ if %count% EQU 0 (
 echo.
 echo   0. Cancel
 echo.
+set "choice="
 set /p choice="Enter number: "
 
 if "%choice%"=="0" goto main_menu
@@ -260,6 +266,7 @@ if not defined TARGET_MODEL (
 echo.
 echo   Deleting: %TARGET_MODEL%
 echo.
+set "confirm="
 set /p confirm="Are you sure? (Y/N): "
 if /i "%confirm%" NEQ "Y" goto main_menu
 
