@@ -60,8 +60,15 @@ public static extern bool EmptyWorkingSet(IntPtr hProcess);
 Add-Type -MemberDefinition $signature -Name "Win32EmptyWorkingSet" -Namespace Win32Functions -ErrorAction SilentlyContinue
 
 try {
-    $process = [Win32Functions.Win32EmptyWorkingSet]::GetCurrentProcess()
-    [Win32Functions.Win32EmptyWorkingSet]::EmptyWorkingSet($process) | Out-Null
+    $processes = Get-Process
+    $successCount = 0
+    foreach ($p in $processes) {
+        try {
+            [Win32Functions.Win32EmptyWorkingSet]::EmptyWorkingSet($p.Handle) | Out-Null
+            $successCount++
+        } catch {}
+    }
+    Write-Host "[+] Purged working set for $successCount processes." -ForegroundColor DarkGray
 } catch {
     Write-Host "[~] Working set purge skipped (non-critical)." -ForegroundColor DarkGray
 }
