@@ -15,6 +15,28 @@ set PORT=1234
 cd /d "%ROOT%"
 
 :: ==================================================
+:: CHECK FOR NVIDIA GPU
+:: ==================================================
+nvidia-smi >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    cls
+    echo ==================================================
+    echo ERROR :: NVIDIA GPU NOT DETECTED
+    echo ==================================================
+    echo.
+    echo This script requires an NVIDIA GPU with CUDA support.
+    echo Please ensure you have:
+    echo - NVIDIA GPU installed
+    echo - NVIDIA drivers installed
+    echo - CUDA toolkit installed
+    echo.
+    echo Or use the non-NVIDIA version: lumina-api.bat
+    echo.
+    pause
+    exit /b 1
+)
+
+:: ==================================================
 :: VALIDATE REQUIRED DIRECTORIES
 :: ==================================================
 if not exist "%BIN%" (
