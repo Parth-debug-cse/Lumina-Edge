@@ -230,7 +230,7 @@ echo.
 -t 4 ^
 -c 4096 ^
 --n-gpu-layers 20 ^
---color ^
+--color auto ^
 -cnv ^
 --multiline-input ^
 -sys "You are a precise, efficient AI assistant."

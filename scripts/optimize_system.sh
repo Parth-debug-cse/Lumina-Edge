@@ -11,7 +11,6 @@
 set -euo pipefail
 
 # Colors
-RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
@@ -120,7 +119,7 @@ fi
 #    tensor dequantization, similar to disabling memory compression)
 # ------------------------------------------------------------------
 if $HAVE_ROOT && [[ -f /sys/kernel/mm/transparent_hugepage/enabled ]]; then
-    THP_BEFORE=$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null | grep -oP '\[\K[^\]]+' || echo "always")
+    THP_BEFORE=$(grep -oP '\[\K[^\]]+' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo "always")
     echo -e "${GREEN}[+] Disabling Transparent Huge Pages (was: $THP_BEFORE)...${NC}"
     echo madvise > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
     echo "echo $THP_BEFORE > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true" >> "$RESTORE_SCRIPT"
