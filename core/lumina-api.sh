@@ -18,12 +18,13 @@ PORT=1234
 
 cd "$ROOT"
 
-pause() { echo ""; read -n1 -r -p "Press any key to continue..."; echo ""; }
+pause() { echo ""; read -n1 -r -p "Press any key to continue..." || true; echo ""; }
 
 human_size() {
-    local bytes=$1
-    if [[ $bytes -ge 1073741824 ]]; then echo "$(echo "scale=1; $bytes / 1073741824" | bc) GB"
-    elif [[ $bytes -ge 1048576 ]]; then echo "$(echo "scale=1; $bytes / 1048576" | bc) MB"
+    local bytes=${1:-0}
+    if [[ $bytes -ge 1073741824 ]]; then awk -v b="$bytes" 'BEGIN { printf "%.1f GB\n", b / 1073741824 }'
+    elif [[ $bytes -ge 1048576 ]]; then awk -v b="$bytes" 'BEGIN { printf "%.1f MB\n", b / 1048576 }'
+    elif [[ $bytes -ge 1024 ]]; then awk -v b="$bytes" 'BEGIN { printf "%.1f KB\n", b / 1024 }'
     else echo "$bytes bytes"; fi
 }
 
@@ -50,7 +51,7 @@ fi
 # Model selection
 select_model() {
     while true; do
-        clear
+        clear 2>/dev/null || true
         echo "=================================================="; echo "  LUMINA EDGE :: SELECT A MODEL"
         echo "=================================================="; echo ""; echo "Available models:"; echo ""
         local model_count=0; declare -a model_paths=(); declare -a model_names=()
@@ -67,11 +68,11 @@ select_model() {
         fi
         echo "  D. Download a new model"; echo "  0. Exit"; echo ""
         echo "=================================================="; echo ""
-        read -r -p "Select model (1-$model_count): " model_choice
+        read -r -p "Select model (1-$model_count): " model_choice || true
         if [[ "${model_choice^^}" == "D" ]]; then
-            [[ -x "$ROOT/model-manager.sh" ]] && "$ROOT/model-manager.sh" || { echo "model-manager.sh not found."; pause; }; continue
+            if [[ -x "$ROOT/model-manager.sh" ]]; then "$ROOT/model-manager.sh" || true; else echo "model-manager.sh not found."; pause; fi; continue
         fi
-        [[ "$model_choice" == "0" ]] && exit 0
+        if [[ "$model_choice" == "0" ]]; then exit 0; fi
         if [[ "$model_choice" =~ ^[0-9]+$ ]] && [[ "$model_choice" -ge 1 ]] && [[ "$model_choice" -le $model_count ]]; then
             SELECTED_MODEL="${model_paths[$((model_choice - 1))]}"; SELECTED_NAME="${model_names[$((model_choice - 1))]}"; return
         fi
@@ -81,26 +82,26 @@ select_model() {
 
 main_menu() {
     while true; do
-        clear
+        clear 2>/dev/null || true
         echo "=================================================="; echo "  LUMINA EDGE :: API SERVER MENU"
         echo "=================================================="; echo ""
         echo "  Current Model: $SELECTED_NAME"; echo "  Backend      : Vulkan (Integrated GPU)"
         echo "  Endpoint     : http://127.0.0.1:$PORT/v1"; echo ""
         echo "  1. Start API Server"; echo "  2. Change Model"; echo "  3. Exit"
         echo ""; echo "=================================================="; echo ""
-        read -r -p "lumina@edge> " choice
+        read -r -p "lumina@edge> " choice || true
         case "$choice" in 1) port_check ;; 2) select_model ;; 3) exit 0 ;; esac
     done
 }
 
 port_check() {
-    clear; echo "=================================================="; echo "  CHECKING PORT $PORT"
+    clear 2>/dev/null || true; echo "=================================================="; echo "  CHECKING PORT $PORT"
     echo "=================================================="; echo ""
     local port_in_use=false
     if command -v ss &>/dev/null; then
-        ss -tlnp 2>/dev/null | grep -q ":${PORT} " && port_in_use=true
+        if ss -tlnp 2>/dev/null | grep -q ":${PORT} "; then port_in_use=true; fi
     elif command -v lsof &>/dev/null; then
-        lsof -i ":$PORT" -sTCP:LISTEN &>/dev/null && port_in_use=true
+        if lsof -i ":$PORT" -sTCP:LISTEN &>/dev/null; then port_in_use=true; fi
     fi
     if $port_in_use; then
         echo "  ERROR :: PORT $PORT IS ALREADY IN USE"; echo ""
@@ -110,10 +111,10 @@ port_check() {
 }
 
 init_server() {
-    clear; echo "=================================================="; echo "  STAGE 1 :: MEMORY RECLAMATION"
+    clear 2>/dev/null || true; echo "=================================================="; echo "  STAGE 1 :: MEMORY RECLAMATION"
     echo "=================================================="; echo ""
     if [[ -x "$SCRIPTS/optimize_system.sh" ]]; then
-        if [[ $EUID -eq 0 ]]; then bash "$SCRIPTS/optimize_system.sh"
+        if [[ $EUID -eq 0 ]]; then bash "$SCRIPTS/optimize_system.sh" || true
         else
             echo -e "${YELLOW}[NOTE] Running optimizer with sudo...${NC}"
             sudo bash "$SCRIPTS/optimize_system.sh" || echo -e "${YELLOW}[WARN] Optimization skipped.${NC}"
@@ -121,22 +122,22 @@ init_server() {
     fi
     echo ""; echo -e "${GREEN}[OK] Memory optimization complete.${NC}"; sleep 1
 
-    clear; echo "=================================================="; echo "  STAGE 2 :: STARTING API SERVER"
+    clear 2>/dev/null || true; echo "=================================================="; echo "  STAGE 2 :: STARTING API SERVER"
     echo "=================================================="; echo ""
     echo "  OpenAI-compatible endpoint: http://127.0.0.1:$PORT/v1"; echo ""
     echo "  Model   : $SELECTED_NAME"; echo "  Backend : Vulkan (Integrated GPU)"
     echo "  Context : 3072 tokens"; echo "  Threads : 4"; echo ""
     echo "Press Ctrl+C to stop the server."; echo "=================================================="; echo ""
 
+    trap 'echo ""; echo "=================================================="; echo "  SERVER STOPPED"; echo "=================================================="; echo ""' SIGINT
     "$SERVER_EXE" -m "$SELECTED_MODEL" --host 127.0.0.1 --port "$PORT" \
-        --ctx-size 3072 --threads 4 --parallel 1 --verbose
+        --ctx-size 3072 --threads 4 --parallel 1 --verbose || true
+    trap - SIGINT
 
-    echo ""; echo "=================================================="; echo "  SERVER STOPPED"
-    echo "=================================================="; echo ""
     echo "If unexpected: port in use, model incompatible, or Vulkan missing"
     echo "  Install Vulkan: sudo apt install mesa-vulkan-drivers"; echo ""
-    read -r -p "Return to menu? (Y/N): " restart
-    [[ "${restart^^}" != "Y" ]] && exit 0
+    read -r -p "Return to menu? (Y/N): " restart || true
+    if [[ "${restart^^}" != "Y" ]]; then exit 0; fi
 }
 
 select_model

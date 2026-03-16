@@ -31,7 +31,7 @@ cd "$ROOT"
 # ==================================================
 pause() {
     echo ""
-    read -n1 -r -p "Press any key to continue..."
+    read -n1 -r -p "Press any key to continue..." || true
     echo ""
 }
 
@@ -39,13 +39,13 @@ pause() {
 # UTILITY: Human-readable file size
 # ==================================================
 human_size() {
-    local bytes=$1
+    local bytes=${1:-0}
     if [[ $bytes -ge 1073741824 ]]; then
-        echo "$(echo "scale=1; $bytes / 1073741824" | bc) GB"
+        awk -v b="$bytes" 'BEGIN { printf "%.1f GB\n", b / 1073741824 }'
     elif [[ $bytes -ge 1048576 ]]; then
-        echo "$(echo "scale=1; $bytes / 1048576" | bc) MB"
+        awk -v b="$bytes" 'BEGIN { printf "%.1f MB\n", b / 1048576 }'
     elif [[ $bytes -ge 1024 ]]; then
-        echo "$(echo "scale=1; $bytes / 1024" | bc) KB"
+        awk -v b="$bytes" 'BEGIN { printf "%.1f KB\n", b / 1024 }'
     else
         echo "$bytes bytes"
     fi
@@ -55,7 +55,7 @@ human_size() {
 # CHECK FOR NVIDIA GPU
 # ==================================================
 if ! command -v nvidia-smi &>/dev/null; then
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "ERROR :: nvidia-smi NOT FOUND"
     echo "=================================================="
@@ -76,7 +76,7 @@ if ! command -v nvidia-smi &>/dev/null; then
 fi
 
 if ! nvidia-smi &>/dev/null; then
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "ERROR :: NVIDIA GPU NOT DETECTED"
     echo "=================================================="
@@ -98,7 +98,7 @@ fi
 # VALIDATE REQUIRED DIRECTORIES
 # ==================================================
 if [[ ! -d "$BIN" ]]; then
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "ERROR :: bin directory not found"
     echo "=================================================="
@@ -117,7 +117,7 @@ if [[ ! -d "$BIN" ]]; then
 fi
 
 if [[ ! -d "$MODELS" ]]; then
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "ERROR :: models directory not found"
     echo "=================================================="
@@ -129,7 +129,7 @@ if [[ ! -d "$MODELS" ]]; then
 fi
 
 if [[ ! -d "$SCRIPTS" ]]; then
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "ERROR :: scripts directory not found"
     echo "=================================================="
@@ -149,7 +149,7 @@ elif [[ -f "$BIN/llama-cli" ]]; then
     chmod +x "$BIN/llama-cli"
     CLI_EXE="$BIN/llama-cli"
 else
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "  ERROR :: llama-cli NOT FOUND"
     echo "=================================================="
@@ -168,7 +168,7 @@ fi
 # ==================================================
 select_model() {
     while true; do
-        clear
+        clear 2>/dev/null || true
         echo "=================================================="
         echo "  LUMINA EDGE :: SELECT A MODEL"
         echo "=================================================="
@@ -209,11 +209,11 @@ select_model() {
         echo ""
         echo "=================================================="
         echo ""
-        read -r -p "Select model (1-$model_count): " model_choice
+        read -r -p "Select model (1-$model_count): " model_choice || true
 
         if [[ "${model_choice^^}" == "D" ]]; then
             if [[ -x "$ROOT/model-manager.sh" ]]; then
-                "$ROOT/model-manager.sh"
+                "$ROOT/model-manager.sh" || true
             else
                 echo ""
                 echo -e "${YELLOW}  model-manager.sh not found or not executable.${NC}"
@@ -242,7 +242,7 @@ select_model() {
 # BOOT SCREEN
 # ==================================================
 boot_screen() {
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "  LUMINA EDGE :: LOCAL LLM CONTROLLER"
     echo "=================================================="
@@ -260,7 +260,7 @@ boot_screen() {
 # ==================================================
 main_menu() {
     while true; do
-        clear
+        clear 2>/dev/null || true
         echo "=================================================="
         echo "  LUMINA EDGE :: MAIN MENU"
         echo "=================================================="
@@ -274,7 +274,7 @@ main_menu() {
         echo ""
         echo "=================================================="
         echo ""
-        read -r -p "lumina@edge> " choice
+        read -r -p "lumina@edge> " choice || true
 
         case "$choice" in
             1) init_llm ;;
@@ -289,7 +289,7 @@ main_menu() {
 # INITIALIZATION PIPELINE
 # ==================================================
 init_llm() {
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "  STAGE 1 :: MEMORY RECLAMATION"
     echo "=================================================="
@@ -297,7 +297,7 @@ init_llm() {
 
     if [[ -x "$SCRIPTS/optimize_system.sh" ]]; then
         if [[ $EUID -eq 0 ]]; then
-            bash "$SCRIPTS/optimize_system.sh"
+            bash "$SCRIPTS/optimize_system.sh" || true
         else
             echo -e "${YELLOW}[NOTE] Running optimizer with sudo for full memory reclamation...${NC}"
             echo -e "${GRAY}       Enter your password if prompted, or press Ctrl+C to skip.${NC}"
@@ -314,7 +314,7 @@ init_llm() {
     echo -e "${GREEN}[OK] Memory optimization complete.${NC}"
     sleep 1
 
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "  STAGE 2 :: LLM INITIALIZATION (CUDA)"
     echo "=================================================="
@@ -329,6 +329,7 @@ init_llm() {
     echo "=================================================="
     echo ""
 
+    trap 'echo ""; echo "  SESSION INTERRUPTED"' SIGINT
     "$CLI_EXE" \
         -m "$SELECTED_MODEL" \
         -t 4 \
@@ -337,7 +338,8 @@ init_llm() {
         --color \
         -cnv \
         --multiline-input \
-        -sys "You are a precise, efficient AI assistant."
+        -sys "You are a precise, efficient AI assistant." || true
+    trap - SIGINT
 
     # ==================================================
     # POST-SESSION
@@ -347,7 +349,7 @@ init_llm() {
     echo "  SESSION ENDED"
     echo "=================================================="
     echo ""
-    read -r -p "Return to menu? (Y/N): " restart
+    read -r -p "Return to menu? (Y/N): " restart || true
     if [[ "${restart^^}" != "Y" ]]; then
         exit 0
     fi

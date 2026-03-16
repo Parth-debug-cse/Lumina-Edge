@@ -50,13 +50,13 @@ fi
 # UTILITY: Human-readable file size
 # ==================================================
 human_size() {
-    local bytes=$1
+    local bytes=${1:-0}
     if [[ $bytes -ge 1073741824 ]]; then
-        echo "$(echo "scale=1; $bytes / 1073741824" | bc) GB"
+        awk -v b="$bytes" 'BEGIN { printf "%.1f GB\n", b / 1073741824 }'
     elif [[ $bytes -ge 1048576 ]]; then
-        echo "$(echo "scale=1; $bytes / 1048576" | bc) MB"
+        awk -v b="$bytes" 'BEGIN { printf "%.1f MB\n", b / 1048576 }'
     elif [[ $bytes -ge 1024 ]]; then
-        echo "$(echo "scale=1; $bytes / 1024" | bc) KB"
+        awk -v b="$bytes" 'BEGIN { printf "%.1f KB\n", b / 1024 }'
     else
         echo "$bytes bytes"
     fi
@@ -66,8 +66,10 @@ human_size() {
 # UTILITY: Download a file
 # ==================================================
 download_file() {
-    local url="$1"
-    local dest="$2"
+    local url="${1:-}"
+    local dest="${2:-}"
+
+    if [[ -z "$url" || -z "$dest" ]]; then return 1; fi
 
     if [[ "$DOWNLOAD_TOOL" == "wget" ]]; then
         wget --show-progress -O "$dest" "$url"

@@ -213,7 +213,7 @@ echo.
 -m "%MODEL%" ^
 -t 4 ^
 -c 3072 ^
---color on ^
+--color ^
 -cnv ^
 --multiline-input ^
 -sys "You are a precise, efficient AI assistant."
