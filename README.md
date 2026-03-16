@@ -2,14 +2,14 @@
 
 <div align="center">
 
-**Local LLM inference on hardware you already own.**
+**Local LLM execution framework engineered for hardware you already own.**
 
-*No cloud. No API keys. No telemetry. No excuses.*
+*No cloud. No API keys. No telemetry. Maximum resource extraction.*
 
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?style=flat-square&logo=windows)
-![llama.cpp](https://img.shields.io/badge/Powered%20by-llama.cpp-black?style=flat-square)
+![Linux](https://img.shields.io/badge/Linux-Ubuntu%2FDebian-E95420?style=flat-square&logo=linux)
 ![Backend](https://img.shields.io/badge/Backend-Vulkan%20%7C%20CUDA-76B900?style=flat-square)
-![RAM](https://img.shields.io/badge/Minimum%20RAM-4GB-red?style=flat-square)
+![Core](https://img.shields.io/badge/Powered%20by-llama.cpp-black?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 
 </div>
@@ -18,421 +18,238 @@
 
 ## What is Lumina Edge?
 
-Lumina Edge is a **Windows-native execution framework** that wraps `llama.cpp` with intelligent system optimization, dynamic model selection, and a clean CLI interface — making powerful local AI accessible on the low-spec hardware most people already own.
+Lumina Edge is a **cross-platform execution framework** (Windows `.bat` & Linux `.sh`) that wraps the high-performance `llama.cpp` inference engine. It intelligently optimizes system state, manages downloaded models dynamically, and exposes a clean CLI or API interface.
 
-**The problem it solves:** Running LLMs locally has always meant fighting your hardware. Background services eating RAM. Complex configuration. Models that only run on expensive GPUs. Lumina Edge eliminates all of that.
+By abstracting away configuration complexities and aggressively reclaiming host OS memory, Lumina Edge makes powerful, private AI accessible on consumer-grade hardware—even low-spec laptops with integrated graphics.
 
-**What you get:**
-- Run 7B models on an 8 GB laptop with integrated graphics
-- An OpenAI-compatible local API endpoint, ready for Python, PowerShell, or any SDK
-- One-click system optimization that reclaims 1–2 GB of RAM before inference starts
-- Dynamic model selection — manage and switch between any number of downloaded models, no renaming required
+**Core Capabilities:**
+- **Aggressive Memory Reclamation:** Kernel-level state pausing (Linux `systemctl`/`/proc` and Windows Win32 APIs) reclaims 1–2 GB of RAM *before* inference starts.
+- **Universal Backend Support:** Drops natively into Vulkan (Intel/AMD iGPU) or CUDA (NVIDIA) compute environments.
+- **Dynamic Model Manager:** Abstracted downloading and dynamic UI list generation for local `.gguf` quantization files.
+- **OpenAI-Compatible Endpoint:** Instantly spins up a local REST API endpoint for Python/Node.js/PowerShell SDK parity.
 
 ---
 
-## Architecture
+## System Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                       LUMINA EDGE FRAMEWORK                          │
-├─────────────────────┬───────────────────────────┬────────────────────┤
-│     USER LAYER      │      CONTROL LAYER        │    ENGINE LAYER    │
-│                     │                           │                    │
-│  CLI Interface      │  Batch Controllers        │  llama.cpp core    │
-│  API Endpoints      │  Path auto-detection      │  GGUF models       │
-│  Model Manager      │  Validation & menus       │  Vulkan / CUDA     │
-├─────────────────────┴───────────────────────────┴────────────────────┤
-│                        OPTIMIZATION LAYER                            │
-│  Service suspension · Working set purge · Memory compression disable │
-│  Original startup types saved · Restore script written to %TEMP%     │
-└──────────────────────────────────────────────────────────────────────┘
+```text
+┌───────────────────────────────────────────────────────────────────────┐
+│                       LUMINA EDGE FRAMEWORK                           │
+├─────────────────────┬───────────────────────────┬─────────────────────┤
+│     USER LAYER      │      CONTROL LAYER        │    ENGINE LAYER     │
+│                     │                           │                     │
+│  CLI Chat UI        │  Cross-Platform Scripts   │  llama.cpp Core     │
+│  REST API Endpoint  │  Path & OS Auto-detect    │  GGUF Quantization  │
+│  Model Manager      │  GPU Fallback Logic       │  Vulkan / CUDA      │
+├─────────────────────┴───────────────────────────┴─────────────────────┤
+│                    OS OPTIMIZATION LAYER (HOST)                       │
+│  Windows: Win32 EmptyWorkingSet · Service Suspension · MMAgent        │
+│  Linux: sync/drop_caches · THP Disabled · systemctl Pause · swappiness│
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
-### Project Structure
+### Directory Structure
 
-```
-Lumina-Edge/                     ← Can live anywhere on your system
-├── bin/                         ← llama.cpp binaries go here
-│   ├── llama-cli.exe
-│   ├── llama-server.exe
-│   └── *.dll
-├── core/                        ← Launch scripts
-│   ├── lumina-core.bat          ← Chat mode (Vulkan)
-│   ├── lumina-core-nvidia.bat   ← Chat mode (CUDA)
-│   ├── lumina-api.bat           ← API server (Vulkan)
-│   └── lumina-api-nvidia.bat    ← API server (CUDA)
+```text
+Lumina-Edge/                     ← Portable deployment
+├── bin/                         ← llama.cpp binaries
+│   ├── llama-cli (.exe)
+│   └── llama-server (.exe)
+├── core/                        ← Execution Controllers
+│   ├── lumina-core.bat / .sh          ← CLI Chat (Vulkan iGPU)
+│   ├── lumina-core-nvidia.bat / .sh   ← CLI Chat (CUDA)
+│   ├── lumina-api.bat / .sh           ← API Server (Vulkan iGPU)
+│   └── lumina-api-nvidia.bat / .sh    ← API Server (CUDA)
 ├── scripts/
-│   └── optimize_system.ps1      ← Memory reclamation
-├── models/                      ← Your .gguf files live here
-├── assets/                      ← Screenshots and visuals
-└── model-manager.bat            ← Download & manage models
+│   ├── optimize_system.ps1      ← Windows Memory Optimizer
+│   └── optimize_system.sh       ← Linux Memory Optimizer
+├── models/                      ← Local .gguf storage
+└── model-manager.bat / .sh      ← Model lifecycle CLI
 ```
 
 ---
 
 ## Quick Start
 
-### 1. Get llama.cpp binaries
+### 1. Engine Installation
 
-Go to [github.com/ggml-org/llama.cpp/releases](https://github.com/ggml-org/llama.cpp/releases) and download the latest release for your GPU:
+Download the latest corresponding `llama.cpp` release binaries from [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases/latest) and extract all files strictly directly into the `Lumina-Edge/bin/` directory.
 
-| Your hardware | File to download |
-|---|---|
-| Intel / AMD integrated GPU | `llama-bXXX-bin-win-vulkan-x64.zip` |
-| NVIDIA GPU | `llama-bXXX-bin-win-cuda-cu12.x-x64.zip` |
+| OS | Backend Target | Filename Pattern |
+|----|---------------|------------------|
+| **Windows** | Vulkan (Intel/AMD) | `llama-bXXX-bin-win-vulkan-x64.zip` |
+| **Windows** | CUDA (NVIDIA) | `llama-bXXX-bin-win-cuda-cu12.x-x64.zip` |
+| **Linux (Ubuntu)**| Vulkan (Intel/AMD) | `llama-bXXX-bin-ubuntu-vulkan-x64.tar.gz` |
+| **Linux (Ubuntu)**| CUDA (NVIDIA) | `llama-bXXX-bin-ubuntu-x64-cuda.tar.gz` |
 
-Extract **all files** directly into `Lumina-Edge\bin\`. Do not create subfolders.
+*(Note for Linux: Ensure scripts are executable: `chmod +x model-manager.sh && chmod +x core/*.sh scripts/*.sh`)*
 
-### 2. Download a model
+### 2. Procure a Quantized Model
 
-Run `model-manager.bat` and pick from the pre-configured list:
+Launch the interactive model manager to download pre-configured, highly-optimized quantized models straight from HuggingFace.
 
-```
-1. Phi-3-mini-4k-instruct    (2.3 GB)  ← Best for 4GB RAM systems
-2. TinyLlama-1.1B-Chat       (0.7 GB)  ← Ultra-light, instant responses
-3. Mistral-7B-Instruct-v0.2  (4.1 GB)  ← Best balance of quality + speed
-4. Llama-3-8B-Instruct       (4.7 GB)  ← Highest quality, needs 8GB+ RAM
-5. Custom URL                           ← Any HuggingFace GGUF direct link
-```
+- **Windows:** Double-click `model-manager.bat`
+- **Linux:** Run `./model-manager.sh`
 
-Models download straight to `models\`. No renaming needed — the launcher shows a numbered list of everything in that folder.
+*(Downloads are directly streamed into the `models/` directory. The UI dynamically detects any file sizes and updates lists automatically without strict file renaming requirements).*
 
-### 3. Launch
+### 3. Execution
 
-**Right-click → Run as Administrator**
+Launch via the specific backend script your hardware requires. 
 
-| Mode | Integrated GPU | NVIDIA GPU |
+| Interface | Windows (Run as Admin) | Linux (Executes `sudo`) |
 |---|---|---|
-| Chat | `core\lumina-core.bat` | `core\lumina-core-nvidia.bat` |
-| API Server | `core\lumina-api.bat` | `core\lumina-api-nvidia.bat` |
+| **Chat (Vulkan)** | `core\lumina-core.bat` | `./core/lumina-core.sh` |
+| **Chat (CUDA)** | `core\lumina-core-nvidia.bat` | `./core/lumina-core-nvidia.sh` |
+| **API Server (Vulkan)** | `core\lumina-api.bat` | `./core/lumina-api.sh` |
+| **API Server (CUDA)** | `core\lumina-api-nvidia.bat` | `./core/lumina-api-nvidia.sh` |
 
-Administrator is required only for the temporary memory optimization step.
-
----
-
-## System Requirements
-
-### Minimum
-
-| Component | Requirement |
-|---|---|
-| OS | Windows 10 64-bit (1909+) |
-| CPU | Dual-core x86-64 |
-| RAM | 4 GB |
-| GPU | DirectX 12 / Vulkan 1.2 compatible |
-| Storage | 10 GB free |
-
-### Recommended
-
-| Component | Recommendation |
-|---|---|
-| OS | Windows 11 64-bit |
-| CPU | Quad-core 3.0GHz+ (Intel i5/i7, AMD Ryzen 5/7) |
-| RAM | 8 GB+ |
-| Storage | 20 GB SSD |
-
-### Backend-Specific
-
-**Vulkan (integrated GPU):** Requires Vulkan Runtime — download from [vulkan.lunarg.com](https://vulkan.lunarg.com). Compatible with Intel UHD 600+, Intel Iris Xe, and AMD Radeon integrated graphics.
-
-**CUDA (NVIDIA GPU):** Requires NVIDIA drivers 535+. Download from [nvidia.com/drivers](https://www.nvidia.com/Download/index.aspx). Compatible with GTX 1050 and any newer RTX series card.
+> [!NOTE]  
+> Administrative/`sudo` privileges are requested strictly for the temporary memory optimization step. Inference runs purely locally without network telemetry.
 
 ---
 
-## How the Optimization Works
+## Hardware & Environment Specifications
 
-Before the model loads, Lumina Edge runs `scripts\optimize_system.ps1` which frees 1–2 GB of RAM through four steps:
+### Core Requirements
+| Component | Minimum Execution | Optimal Performance |
+|---|---|---|
+| **Windows** | Windows 10 x64 (1909+) | Windows 11 x64 |
+| **Linux** | Ubuntu 20.04 / Debian 11 | Ubuntu 24.04 LTS |
+| **Memory** | 4 GB | 8 GB+ |
+| **Processor**| Dual-core x86-64 | Quad-core (i5/Ryzen 5) |
+| **Storage** | 10 GB Free Space | 20 GB+ NVMe SSD |
 
-1. **Suspends non-critical Windows services**
-   - `WSearch` — Windows Search Indexer (~500 MB)
-   - `SysMain` — Superfetch / Prefetch (~300 MB)
-   - `WslService` — Windows Subsystem for Linux (~300 MB)
-   - `DiagTrack` — Connected User Experiences / Telemetry (~200 MB)
-   - `Dps` — Diagnostic Policy Service (~200 MB)
-
-2. **Purges working sets** via direct Windows API call (`EmptyWorkingSet`) — flushes memory pages held by inactive processes back to the available pool
-
-3. **Disables memory compression** (`Disable-MMAgent -mc`) — reduces CPU overhead during tensor dequantization
-
-4. **Saves original service states** — writes a restore script to `%TEMP%\lumina_restore_services.ps1` so services can be re-enabled instantly without a reboot
-
-**What this achieves on an 8 GB system:**
-
-```
-Before optimization:  ~3.0 GB available for LLM
-After optimization:   ~5.2 GB available for LLM  (+73%)
-```
-
-**What it does NOT do:** No registry edits. No installed services. No permanent changes. Services are stopped for the duration of the session with their startup type set to `Manual` — they restart normally on the next reboot, or immediately via the restore script.
+### Graphics / Neural Accelerators
+- **Vulkan Backend (Intel/AMD):** Compatible with Intel UHD 600+, Intel Iris Xe, and AMD Radeon integrated graphics. 
+  - **Linux dependency:** `sudo apt install mesa-vulkan-drivers`
+  - **Windows dependency:** Vulkan Runtime (LunarG).
+- **CUDA Backend (NVIDIA):** Compatible with GTX 1050 or any newer RTX series constraint to VRAM. 
+  - Requires NVIDIA display drivers `535+`.
 
 ---
 
-## Performance Reference
+## Deep Dive: How System Optimization Works
 
-### Budget Laptop — Intel Core i5-8250U · 8 GB DDR4 · Intel UHD 620 · Vulkan
+Consumer OS configurations historically hold massive amounts of RAM captive for caching and background indexing. Lumina Edge intercepts system state prior to LLM initialization to surgically reclaim 1–2 GB of contiguous memory space, ensuring stable tensor loading.
 
-| Model | Params | Quantization | Tokens/sec | RAM Used | Load Time |
-|---|---|---|---|---|---|
-| TinyLlama | 1.1B | Q4_K_M | ~18 t/s | 2.1 GB | 8s |
-| Phi-3-mini | 3.8B | Q4_K_M | ~12 t/s | 3.4 GB | 12s |
-| Mistral-7B | 7B | Q4_K_M | ~5.8 t/s | 5.8 GB | 25s |
-| Llama-3-8B | 8B | Q4_K_M | ~4.3 t/s | 6.2 GB | 30s |
+### Windows Runtime (`optimize_system.ps1`)
+1. **API Purge:** Directly invokes the `EmptyWorkingSet` Win32 capability to forcefully release memory pages held by inactive processes back to the available memory pool.
+2. **Daemon Suspension:** Safely halts heavy Windows daemons (`WSearch`, `SysMain`, `WslService`, `DiagTrack`) caching up to ~1.3 GB.
+3. **Memory Agent Tuning:** Bypasses `MMAgent` memory compression (`-mc`), drastically dropping CPU overhead during quant weight decoding.
 
-### Gaming Laptop — Intel Core i7-11800H · 16 GB DDR4 · NVIDIA RTX 3060 6 GB · CUDA
+### Linux Kernel (`optimize_system.sh`)
+1. **Page Cache Overrides:** Issues `sync` and flushes OS dentries and inodes via `echo 3 > /proc/sys/vm/drop_caches`. 
+2. **Memory Compaction:** Re-assembles defragmented memory blocks (`/proc/sys/vm/compact_memory`).
+3. **Daemon Suspension:** Pauses `systemd` user daemons (e.g., `snapd`, `packagekit`, `tracker-miner-fs`).
+4. **THP Bypass:** Dynamically disables Transparent Huge Pages (`/sys/kernel/mm/transparent_hugepage/enabled = madvise`) preventing allocation stalls.
+5. **Swappiness:** Redirection of `/proc/sys/vm/swappiness` to prioritize volatile RAM vs disk paging.
 
-| Model | Params | Quantization | Tokens/sec | GPU Layers |
-|---|---|---|---|---|
-| Mistral-7B | 7B | Q4_K_M | ~15.2 t/s | 20 |
-| Llama-3-8B | 8B | Q4_K_M | ~12.8 t/s | 20 |
-| Llama-3-13B | 13B | Q4_K_M | ~8.2 t/s | 20 |
+> **Safety Design Rating:** Both OS scripts automatically generate a stateless teardown restore file (e.g., `/tmp/lumina_restore_services.sh`) guaranteeing environment integrity upon application exit or system reboot.
 
 ---
 
-## OpenAI-Compatible API
+## Developer API (OpenAI Compatible)
 
-When running in API mode, Lumina Edge exposes a fully OpenAI-compatible REST API at:
+The API mode executes a robust, lock-free HTTP REST interface compliant with OpenAI methodologies on `http://127.0.0.1:1234/v1`. 
 
-```
-http://127.0.0.1:1234/v1
-```
-
-No authentication required. Works as a drop-in replacement for any OpenAI SDK client — just point `base_url` at localhost.
-
-### Python
+### Python Integration
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:1234/v1",
-    api_key="not-needed"
+    api_key="lumina-local-deploy" # Placeholder, bypasses auth locally
 )
 
 response = client.chat.completions.create(
     model="mistral-7b-instruct-v0.2.Q4_K_M.gguf",
     messages=[
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Explain transformer attention in simple terms."}
+        {"role": "system", "content": "You are a senior systems engineer."},
+        {"role": "user", "content": "Explain POSIX compliance simply."}
     ],
-    temperature=0.7,
-    max_tokens=500
+    temperature=0.3,
+    max_tokens=600,
+    stream=True # Streaming support handled out-of-the-box
 )
 
-print(response.choices[0].message.content)
-```
-
-### Streaming (Python)
-
-```python
-stream = client.chat.completions.create(
-    model="mistral-7b-instruct-v0.2.Q4_K_M.gguf",
-    messages=[{"role": "user", "content": "Write me a short story."}],
-    stream=True
-)
-
-for chunk in stream:
+for chunk in response:
     if chunk.choices[0].delta.content:
-        print(chunk.choices[0].delta.content, end="", flush=True)
-```
-
-### PowerShell
-
-```powershell
-$body = @{
-    model    = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
-    messages = @(
-        @{ role = "system"; content = "You are a helpful assistant." }
-        @{ role = "user";   content = "Explain black holes simply." }
-    )
-    temperature = 0.7
-    max_tokens  = 500
-} | ConvertTo-Json -Depth 5
-
-$response = Invoke-RestMethod `
-    -Uri         "http://localhost:1234/v1/chat/completions" `
-    -Method      POST `
-    -ContentType "application/json" `
-    -Body        $body
-
-$response.choices[0].message.content
-```
-
-### cURL
-
-```bash
-curl http://localhost:1234/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
-    "messages": [
-      {"role": "user", "content": "What is machine learning?"}
-    ],
-    "temperature": 0.7,
-    "max_tokens": 500
-  }'
+         print(chunk.choices[0].delta.content, end="")
 ```
 
 ---
 
-## Model Manager
+## Quantization Architecture Map
 
-`model-manager.bat` handles the full model lifecycle without any manual file management.
+Lumina Edge defaults to utilizing **Q4_K_M** quantizations for a mathematically balanced memory-to-quality ratio. 
 
-```
-==================================================
-  LUMINA EDGE :: MODEL MANAGER
-==================================================
-
-  Models location: <your project root>\models
-
-  1. Download a new model
-  2. List downloaded models
-  3. Delete a model
-  0. Exit
-```
-
-- Pre-configured one-click downloads for 4 popular models
-- Custom HuggingFace URL support for any GGUF model
-- Lists all downloaded models with file sizes
-- Safe delete with confirmation prompt
-- Creates the `models\` directory automatically if it does not exist
-
----
-
-## Model Quantization Guide
-
-Quantization reduces model weights from 16-bit floats to smaller integers, trading a small amount of quality for dramatically lower RAM usage and faster inference.
-
-| Level | Bits | Size vs FP16 | Quality | Recommended for |
+| Metric | Bits | Scaling Factor vs FP16 | Aesthetic / Perplexity Risk | Target Hardware |
 |---|---|---|---|---|
-| Q8_0 | 8-bit | ~100% | Best | 16 GB+ RAM |
-| Q6_K | 6-bit | ~75% | Very high | 12 GB+ RAM |
-| Q5_K_M | 5-bit | ~65% | High | 10 GB+ RAM |
-| **Q4_K_M** | **4-bit** | **~50%** | **Balanced** | **Most users — recommended** |
-| Q4_0 | 4-bit | ~50% | Good | Low RAM, speed priority |
-| Q3_K_M | 3-bit | ~40% | Lower | 4 GB RAM systems only |
-
-**Rule of thumb:** Model file size + 2 GB must be less than your total RAM.
+| Q8_0 | 8-bit | ~100% | Negligible | 16 GB+ RAM / Server |
+| Q6_K | 6-bit | ~75% | Very Low | 12 GB+ RAM |
+| Q5_K_M | 5-bit | ~65% | Low | 10 GB+ RAM |
+| **Q4_K_M** | **4-bit** | **~50%** | **Acceptable (Recommended)** | **Standard Deployments** |
+| Q3_K_M | 3-bit | ~40% | Noticeable Hallucination | Legacy Devices |
 
 ---
 
-## Troubleshooting
+## Troubleshooting Map
 
 <details>
-<summary><strong>llama-cli.exe not found</strong></summary>
+<summary><strong>Missing or Unrecognized llama-cli / llama-server Executables</strong></summary>
 
-Extract all files from the llama.cpp release ZIP directly into `Lumina-Edge\bin\`. Do not create any subfolders inside `bin\`. After extraction you should see `llama-cli.exe`, `llama-server.exe`, and several `.dll` files sitting directly inside `bin\`.
-
+Verify the extracted `llama.cpp` archive is not trapped in an unnecessary subfolder. The physical `<project>/bin/` directory must contain the binary files immediately alongside the `.dll` or `.so` extensions. Ensure Linux users grant `$ chmod +x` execution permission.
 </details>
 
 <details>
-<summary><strong>No models found / model selection is empty</strong></summary>
+<summary><strong>Model Listing is Empty</strong></summary>
 
-Run `model-manager.bat` and download a model first. Models must be `.gguf` files placed directly inside the `models\` directory. The launcher scans for `*.gguf` — any other extension will not appear in the list.
-
+The interface parses `<project>/models/*.gguf` dynamically using regex-style detection frameworks. Check that the Huggingface repository provides standardized `.gguf` architecture outputs, not raw Tensor / Safetensor formats.
 </details>
 
 <details>
-<summary><strong>Access denied / optimization fails</strong></summary>
+<summary><strong>Out of Memory (OOM) Allocation Crashes</strong></summary>
 
-Right-click the `.bat` file and choose **Run as administrator**. The optimization step requires elevated privileges to stop and suspend system services. Without it the script will silently fail and less RAM will be freed.
-
+Even with Lumina Edge memory optimizations, verify the selected `.gguf` weight format conforms to your system capacity. **Calculated Rule of Thumb:** Quant file size in GB + 2 GB overhead must be entirely less than Total System RAM.
 </details>
 
 <details>
-<summary><strong>Vulkan initialization failed</strong></summary>
+<summary><strong>HTTP Port 1234 Contention (API Only)</strong></summary>
 
-Install the Vulkan Runtime from [vulkan.lunarg.com](https://vulkan.lunarg.com), then update your GPU drivers (Intel or AMD). Restart your machine after installing. To verify, open a Command Prompt and run `vulkaninfo.exe` — it should print your GPU name and Vulkan version with no errors.
-
-</details>
-
-<details>
-<summary><strong>CUDA not available / no CUDA devices found</strong></summary>
-
-Run `nvidia-smi` in a Command Prompt to confirm your GPU is detected. If it is, update to NVIDIA drivers 535+ from [nvidia.com/drivers](https://www.nvidia.com/Download/index.aspx). Also confirm you downloaded the CUDA build of llama.cpp (`cuda` in the filename), not the Vulkan build.
-
-</details>
-
-<details>
-<summary><strong>Port 1234 already in use</strong></summary>
-
-The API scripts automatically detect this before launching and show a clear error. To fix it manually, find and stop the conflicting process:
-
-```batch
-netstat -ano | findstr ":1234 "
-taskkill /PID <PID shown> /F
-```
-
-</details>
-
-<details>
-<summary><strong>Out of memory / crash during model load</strong></summary>
-
-Switch to a smaller model or lower quantization level. Close browsers, Discord, and other RAM-heavy apps before launching. Safe rule: model file size + 2 GB must be less than your total RAM. On an 8 GB system, keep your model file under 6 GB.
-
-</details>
-
-<details>
-<summary><strong>Services did not restart after session ended</strong></summary>
-
-The optimization script writes a restore script to `%TEMP%\lumina_restore_services.ps1`. Run it in an elevated PowerShell window to immediately re-enable all suspended services:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "$env:TEMP\lumina_restore_services.ps1"
-```
-
-Alternatively, a full system reboot will restore all services automatically.
-
+API Controller scripts dynamically scan `netstat -ano` (Windows) or `ss -tlnp` (Linux) to check port locks before initializing. 
+If an existing zombie process crashed into the port:
+- **Windows:** `taskkill /PID <PID_ID> /F`
+- **Linux:** `sudo kill -9 <PID_ID>`
 </details>
 
 ---
 
 ## Roadmap
 
-- [ ] `config.json` for persistent user settings (threads, context size, GPU layers)
-- [ ] Web-based GUI frontend
-- [ ] Linux and macOS support
-- [ ] In-script automatic service restore on session exit (no temp file dependency)
-- [ ] Built-in model quantization tool
-- [ ] Performance benchmarking suite
-- [ ] Docker container support
-- [ ] Plugin system for custom backends (DirectML, Metal, etc.)
-- [ ] Multi-model parallel loading
+- [x] Full Linux (Ubuntu/Debian) native kernel optimization port
+- [ ] `config.json` serialization for hyperparameter state manipulation 
+- [ ] Experimental Electron / React.js Web UI wrapper
+- [ ] Implementation of `macOS / Darwin` logic bridging optimization protocols
+- [ ] Support for direct HuggingFace multi-file sharding configurations.
 
 ---
 
-## Contributing
+## Technical Acknowledgements
 
-Contributions are welcome. Areas that would benefit most from community effort: GUI development, Linux/macOS porting, additional backend integrations, hardware testing across different configurations, and documentation improvements.
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Commit your changes: `git commit -m "Add your feature"`
-4. Push and open a Pull Request
-
-When reporting bugs, please include your Windows version, full hardware specs (CPU, RAM, GPU), the complete error message, and exact steps to reproduce.
-
----
-
-## Acknowledgements
-
-- [llama.cpp](https://github.com/ggml-org/llama.cpp) — the inference engine powering everything
-- [TheBloke on HuggingFace](https://huggingface.co/TheBloke) — quantized model repository
-- [LunarG](https://www.lunarg.com) — Vulkan SDK and tooling
-- [NVIDIA](https://www.nvidia.com) — CUDA platform and drivers
+- **[llama.cpp (Georgi Gerganov)](https://github.com/ggml-org/llama.cpp)** — The fundamental C/C++ inference backbone architecture.
+- **[HuggingFace / TheBloke](https://huggingface.co/TheBloke)** — Foundational automated GGUF quantization datasets.
+- **[NVIDIA CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit)** — Neural weight acceleration pathways.
 
 ---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for full text.
-
----
+MIT License — see [LICENSE](LICENSE) for full structural text.
 
 <div align="center">
 
-Built by [Parth-debug-cse](https://github.com/Parth-debug-cse)
-
-*If this project helped you run AI locally, consider leaving a ⭐*
+Engineered & Maintained by [Parth-debug-cse](https://github.com/Parth-debug-cse)
 
 </div>
