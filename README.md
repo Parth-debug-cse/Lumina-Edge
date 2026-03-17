@@ -25,13 +25,9 @@
 
 You have a normal laptop. You want to run a local LLM — for privacy, for offline access, for zero API cost. The hardware is capable. The models exist. The tooling is the problem.
 
-You download LM Studio. Before a single model token is generated, the Electron shell has already consumed 600 MB. You load Mistral-7B and hit an out-of-memory error — not because your machine cannot run the model, but because your OS was holding 3 GB captive in background services and page caches.
-
-You try raw `llama.cpp`. The binary works, but there is no model manager, no launcher, no cleanup. You spend 40 minutes reading GitHub issues to understand which quantization flag to pass, why your GGUF path needs to be absolute, and why the server silently exits when context overflows. You get it running. The next day you change machines and start over.
-
 This is the state of local AI for anyone without a workstation GPU and an afternoon to burn.
 
-**Lumina Edge is built for that machine and that developer.** It wraps `llama.cpp` — the fastest open-source inference engine available — with OS-level memory reclamation that frees 1–2 GB before inference begins, an interactive model manager that eliminates manual file handling, and a cross-platform launcher that works identically on Windows and Linux. The result is a fully operational local LLM with an OpenAI-compatible API endpoint, to use the model in any project without worrying about api credits
+**Lumina Edge is built for that machine and that developer.** It uses `llama.cpp` — the fastest open-source inference engine available — with OS-level memory reclamation that frees 1–2 GB before inference begins. The result is a fully operational local LLM with an OpenAI-compatible API endpoint, to use the model in any project without worrying about api credits
 
 ---
 
@@ -39,18 +35,14 @@ This is the state of local AI for anyone without a workstation GPU and an aftern
 
 | | LM Studio | Ollama | **Lumina Edge** |
 |---|---|---|---|
-| RAM overhead (before model loads) | **400–700 MB** (Electron GUI) | **200–400 MB** (persistent daemon) | **~0 MB** (no background process) |
-| Background service on boot | ✅ Yes — always running | ✅ Yes — always running | ❌ No — launches only on demand |
-| RAM available for model (8 GB system) | ~3.0 GB | ~3.2 GB | **~5.2 GB (+73%)** |
-| OS memory reclamation before inference | ❌ No | ❌ No | **✅ Yes — 1–2 GB freed automatically** |
-| Direct control over quantization | Limited | Limited | **Full — any GGUF, any Q-level** |
-| GPU layer configuration | GUI only | Config file | **Direct flag passthrough** |
-| Session cleanup after inference | ❌ Daemon remains | ❌ Daemon remains | **✅ Fully restored automatically** |
-| Tokens/sec on equivalent hardware* | Baseline | −5 to −12% vs baseline | **+37% to +23% vs Respectively** |
+| Baseline RAM| **400–700 MB** (Electron GUI) | **200–400 MB** (persistent daemon) | **~0 MB** (no background process) |
+| Background Services  | ✅ Yes — always running | ✅ Yes — always running | ❌ No — launches only on demand |
+| Available RAM (8 GB) | ~3.0 GB | ~3.2 GB | **~5.2 GB (+73%)** |
+| Pre-inference Flush | ❌ No | ❌ No | **✅ Yes — 1–2 GB freed automatically** |
+| Quantization control | Limited | Limited | **Full — any GGUF, any Q-level** |
+| Tokens/sec  | Baseline | −5 to −12% vs baseline | **+37% to +23%  Respectively** |
 
-*\*Tokens/sec delta measured on Intel Core i5-8250U · 8 GB DDR4 · Mistral-7B Q4\_K\_M. LM Studio and Ollama overhead figures sourced from self benchmarks;*
-
-The difference is not cosmetic. On an 8 GB system running Mistral-7B, the ~2 GB gap in available RAM is the difference between running the model at all and hitting an out-of-memory crash. Lumina Edge does not just match the alternatives — it operates in a fundamentally different regime.
+*\*Tokens/sec  measured on Intel Core i5-8250U · 8 GB DDR4 · Mistral-7B Q4\_K\_M.*
 
 ---
 
@@ -67,9 +59,6 @@ Download, list, and delete quantized models with a numbered menu. No file renami
 
 **OpenAI-Compatible Local API**
 Spin up a fully OpenAI-compatible REST endpoint at `http://127.0.0.1:1234/v1`. Drop it into any existing codebase that uses the OpenAI SDK — change only the `base_url`. Full details in the [API section](#-openai-compatible-api) below.
-
-**Zero Telemetry**
-All inference is local. No data leaves your machine. No API keys. No usage tracking.
 
 ---
 
@@ -99,7 +88,7 @@ Lumina-Edge/
 
 ### Step 1 — Get the llama.cpp binaries
 
-Download the latest prebuilt release from [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases/latest) and extract **all files directly** into `Lumina-Edge/bin/`. Do not create subfolders.
+Download and extract the release from [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases/latest) and extract **all files directly** into `Lumina-Edge/bin/`. Do not create subfolders.
 
 | OS | Your GPU | File to download |
 |----|----------|-----------------|
@@ -147,7 +136,7 @@ Run `model-manager.bat` on Windows or `./model-manager.sh` on Linux.
 
 ## How the Memory Optimization Works
 
-Consumer operating systems hold 1.5–3 GB of RAM captive in background caches and indexing services. Before any model loads, Lumina Edge reclaims this memory cleanly and reversibly.
+OS holds 1.5–3 GB of RAM captive in background caches and indexing services. Before any model loads, Lumina Edge reclaims this memory cleanly and reversibly.
 
 ### Windows (`optimize_system.ps1`)
 
@@ -172,34 +161,32 @@ Before optimization   ████████████░░░░░░░�
 After optimization    ████████░░░░░░░░░░░░░░░░   ~5.2 GB free   (+73%)
 ```
 
-> No registry edits. No installed services. No permanent system changes.
+
 
 ---
 
-## Performance Reference
+## Benchmarks
 
-### Budget Laptop — Intel Core i5-8250U · 8 GB DDR4 · Intel UHD 620 · Vulkan
+### Intel Core i5-8250U · 8 GB DDR4 · Intel UHD 620 · Vulkan
 
-| Model | Size | Quantization | Speed | RAM Used | Load Time |
-|-------|------|-------------|-------|----------|-----------|
-| TinyLlama 1.1B | 1.1B | Q4\_K\_M | ~18 t/s | 2.1 GB | 8s |
-| Phi-3-mini | 3.8B | Q4\_K\_M | ~12 t/s | 3.4 GB | 12s |
-| Mistral-7B | 7B | Q4\_K\_M | ~5.8 t/s | 5.8 GB | 25s |
-| Llama-3-8B | 8B | Q4\_K\_M | ~4.3 t/s | 6.2 GB | 30s |
+| Model | Quantization | Speed | RAM Used | 
+|-------|-------------|-------|----------|
+| TinyLlama 1.1B | Q4\_K\_M | ~18 t/s | 2.1 GB |
+| Phi-3-mini 3.8B | Q4\_K\_M | ~12 t/s | 3.4 GB | 
+| Mistral-7B | Q4\_K\_M | ~5.8 t/s | 5.8 GB |
+| Llama-3-8B | Q4\_K\_M | ~4.3 t/s | 6.2 GB |
 
 ### Gaming Laptop — Intel Core i7-11800H · 16 GB DDR4 · NVIDIA RTX 3060 · CUDA
 
-| Model | Size | Quantization | Speed | GPU Layers Offloaded |
-|-------|------|-------------|-------|----------------------|
-| Mistral-7B | 7B | Q4\_K\_M | ~15.2 t/s | 20 |
-| Llama-3-8B | 8B | Q4\_K\_M | ~12.8 t/s | 20 |
-| Llama-3-13B | 13B | Q4\_K\_M | ~8.2 t/s | 20 |
+| Model | Quantization | Speed | GPU Layers Offloaded |
+|-------|-------------|-------|----------------------|
+| Mistral-7B | Q4\_K\_M | ~15.2 t/s | 20 |
+| Llama-3-8B  | Q4\_K\_M | ~12.8 t/s | 20 |
+| Llama-3-13B | Q4\_K\_M | ~8.2 t/s | 20 |
 
 ---
 
 ## OpenAI-Compatible API
-
-### Purpose
 
 Lumina Edge's API mode solves a critical problem for developers: **you should not have to rewrite application code to switch between a cloud model and a local one.**
 
@@ -207,8 +194,8 @@ When you launch an API server, Lumina Edge exposes a REST endpoint at `http://12
 
 This has three immediate practical benefits:
 
-- **Development without cost.** Use a local model during development and testing. Swap to a cloud model for production with no code changes. Your entire prompt engineering, tool-use scaffolding, and response parsing logic transfers unchanged.
-- **Privacy-sensitive workloads.** Route confidential data — internal documents, medical records, proprietary codebases — through a local model that never touches the network, while keeping your existing application architecture intact.
+- **Development without cost.** Use a local model during development and testing. Swap to a cloud model for production with no code changes. 
+- **Privacy-sensitive workloads.** Route confidential data — internal documents, medical records, proprietary codebases — through a local model that never touches the network.
 - **Offline and air-gapped environments.** Deploy the same API-integrated application in environments without internet access. No conditional logic, no fallback paths — just a different `base_url`.
 
 No authentication is required for local connections. The endpoint accepts standard `chat/completions` requests with `model`, `messages`, `temperature`, `max_tokens`, and `stream` parameters.
@@ -453,12 +440,7 @@ Lumina Edge is actively developed. The near-term roadmap is focused on expanding
 
 ## Contributing
 
-Contributions are welcome. Areas with the highest immediate impact:
-
-- **GUI development** — The Electron / React web UI is the top priority for v1.2 and needs frontend contributors.
-- **macOS / Metal porting** — The optimization scripts need Darwin equivalents.
-- **Hardware testing** — Benchmark results from AMD iGPU, older Intel generations, and ARM Linux systems are needed.
-- **Documentation** — Tutorials, translated READMEs, and video walkthroughs.
+We welcome contributions! To get started, check the roadmap and pick a feature or update to develop.
 
 ```bash
 # Fork → branch → commit → PR
@@ -477,14 +459,6 @@ When reporting bugs, include your OS version, full hardware specs (CPU, RAM, GPU
 - **[TheBloke — HuggingFace](https://huggingface.co/TheBloke)** — The default model repository.
 - **[LunarG](https://www.lunarg.com)** — Vulkan SDK and runtime tooling.
 - **[NVIDIA CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit)** — GPU acceleration platform.
-
----
-
-## License
-
-MIT License — see [LICENSE](LICENSE) for full text. Free to use, modify, and distribute.
-
----
 
 <div align="center">
 
