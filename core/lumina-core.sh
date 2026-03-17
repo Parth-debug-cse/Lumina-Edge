@@ -9,6 +9,7 @@ set -euo pipefail
 # Colors
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+GRAY='\033[0;90m'
 NC='\033[0m'
 
 # ==================================================
@@ -27,7 +28,11 @@ cd "$ROOT"
 # ==================================================
 pause() {
     echo ""
-    read -n1 -r -p "Press any key to continue..." || true
+    if [[ -t 0 ]]; then
+        read -n1 -r -p "Press any key to continue..." || true
+    else
+        read -r -p "Press Enter to continue..." || true
+    fi
     echo ""
 }
 

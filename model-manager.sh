@@ -69,10 +69,33 @@ download_file() {
     if [[ -z "$url" || -z "$dest" ]]; then return 1; fi
 
     if [[ "$DOWNLOAD_TOOL" == "wget" ]]; then
-        wget --show-progress -O "$dest" "$url"
+        wget --timeout=60 --show-progress -O "$dest" "$url" 2>&1
+        local exit_code=$?
+        if [[ $exit_code -ne 0 ]]; then
+            echo -e "${RED}[ERROR] wget failed with exit code: $exit_code${NC}"
+            return 1
+        fi
     else
-        curl -L --progress-bar -o "$dest" "$url"
+        curl -L --max-time 1800 --connect-timeout 60 --progress-bar -o "$dest" "$url"
+        local exit_code=$?
+        if [[ $exit_code -ne 0 ]]; then
+            echo -e "${RED}[ERROR] curl failed with exit code: $exit_code${NC}"
+            return 1
+        fi
     fi
+    
+    # Verify the file was actually downloaded
+    if [[ ! -f "$dest" ]]; then
+        echo -e "${RED}[ERROR] Download file not created: $dest${NC}"
+        return 1
+    fi
+    
+    if [[ ! -s "$dest" ]]; then
+        echo -e "${RED}[ERROR] Downloaded file is empty: $dest${NC}"
+        return 1
+    fi
+    
+    return 0
 }
 
 # ==================================================
@@ -80,7 +103,11 @@ download_file() {
 # ==================================================
 pause() {
     echo ""
-    read -n1 -r -p "Press any key to continue..."
+    if [[ -t 0 ]]; then
+        read -n1 -r -p "Press any key to continue..." || true
+    else
+        read -r -p "Press Enter to continue..." || true
+    fi
     echo ""
 }
 
@@ -189,8 +216,26 @@ custom_download() {
         return
     fi
 
+    # Validate URL format
+    if [[ ! "$MODEL_URL" =~ ^https?:// ]]; then
+        echo ""
+        echo -e "${RED}[ERROR] Invalid URL format. URL must start with http:// or https://${NC}"
+        pause
+        return
+    fi
+
     # Extract filename from URL
     MODEL_NAME="$(basename "$MODEL_URL")"
+
+    # Validate filename ends with .gguf
+    if [[ ! "$MODEL_NAME" =~ \.gguf$ ]]; then
+        echo ""
+        echo -e "${YELLOW}[WARNING] Filename does not end with .gguf. Continue anyway?${NC}"
+        read -r -p "Continue? (Y/N): " confirm_gguf
+        if [[ "${confirm_gguf^^}" != "Y" ]]; then
+            return
+        fi
+    fi
 
     echo ""
     echo "Model will be saved as: $MODEL_NAME"
@@ -229,30 +274,57 @@ do_download() {
         if [[ "${overwrite^^}" != "Y" ]]; then
             return
         fi
+        rm -f "$MODELS/$MODEL_NAME"
     fi
 
-    # Download
+    # Get expected file size from headers (if available)
+    local expected_size=0
+    if [[ "$DOWNLOAD_TOOL" == "curl" ]]; then
+        expected_size=$(curl -sI "$MODEL_URL" 2>/dev/null | grep -i "content-length" | awk '{print $2}' | tr -d '\r') || expected_size="0"
+    else
+        expected_size=$(wget --spider -S "$MODEL_URL" 2>&1 | grep -i "content-length" | awk '{print $2}' | tr -d '\r') || expected_size="0"
+    fi
+    
+    if [[ -n "$expected_size" && "$expected_size" =~ ^[0-9]+$ && "$expected_size" -gt 0 ]]; then
+        echo "Expected file size: $(human_size "$expected_size")"
+        echo ""
+    fi
+
+    # Download with timeout (30 minutes max)
     if download_file "$MODEL_URL" "$MODELS/$MODEL_NAME"; then
-        # Check if download was successful
-        if [[ -f "$MODELS/$MODEL_NAME" ]] && [[ -s "$MODELS/$MODEL_NAME" ]]; then
-            clear
-            echo "=================================================="
-            echo "  DOWNLOAD COMPLETE"
-            echo "=================================================="
-            echo ""
-            echo "  Model saved to:"
-            echo "  $MODELS/$MODEL_NAME"
-            echo ""
-            local fsize
-            fsize=$(stat --format="%s" "$MODELS/$MODEL_NAME" 2>/dev/null || stat -f "%z" "$MODELS/$MODEL_NAME" 2>/dev/null || echo "unknown")
-            if [[ "$fsize" != "unknown" ]]; then
-                echo "  File size: $(human_size "$fsize") ($fsize bytes)"
-            fi
-            echo ""
-            pause
-        else
+        # Verify final file size
+        local final_size
+        final_size=$(stat --format="%s" "$MODELS/$MODEL_NAME" 2>/dev/null || stat -f "%z" "$MODELS/$MODEL_NAME" 2>/dev/null || echo "0")
+        
+        # Check if file size is suspiciously small (likely an error page or incomplete download)
+        if [[ "$final_size" -lt 1000 ]]; then
+            echo -e "${RED}[ERROR] Downloaded file is suspiciously small ($final_size bytes).${NC}"
+            echo "This may be an error page or incomplete download."
             download_failed
+            return
         fi
+        
+        # If we knew expected size, verify it matches (within 1% tolerance)
+        if [[ -n "$expected_size" && "$expected_size" =~ ^[0-9]+$ && "$expected_size" -gt 0 ]]; then
+            local size_diff
+            size_diff=$(awk -v f="$final_size" -v e="$expected_size" 'BEGIN { diff = (f - e) / e; if (diff < 0) diff = -diff; print diff }')
+            if (( $(awk -v d="$size_diff" 'BEGIN { print (d > 0.01) }') )); then
+                echo -e "${YELLOW}[WARNING] File size mismatch! Expected: $(human_size "$expected_size"), Got: $(human_size "$final_size")${NC}"
+                echo "Download may be incomplete."
+            fi
+        fi
+        
+        clear
+        echo "=================================================="
+        echo "  DOWNLOAD COMPLETE"
+        echo "=================================================="
+        echo ""
+        echo "  Model saved to:"
+        echo "  $MODELS/$MODEL_NAME"
+        echo ""
+        echo "  File size: $(human_size "$final_size") ($final_size bytes)"
+        echo ""
+        pause
     else
         download_failed
     fi
