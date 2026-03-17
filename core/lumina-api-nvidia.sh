@@ -19,7 +19,15 @@ PORT=1234
 
 cd "$ROOT"
 
-pause() { echo ""; read -n1 -r -p "Press any key to continue..." || true; echo ""; }
+pause() {
+    echo ""
+    if [[ -t 0 ]]; then
+        read -n1 -r -p "Press any key to continue..." || true
+    else
+        read -r -p "Press Enter to continue..." || true
+    fi
+    echo ""
+}
 
 human_size() {
     local bytes=${1:-0}
