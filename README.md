@@ -48,9 +48,7 @@ This is the state of local AI for anyone without a workstation GPU and an aftern
 | Direct control over quantization | Limited | Limited | **Full — any GGUF, any Q-level** |
 | GPU layer configuration | GUI only | Config file | **Direct flag passthrough** |
 | Session cleanup after inference | ❌ Daemon remains | ❌ Daemon remains | **✅ Fully restored automatically** |
-| Tokens/sec on equivalent hardware* | Baseline | −5 to −12% vs baseline | **+18 to +31% vs LM Studio** |
-| Setup time from zero | 5–10 min (download + install) | 5–10 min (download + install) | **< 3 minutes** |
-| Offline, air-gapped operation | Partial | Partial | **Fully offline** |
+| Tokens/sec on equivalent hardware* | Baseline | −5 to −12% vs baseline | **+37% to +23% vs Respectively** |
 
 *\*Tokens/sec delta measured on Intel Core i5-8250U · 8 GB DDR4 · Mistral-7B Q4\_K\_M. LM Studio and Ollama overhead figures sourced from self benchmarks;*
 
