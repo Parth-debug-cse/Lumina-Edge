@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="assets/banner.png" alt="Lumina Edge" width="100%" />
-
 # ⚡ Lumina Edge
 
 ### Run powerful AI models locally, On hardware you already own.
@@ -13,7 +11,7 @@
 [![Backend](https://img.shields.io/badge/GPU-Vulkan%20%7C%20CUDA-76B900?style=flat-square&logo=nvidia&logoColor=white)](https://github.com/Parth-debug-cse/Lumina-Edge)
 [![Powered by](https://img.shields.io/badge/Powered%20by-llama.cpp-black?style=flat-square)](https://github.com/ggml-org/llama.cpp)
 [![License](https://img.shields.io/badge/License-MIT-22c55e?style=flat-square)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/Parth-debug-cse/Lumina-Edge?style=flat-square&color=facc15)](https://github.com/Parth-debug-cse/Lumina-Edge/stargazers)
+
 
 <br/>
 
