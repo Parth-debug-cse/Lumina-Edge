@@ -4,7 +4,7 @@
 
 # ⚡ Lumina Edge
 
-### Run powerful AI models locally. On hardware you already own.
+### Run powerful AI models locally, On hardware you already own.
 
 *No cloud. No API keys. No telemetry. No compromises.*
 
