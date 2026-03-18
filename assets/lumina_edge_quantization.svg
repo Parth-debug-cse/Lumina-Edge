@@ -10,22 +10,22 @@
   </defs>
 
   <!-- axis labels -->
-  <text x="60"  y="16" font-size="11" fill="#888" font-family="system-ui,sans-serif">← smaller &amp; faster</text>
-  <text x="740" y="16" font-size="11" fill="#888" font-family="system-ui,sans-serif" text-anchor="end">larger &amp; sharper →</text>
+  <text x="60"  y="16" font-size="11" fill="#aaa" font-family="system-ui,sans-serif" font-weight="300">← smaller &amp; faster</text>
+  <text x="740" y="16" font-size="11" fill="#aaa" font-family="system-ui,sans-serif" font-weight="300" text-anchor="end">larger &amp; sharper →</text>
 
   <!-- level names -->
-  <text x="114" y="40" font-size="13" fill="#1a1a1a" font-family="system-ui,sans-serif" text-anchor="middle" font-weight="400">Q3_K_M</text>
-  <text x="264" y="40" font-size="13" fill="#1a1a1a" font-family="system-ui,sans-serif" text-anchor="middle" font-weight="600">Q4_K_M</text>
-  <text x="414" y="40" font-size="13" fill="#1a1a1a" font-family="system-ui,sans-serif" text-anchor="middle" font-weight="400">Q5_K_M</text>
-  <text x="556" y="40" font-size="13" fill="#1a1a1a" font-family="system-ui,sans-serif" text-anchor="middle" font-weight="400">Q6_K</text>
-  <text x="686" y="40" font-size="13" fill="#1a1a1a" font-family="system-ui,sans-serif" text-anchor="middle" font-weight="400">Q8_0</text>
+  <text x="114" y="40" font-size="13" fill="#555" font-family="system-ui,sans-serif" text-anchor="middle" font-weight="300">Q3_K_M</text>
+  <text x="264" y="40" font-size="13" fill="#222" font-family="system-ui,sans-serif" text-anchor="middle" font-weight="500">Q4_K_M</text>
+  <text x="414" y="40" font-size="13" fill="#555" font-family="system-ui,sans-serif" text-anchor="middle" font-weight="300">Q5_K_M</text>
+  <text x="556" y="40" font-size="13" fill="#555" font-family="system-ui,sans-serif" text-anchor="middle" font-weight="300">Q6_K</text>
+  <text x="686" y="40" font-size="13" fill="#555" font-family="system-ui,sans-serif" text-anchor="middle" font-weight="300">Q8_0</text>
 
   <!-- default pill under Q4 name -->
-  <rect x="231" y="45" width="66" height="15" rx="7" fill="#f4f4f4"/>
-  <text x="264" y="56" font-size="10" fill="#555" font-family="system-ui,sans-serif" text-anchor="middle">★ default</text>
+  <rect x="231" y="45" width="66" height="15" rx="7" fill="#f0f0f0"/>
+  <text x="264" y="56" font-size="10" fill="#888" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">★ default</text>
 
   <!-- track -->
-  <rect x="60" y="66" width="680" height="6" rx="3" fill="url(#track)"/>
+  <rect x="60" y="66" width="680" height="6" rx="3" fill="url(#track)" opacity="0.85"/>
 
   <!-- dots -->
   <circle cx="114" cy="69" r="6"  fill="#E24B4A" stroke="white" stroke-width="2"/>
@@ -35,30 +35,30 @@
   <circle cx="686" cy="69" r="6"  fill="#1D9E75" stroke="white" stroke-width="2"/>
 
   <!-- row 1: bits -->
-  <text x="114" y="90" font-size="11" fill="#999" font-family="system-ui,sans-serif" text-anchor="middle">3-bit</text>
-  <text x="264" y="90" font-size="11" fill="#999" font-family="system-ui,sans-serif" text-anchor="middle">4-bit</text>
-  <text x="414" y="90" font-size="11" fill="#999" font-family="system-ui,sans-serif" text-anchor="middle">5-bit</text>
-  <text x="556" y="90" font-size="11" fill="#999" font-family="system-ui,sans-serif" text-anchor="middle">6-bit</text>
-  <text x="686" y="90" font-size="11" fill="#999" font-family="system-ui,sans-serif" text-anchor="middle">8-bit</text>
+  <text x="114" y="90" font-size="11" fill="#bbb" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">3-bit</text>
+  <text x="264" y="90" font-size="11" fill="#bbb" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">4-bit</text>
+  <text x="414" y="90" font-size="11" fill="#bbb" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">5-bit</text>
+  <text x="556" y="90" font-size="11" fill="#bbb" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">6-bit</text>
+  <text x="686" y="90" font-size="11" fill="#bbb" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">8-bit</text>
 
   <!-- row 2: size vs FP16 -->
-  <text x="114" y="108" font-size="12" fill="#333" font-family="system-ui,sans-serif" text-anchor="middle">~40% of FP16</text>
-  <text x="264" y="108" font-size="12" fill="#333" font-family="system-ui,sans-serif" text-anchor="middle">~50% of FP16</text>
-  <text x="414" y="108" font-size="12" fill="#333" font-family="system-ui,sans-serif" text-anchor="middle">~65% of FP16</text>
-  <text x="556" y="108" font-size="12" fill="#333" font-family="system-ui,sans-serif" text-anchor="middle">~75% of FP16</text>
-  <text x="686" y="108" font-size="12" fill="#333" font-family="system-ui,sans-serif" text-anchor="middle">~100% of FP16</text>
+  <text x="114" y="108" font-size="12" fill="#777" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">~40% of FP16</text>
+  <text x="264" y="108" font-size="12" fill="#777" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">~50% of FP16</text>
+  <text x="414" y="108" font-size="12" fill="#777" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">~65% of FP16</text>
+  <text x="556" y="108" font-size="12" fill="#777" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">~75% of FP16</text>
+  <text x="686" y="108" font-size="12" fill="#777" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">~100% of FP16</text>
 
   <!-- row 3: RAM -->
-  <text x="114" y="125" font-size="11" fill="#555" font-family="system-ui,sans-serif" text-anchor="middle">4 GB only</text>
-  <text x="264" y="125" font-size="11" fill="#555" font-family="system-ui,sans-serif" text-anchor="middle">most users</text>
-  <text x="414" y="125" font-size="11" fill="#555" font-family="system-ui,sans-serif" text-anchor="middle">10 GB+ RAM</text>
-  <text x="556" y="125" font-size="11" fill="#555" font-family="system-ui,sans-serif" text-anchor="middle">12 GB+ RAM</text>
-  <text x="686" y="125" font-size="11" fill="#555" font-family="system-ui,sans-serif" text-anchor="middle">16 GB+ RAM</text>
+  <text x="114" y="125" font-size="11" fill="#888" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">4 GB only</text>
+  <text x="264" y="125" font-size="11" fill="#888" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">most users</text>
+  <text x="414" y="125" font-size="11" fill="#888" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">10 GB+ RAM</text>
+  <text x="556" y="125" font-size="11" fill="#888" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">12 GB+ RAM</text>
+  <text x="686" y="125" font-size="11" fill="#888" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">16 GB+ RAM</text>
 
   <!-- row 4: quality -->
-  <text x="114" y="142" font-size="11" fill="#E24B4A" font-family="system-ui,sans-serif" text-anchor="middle">noticeable loss</text>
-  <text x="264" y="142" font-size="11" fill="#D85A30" font-family="system-ui,sans-serif" text-anchor="middle">balanced</text>
-  <text x="414" y="142" font-size="11" fill="#BA7517" font-family="system-ui,sans-serif" text-anchor="middle">low loss</text>
-  <text x="556" y="142" font-size="11" fill="#378ADD" font-family="system-ui,sans-serif" text-anchor="middle">very low loss</text>
-  <text x="686" y="142" font-size="11" fill="#1D9E75" font-family="system-ui,sans-serif" text-anchor="middle">negligible</text>
+  <text x="114" y="142" font-size="11" fill="#E24B4A" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">noticeable loss</text>
+  <text x="264" y="142" font-size="11" fill="#D85A30" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">balanced</text>
+  <text x="414" y="142" font-size="11" fill="#BA7517" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">low loss</text>
+  <text x="556" y="142" font-size="11" fill="#378ADD" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">very low loss</text>
+  <text x="686" y="142" font-size="11" fill="#1D9E75" font-family="system-ui,sans-serif" font-weight="300" text-anchor="middle">negligible</text>
 </svg>
