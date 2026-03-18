@@ -4,14 +4,11 @@
 
 ### Run powerful AI models locally, On hardware you already own.
 
-*No cloud. No API keys. No telemetry. No compromises.*
-
 [![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?style=flat-square&logo=windows&logoColor=white)](https://github.com/Parth-debug-cse/Lumina-Edge)
 [![Linux](https://img.shields.io/badge/Linux-Ubuntu%20%7C%20Debian-E95420?style=flat-square&logo=linux&logoColor=white)](https://github.com/Parth-debug-cse/Lumina-Edge)
 [![Backend](https://img.shields.io/badge/GPU-Vulkan%20%7C%20CUDA-76B900?style=flat-square&logo=nvidia&logoColor=white)](https://github.com/Parth-debug-cse/Lumina-Edge)
 [![Powered by](https://img.shields.io/badge/Powered%20by-llama.cpp-black?style=flat-square)](https://github.com/ggml-org/llama.cpp)
 [![License](https://img.shields.io/badge/License-MIT-22c55e?style=flat-square)](LICENSE)
-
 
 <br/>
 
@@ -25,9 +22,95 @@
 
 You have a normal laptop. You want to run a local LLM — for privacy, for offline access, for zero API cost. The hardware is capable. The models exist. The tooling is the problem.
 
-This is the state of local AI for anyone without a workstation GPU and an afternoon to burn.
-
 **Lumina Edge is built for that machine and that developer.** It uses `llama.cpp` — the fastest open-source inference engine available — with OS-level memory reclamation that frees 1–2 GB before inference begins. The result is a fully operational local LLM with an OpenAI-compatible API endpoint, to use the model in any project without worrying about api credits
+
+---
+
+## System Requirements
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| OS (Windows) | Windows 10 x64 (1909+) | Windows 11 x64 |
+| OS (Linux) | Ubuntu 20.04 / Debian 11 | Ubuntu 24.04 LTS |
+| RAM | 8 GB | 16 GB+ |
+| Storage | 10 GB free | 20 GB+ NVMe SSD |
+
+**Vulkan (Intel / AMD):** Install the Vulkan Runtime from [vulkan.lunarg.com](https://vulkan.lunarg.com) (Windows) or run `sudo apt install mesa-vulkan-drivers` (Linux).
+
+**CUDA (NVIDIA):** Requires driver version 535+. Download from [nvidia.com/drivers](https://www.nvidia.com/Download/index.aspx). Compatible with GTX 1050 and all RTX series.
+
+---
+
+## Quick Start
+
+### Step 1 — Get the llama.cpp binaries
+
+Download and extract the release from [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases/latest) and extract **all files directly** into `Lumina-Edge/bin/`. Do not create subfolders.
+
+| OS | Your GPU | File to download |
+|----|----------|-----------------|
+| Windows | Intel / AMD (integrated) | `llama-bXXX-bin-win-vulkan-x64.zip` |
+| Windows | NVIDIA | `llama-bXXX-bin-win-cuda-cu12.x-x64.zip` |
+| Linux | Intel / AMD (integrated) | `llama-bXXX-bin-ubuntu-vulkan-x64.tar.gz` |
+| Linux | NVIDIA | `llama-bXXX-bin-ubuntu-x64-cuda.tar.gz` |
+
+> **Linux:** After extracting, make scripts executable:
+> ```bash
+> chmod +x model-manager.sh core/*.sh scripts/*.sh
+> ```
+
+### Step 2 — Pick a model
+
+
+![Model selection decision tree](assets/lumina_edge_model_picker.svg)
+
+Run `model-manager` on Windows or  on Linux to download your chosen model.
+
+### Step 3 — Launch
+
+<details open>
+<summary><strong>Windows</strong> (run as administrator)</summary>
+
+| Mode | Command |
+|------|---------|
+| Chat — Vulkan | `core\lumina-core.bat` |
+| Chat — CUDA | `core\lumina-core-nvidia.bat` |
+| API — Vulkan | `core\lumina-api.bat` |
+| API — CUDA | `core\lumina-api-nvidia.bat` |
+</details>
+
+<details>
+<summary><strong>Linux</strong></summary>
+
+| Mode | Command |
+|------|---------|
+| Chat — Vulkan | `./core/lumina-core.sh` |
+| Chat — CUDA | `./core/lumina-core-nvidia.sh` |
+| API — Vulkan | `./core/lumina-api.sh` |
+| API — CUDA | `./core/lumina-api-nvidia.sh` |
+</details>
+
+---
+
+## Architecture
+
+![Architecture diagram](assets/lumina_edge_architecture.svg)
+
+---
+
+## How the Memory Optimization Works
+
+
+
+![Memory optimization flowchart](assets/lumina_edge_optimization_flow.svg)
+
+
+**On an 8 GB system, the net result:**
+
+```
+Before optimization   ████████████░░░░░░░░░░░░   ~3.0 GB free
+After optimization    ████████░░░░░░░░░░░░░░░░   ~5.2 GB free   (+73%)
+```
 
 ---
 
@@ -59,109 +142,6 @@ Download, list, and delete quantized models with a numbered menu. No file renami
 
 **OpenAI-Compatible Local API**
 Spin up a fully OpenAI-compatible REST endpoint at `http://127.0.0.1:1234/v1`. Drop it into any existing codebase that uses the OpenAI SDK — change only the `base_url`. Full details in the [API section](#-openai-compatible-api) below.
-
----
-
-## Architecture
-
-![Architecture diagram](assets/file.svg)
-```
-Lumina-Edge/
-├── bin/                        ← llama.cpp binaries (user-provided)
-│   ├── llama-cli (.exe / ELF)
-│   └── llama-server (.exe / ELF)
-├── core/                       ← Execution entry points
-│   ├── lumina-core.bat/.sh          ← Chat, Vulkan backend
-│   ├── lumina-core-nvidia.bat/.sh   ← Chat, CUDA backend
-│   ├── lumina-api.bat/.sh           ← API server, Vulkan
-│   └── lumina-api-nvidia.bat/.sh    ← API server, CUDA
-├── scripts/
-│   ├── optimize_system.ps1     ← Windows memory optimizer
-│   └── optimize_system.sh      ← Linux memory optimizer
-├── models/                     ← Your .gguf files live here
-└── model-manager.bat/.sh       ← Model lifecycle manager
-```
-
----
-
-## Quick Start
-
-### Step 1 — Get the llama.cpp binaries
-
-Download and extract the release from [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases/latest) and extract **all files directly** into `Lumina-Edge/bin/`. Do not create subfolders.
-
-| OS | Your GPU | File to download |
-|----|----------|-----------------|
-| Windows | Intel / AMD (integrated) | `llama-bXXX-bin-win-vulkan-x64.zip` |
-| Windows | NVIDIA | `llama-bXXX-bin-win-cuda-cu12.x-x64.zip` |
-| Linux | Intel / AMD (integrated) | `llama-bXXX-bin-ubuntu-vulkan-x64.tar.gz` |
-| Linux | NVIDIA | `llama-bXXX-bin-ubuntu-x64-cuda.tar.gz` |
-
-> **Linux:** After extracting, make scripts executable:
-> ```bash
-> chmod +x model-manager.sh core/*.sh scripts/*.sh
-> ```
-
-### Step 2 — Download a model
-
-Run `model-manager.bat` on Windows or `./model-manager.sh` on Linux.
-```
-══════════════════════════════════════════
-  LUMINA EDGE  ·  MODEL MANAGER
-══════════════════════════════════════════
-
-  1.  Phi-3-mini-4k-instruct     (2.3 GB)   ← Best for 4 GB RAM
-  2.  TinyLlama-1.1B-Chat        (0.7 GB)   ← Instant responses
-  3.  Mistral-7B-Instruct-v0.2   (4.1 GB)   ← Best quality/speed ratio
-  4.  Llama-3-8B-Instruct        (4.7 GB)   ← Highest quality (8 GB+ RAM)
-  5.  Custom HuggingFace URL               ← Any GGUF model
-  ──────────────────────────────────────
-  6.  List downloaded models
-  7.  Delete a model
-  0.  Exit
-```
-
-### Step 3 — Launch
-
-| Mode | Windows (Run as Admin) | Linux |
-|------|------------------------|-------|
-| Chat — Vulkan | `core\lumina-core.bat` | `./core/lumina-core.sh` |
-| Chat — CUDA | `core\lumina-core-nvidia.bat` | `./core/lumina-core-nvidia.sh` |
-| API Server — Vulkan | `core\lumina-api.bat` | `./core/lumina-api.sh` |
-| API Server — CUDA | `core\lumina-api-nvidia.bat` | `./core/lumina-api-nvidia.sh` |
-
-> Administrator / `sudo` is required only for the memory optimization step. All inference is local with no network access.
-
----
-
-## How the Memory Optimization Works
-
-OS holds 1.5–3 GB of RAM captive in background caches and indexing services. Before any model loads, Lumina Edge reclaims this memory cleanly and reversibly.
-
-### Windows (`optimize_system.ps1`)
-
-1. **Working Set Purge** — Calls `EmptyWorkingSet` (Win32 API) to flush memory pages held by inactive processes back to the available pool.
-2. **Service Suspension** — Pauses `WSearch` (~500 MB), `SysMain` (~300 MB), `WslService` (~300 MB), `DiagTrack` (~200 MB), and `Dps` (~200 MB). Service startup types are temporarily set to `Manual`.
-3. **Memory Agent Tuning** — Disables `MMAgent` memory compression, reducing CPU overhead during quantized weight decoding.
-4. **Auto-Restore** — Writes `%TEMP%\lumina_restore_services.ps1`. Run it anytime to instantly re-enable all services, or simply reboot.
-
-### Linux (`optimize_system.sh`)
-
-1. **Page Cache Flush** — `sync` + `echo 3 > /proc/sys/vm/drop_caches` clears dentries, inodes, and page cache.
-2. **Memory Compaction** — Triggers `compact_memory` to defragment available RAM into contiguous blocks for tensor allocation.
-3. **Daemon Suspension** — Pauses `snapd`, `packagekit`, and `tracker-miner-fs` via `systemctl`.
-4. **THP Bypass** — Sets `transparent_hugepage` to `madvise`, preventing allocation stalls during inference.
-5. **Swappiness Tuning** — Reduces swap aggressiveness to keep model tensors in volatile RAM.
-6. **Auto-Restore** — Writes `/tmp/lumina_restore_services.sh`. All changes revert on reboot automatically.
-
-**On an 8 GB system, the net result:**
-
-```
-Before optimization   ████████████░░░░░░░░░░░░   ~3.0 GB free
-After optimization    ████████░░░░░░░░░░░░░░░░   ~5.2 GB free   (+73%)
-```
-
-
 
 ---
 
@@ -306,36 +286,15 @@ curl http://localhost:1234/v1/chat/completions \
 ```
 
 ---
-
 ## Quantization Guide
 
-All downloaded models use **Q4\_K\_M** by default — the mathematically optimal balance between RAM usage and output quality for consumer hardware. The table below covers the full range if you want to tune for your specific system.
+Think of quantization like image compression — a JPEG takes up less space than a RAW file
+with barely noticeable quality loss at the right setting. Quantization does the same to AI
+models: smaller file, less RAM needed, nearly identical output. Q4\_K\_M is the sweet spot.
 
-| Level | Bits | Size vs FP16 | Quality Impact | Recommended For |
-|-------|------|-------------|---------------|-----------------|
-| Q8\_0 | 8-bit | ~100% | Negligible | 16 GB+ RAM |
-| Q6\_K | 6-bit | ~75% | Very low | 12 GB+ RAM |
-| Q5\_K\_M | 5-bit | ~65% | Low | 10 GB+ RAM |
-| **Q4\_K\_M** | **4-bit** | **~50%** | **Balanced — recommended** | **Most users** |
-| Q3\_K\_M | 3-bit | ~40% | Noticeable | 4 GB RAM only |
+![Quantization spectrum](assets/lumina_edge_quantization.svg)
 
 > **Rule of thumb:** Model file size (GB) + 2 GB overhead must be less than your total RAM.
-
----
-
-## System Requirements
-
-| Component | Minimum | Recommended |
-|-----------|---------|-------------|
-| OS (Windows) | Windows 10 x64 (1909+) | Windows 11 x64 |
-| OS (Linux) | Ubuntu 20.04 / Debian 11 | Ubuntu 24.04 LTS |
-| RAM | 8 GB | 16 GB+ |
-| Storage | 10 GB free | 20 GB+ NVMe SSD |
-
-**Vulkan (Intel / AMD):** Install the Vulkan Runtime from [vulkan.lunarg.com](https://vulkan.lunarg.com) (Windows) or run `sudo apt install mesa-vulkan-drivers` (Linux). Compatible with both Intel and AMD integrated graphics.
-
-**CUDA (NVIDIA):** Requires driver version 535+. Download from [nvidia.com/drivers](https://www.nvidia.com/Download/index.aspx). Compatible with GTX 1050 and all RTX series.
-
 ---
 
 ## Troubleshooting
