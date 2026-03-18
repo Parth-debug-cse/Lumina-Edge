@@ -104,14 +104,6 @@ Run `model-manager` on Windows or  on Linux to download your chosen model.
 
 ![Memory optimization flowchart](assets/lumina_edge_optimization_flow.svg)
 
-
-**On an 8 GB system, the net result:**
-
-```
-Before optimization   ████████████░░░░░░░░░░░░   ~3.0 GB free
-After optimization    ████████░░░░░░░░░░░░░░░░   ~5.2 GB free   (+73%)
-```
-
 ---
 
 ## Why Lumina Edge Outperforms the Alternatives
