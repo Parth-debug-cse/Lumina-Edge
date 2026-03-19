@@ -98,14 +98,6 @@ Run `model-manager` on Windows or  on Linux to download your chosen model.
 
 ---
 
-## How the Memory Optimization Works
-
-
-
-![Memory optimization flowchart](assets/lumina_edge_optimization_flow.svg)
-
----
-
 ## Why Lumina Edge Outperforms the Alternatives
 
 | | LM Studio | Ollama | **Lumina Edge** |
@@ -134,6 +126,11 @@ Download, list, and delete quantized models with a numbered menu. No file renami
 
 **OpenAI-Compatible Local API**
 Spin up a fully OpenAI-compatible REST endpoint at `http://127.0.0.1:1234/v1`. Drop it into any existing codebase that uses the OpenAI SDK — change only the `base_url`. Full details in the [API section](#-openai-compatible-api) below.
+
+---
+## How the Memory Optimization Works
+
+![Memory optimization flowchart](assets/lumina_edge_optimization_flow.svg)
 
 ---
 

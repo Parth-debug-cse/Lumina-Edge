@@ -12,6 +12,12 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# This script is interactive; avoid infinite loops on EOF
+if [[ ! -t 0 ]]; then
+    echo -e "${RED}[ERROR] Non-interactive stdin detected. Run this script in a terminal.${NC}"
+    exit 1
+fi
+
 # ==================================================
 # AUTO-DETECT PROJECT ROOT
 # ==================================================
@@ -106,23 +112,48 @@ pause() {
     if [[ -t 0 ]]; then
         read -n1 -r -p "Press any key to continue..." || true
     else
-        read -r -p "Press Enter to continue..." || true
+        return 0
     fi
     echo ""
 }
+
+# ==================================================
+# VERSION CHECK (fetch once)
+# ==================================================
+BUILD_DIFF=0
+if [[ -x "$ROOT/bin/llama-cli" ]]; then
+    LOCAL_BUILD=$("$ROOT/bin/llama-cli" --version 2>/dev/null | grep -o 'b[0-9]*' | head -1 | tr -d 'b' || echo "")
+    if [[ -n "$LOCAL_BUILD" ]]; then
+        if [[ "$DOWNLOAD_TOOL" == "curl" ]]; then
+            LATEST_BUILD=$(curl -s "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" | grep '"tag_name"' | head -1 | grep -o 'b[0-9]*' | tr -d 'b' || echo "")
+        else
+            LATEST_BUILD=$(wget -qO- "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" | grep '"tag_name"' | head -1 | grep -o 'b[0-9]*' | tr -d 'b' || echo "")
+        fi
+
+        if [[ -n "$LATEST_BUILD" ]] && [[ "$LATEST_BUILD" =~ ^[0-9]+$ ]] && [[ "$LOCAL_BUILD" =~ ^[0-9]+$ ]]; then
+            BUILD_DIFF=$(( LATEST_BUILD - LOCAL_BUILD ))
+        fi
+    fi
+fi
 
 # ==================================================
 # MAIN MENU
 # ==================================================
 main_menu() {
     while true; do
-        clear
+        clear 2>/dev/null || true
         echo "=================================================="
         echo "  LUMINA EDGE :: MODEL MANAGER"
         echo "=================================================="
         echo ""
         echo "  Models location: $MODELS"
         echo ""
+
+        if [[ $BUILD_DIFF -gt 30 ]]; then
+            echo -e "${YELLOW}[!] Your llama.cpp binaries may be outdated (local: b${LOCAL_BUILD}, latest: b${LATEST_BUILD}).${NC}"
+            echo -e "${YELLOW}    Re-download from: github.com/ggml-org/llama.cpp/releases${NC}"
+            echo ""
+        fi
         echo "  1. Download a new model"
         echo "  2. List downloaded models"
         echo "  3. Delete a model"
@@ -130,7 +161,7 @@ main_menu() {
         echo ""
         echo "=================================================="
         echo ""
-        read -r -p "lumina@edge> " choice
+        read -r -p "lumina@edge> " choice || true
 
         case "$choice" in
             1) download_menu ;;
@@ -146,7 +177,7 @@ main_menu() {
 # DOWNLOAD MENU - PREDEFINED MODELS
 # ==================================================
 download_menu() {
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "  DOWNLOAD A MODEL"
     echo "=================================================="
@@ -157,12 +188,14 @@ download_menu() {
     echo "  2. TinyLlama-1.1B-Chat     (0.7GB) - Very small, very fast"
     echo "  3. Mistral-7B-Instruct-v0.2 (4.1GB) - Balanced quality"
     echo "  4. Llama-3-8B-Instruct      (4.7GB) - High quality"
-    echo "  5. Custom URL"
+    echo "  5. Mistral-7B-Instruct IQ4_XS  (4.0GB) - Better quality than Q4_K_M, same size"
+    echo "  6. Llama-3-8B-Instruct IQ4_XS  (4.6GB) - Better quality than Q4_K_M, same size"
+    echo "  7. Custom URL"
     echo "  0. Back"
     echo ""
     echo "=================================================="
     echo ""
-    read -r -p "Select model to download: " choice
+    read -r -p "Select model to download: " choice || true
 
     case "$choice" in
         1)
@@ -186,6 +219,16 @@ download_menu() {
             do_download
             ;;
         5)
+            MODEL_URL="https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3-IQ4_XS.gguf"
+            MODEL_NAME="Mistral-7B-Instruct-v0.3-IQ4_XS.gguf"
+            do_download
+            ;;
+        6)
+            MODEL_URL="https://huggingface.co/bartowski/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct-IQ4_XS.gguf"
+            MODEL_NAME="Meta-Llama-3-8B-Instruct-IQ4_XS.gguf"
+            do_download
+            ;;
+        7)
             custom_download
             ;;
         0) return ;;
@@ -197,7 +240,7 @@ download_menu() {
 # CUSTOM DOWNLOAD
 # ==================================================
 custom_download() {
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "  CUSTOM MODEL DOWNLOAD"
     echo "=================================================="
@@ -210,7 +253,7 @@ custom_download() {
     echo ""
     echo "=================================================="
     echo ""
-    read -r -p "URL: " MODEL_URL
+    read -r -p "URL: " MODEL_URL || true
 
     if [[ -z "$MODEL_URL" ]]; then
         return
@@ -231,7 +274,7 @@ custom_download() {
     if [[ ! "$MODEL_NAME" =~ \.gguf$ ]]; then
         echo ""
         echo -e "${YELLOW}[WARNING] Filename does not end with .gguf. Continue anyway?${NC}"
-        read -r -p "Continue? (Y/N): " confirm_gguf
+        read -r -p "Continue? (Y/N): " confirm_gguf || true
         if [[ "${confirm_gguf^^}" != "Y" ]]; then
             return
         fi
@@ -240,7 +283,7 @@ custom_download() {
     echo ""
     echo "Model will be saved as: $MODEL_NAME"
     echo ""
-    read -r -p "Continue? (Y/N): " confirm
+    read -r -p "Continue? (Y/N): " confirm || true
     if [[ "${confirm^^}" != "Y" ]]; then
         return
     fi
@@ -252,7 +295,7 @@ custom_download() {
 # DOWNLOAD PROCESS
 # ==================================================
 do_download() {
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "  DOWNLOADING MODEL"
     echo "=================================================="
@@ -270,7 +313,7 @@ do_download() {
     if [[ -f "$MODELS/$MODEL_NAME" ]]; then
         echo -e "${YELLOW}[WARNING] Model already exists: $MODEL_NAME${NC}"
         echo ""
-        read -r -p "Overwrite? (Y/N): " overwrite
+        read -r -p "Overwrite? (Y/N): " overwrite || true
         if [[ "${overwrite^^}" != "Y" ]]; then
             return
         fi
@@ -314,7 +357,7 @@ do_download() {
             fi
         fi
         
-        clear
+        clear 2>/dev/null || true
         echo "=================================================="
         echo "  DOWNLOAD COMPLETE"
         echo "=================================================="
@@ -331,7 +374,7 @@ do_download() {
 }
 
 download_failed() {
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "  DOWNLOAD FAILED"
     echo "=================================================="
@@ -351,7 +394,7 @@ download_failed() {
 # LIST DOWNLOADED MODELS
 # ==================================================
 list_models() {
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "  DOWNLOADED MODELS"
     echo "=================================================="
@@ -387,7 +430,7 @@ list_models() {
 # DELETE MODEL
 # ==================================================
 delete_model() {
-    clear
+    clear 2>/dev/null || true
     echo "=================================================="
     echo "  DELETE A MODEL"
     echo "=================================================="
@@ -417,7 +460,7 @@ delete_model() {
     echo ""
     echo "  0. Cancel"
     echo ""
-    read -r -p "Enter number: " choice
+    read -r -p "Enter number: " choice || true
 
     if [[ "$choice" == "0" ]] || [[ -z "$choice" ]]; then
         return
@@ -438,7 +481,7 @@ delete_model() {
     echo ""
     echo "  Deleting: $target_name"
     echo ""
-    read -r -p "Are you sure? (Y/N): " confirm
+    read -r -p "Are you sure? (Y/N): " confirm || true
     if [[ "${confirm^^}" != "Y" ]]; then
         return
     fi
