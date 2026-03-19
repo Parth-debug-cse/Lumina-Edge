@@ -119,7 +119,8 @@ fi
 #    tensor dequantization, similar to disabling memory compression)
 # ------------------------------------------------------------------
 if $HAVE_ROOT && [[ -f /sys/kernel/mm/transparent_hugepage/enabled ]]; then
-    THP_BEFORE=$(grep -oP '\[\K[^\]]+' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo "always")
+    THP_BEFORE=$(sed -n 's/.*\[\([^]]*\)\].*/\1/p' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null | head -n 1)
+    THP_BEFORE="${THP_BEFORE:-always}"
     echo -e "${GREEN}[+] Disabling Transparent Huge Pages (was: $THP_BEFORE)...${NC}"
     echo madvise > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
     echo "echo $THP_BEFORE > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true" >> "$RESTORE_SCRIPT"

@@ -91,13 +91,14 @@ echo Available models:
 echo.
 
 set MODEL_COUNT=0
-for %%F in ("%MODELS%\*.gguf") do (
+for /f "usebackq delims=" %%F in (`dir /b /a:-d "%MODELS%\*.gguf" 2^>nul`) do (
     set /a MODEL_COUNT+=1
-    set MODEL_!MODEL_COUNT!=%%F
-    set MODEL_NAME_!MODEL_COUNT!=%%~nxF
-    for %%G in ("%%F") do set MODEL_SIZE_!MODEL_COUNT!=%%~zG
-    echo   !MODEL_COUNT!. %%~nxF
-    echo      Size: %%~zG bytes
+    set "MODEL_!MODEL_COUNT!=%MODELS%\%%F"
+    set "MODEL_NAME_!MODEL_COUNT!=%%F"
+    set "CUR_NAME=%%F"
+    for %%G in ("%MODELS%\%%F") do set "CUR_SIZE=%%~zG"
+    echo   !MODEL_COUNT!. !CUR_NAME!
+    echo      Size: !CUR_SIZE! bytes
     echo.
 )
 
@@ -189,11 +190,42 @@ echo   STAGE 1 :: MEMORY RECLAMATION
 echo ==================================================
 echo.
 
-powershell -ExecutionPolicy Bypass -File "%SCRIPTS%\optimize_system.ps1"
+if exist "%SCRIPTS%\optimize_system.ps1" (
+    powershell -ExecutionPolicy Bypass -File "%SCRIPTS%\optimize_system.ps1"
+    if !ERRORLEVEL! NEQ 0 (
+        echo [WARN] Optimization step failed or was skipped.
+    )
+) else (
+    echo [WARN] %SCRIPTS%\optimize_system.ps1 not found. Skipping optimization.
+)
 
 echo.
 echo [OK] Memory optimization complete.
 timeout /t 1 >nul
+
+:: ==================================================
+:: CONFIG PARSING & VRAM DETECTION
+:: ==================================================
+FOR /F "usebackq delims=" %%i IN (`powershell -NoProfile -Command "try { $c = (Get-Content config.json -Raw | ConvertFrom-Json); if ($null -ne $c.ctx_size) { $c.ctx_size } else { 2048 } } catch { 2048 }"`) DO SET CTX_SIZE=%%i
+FOR /F "usebackq delims=" %%i IN (`powershell -NoProfile -Command "try { $c = (Get-Content config.json -Raw | ConvertFrom-Json); if ($null -ne $c.batch_size) { $c.batch_size } else { 512 } } catch { 512 }"`) DO SET BATCH_SIZE=%%i
+FOR /F "usebackq delims=" %%i IN (`powershell -NoProfile -Command "try { $c = (Get-Content config.json -Raw | ConvertFrom-Json); if ($null -ne $c.ubatch_size) { $c.ubatch_size } else { 256 } } catch { 256 }"`) DO SET UBATCH_SIZE=%%i
+FOR /F "usebackq delims=" %%i IN (`powershell -NoProfile -Command "try { $c = (Get-Content config.json -Raw | ConvertFrom-Json); if ($null -ne $c.n_gpu_layers) { $c.n_gpu_layers } else { 'auto' } } catch { 'auto' }"`) DO SET N_GPU_LAYERS=%%i
+
+set GPU_LAYERS=20
+set PRINT_VRAM=0
+if /i "!N_GPU_LAYERS!"=="auto" (
+    FOR /F "delims=" %%V IN ('powershell -NoProfile -Command "try { [math]::Floor((Get-WmiObject Win32_VideoController | Sort-Object AdapterRAM -Descending | Select-Object -First 1).AdapterRAM / 1048576) } catch { -1 }"') DO SET VRAM_MB=%%V
+    if !VRAM_MB! GTR -1 (
+        if !VRAM_MB! LSS 1024 set GPU_LAYERS=0
+        if !VRAM_MB! GEQ 1024 if !VRAM_MB! LSS 2048 set GPU_LAYERS=10
+        if !VRAM_MB! GEQ 2048 if !VRAM_MB! LSS 4096 set GPU_LAYERS=20
+        if !VRAM_MB! GEQ 4096 if !VRAM_MB! LSS 6144 set GPU_LAYERS=33
+        if !VRAM_MB! GEQ 6144 set GPU_LAYERS=40
+        set PRINT_VRAM=1
+    )
+) else (
+    set GPU_LAYERS=!N_GPU_LAYERS!
+)
 
 cls
 echo ==================================================
@@ -202,9 +234,13 @@ echo ==================================================
 echo.
 echo   Model   : %SELECTED_NAME%
 echo   Backend : Vulkan (Integrated GPU)
-echo   Context : 3072 tokens
+echo   Context : !CTX_SIZE! tokens
 echo   Threads : 4
 echo.
+if !PRINT_VRAM! EQU 1 (
+    echo [Lumina] VRAM detected: !VRAM_MB! MB -^> offloading !GPU_LAYERS! layers to GPU
+    echo.
+)
 echo Press CTRL+C to exit chat.
 echo ==================================================
 echo.
@@ -212,7 +248,12 @@ echo.
 "%BIN%\llama-cli.exe" ^
 -m "%MODEL%" ^
 -t 4 ^
--c 3072 ^
+-c !CTX_SIZE! ^
+--batch-size !BATCH_SIZE! ^
+--ubatch-size !UBATCH_SIZE! ^
+--n-gpu-layers !GPU_LAYERS! ^
+--flash-attn ^
+--mlock ^
 --color auto ^
 -cnv ^
 --multiline-input ^

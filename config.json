@@ -1,0 +1,6 @@
+{
+  "ctx_size": 2048,
+  "batch_size": 512,
+  "ubatch_size": 256,
+  "n_gpu_layers": "auto"
+}

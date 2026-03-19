@@ -11,6 +11,12 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# This script is interactive; avoid infinite loops on EOF
+if [[ ! -t 0 ]]; then
+    echo "ERROR :: Non-interactive stdin detected. Run this script in a terminal."
+    exit 1
+fi
+
 # Auto-detect project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -24,7 +30,7 @@ pause() {
     if [[ -t 0 ]]; then
         read -n1 -r -p "Press any key to continue..." || true
     else
-        read -r -p "Press Enter to continue..." || true
+        return 0
     fi
     echo ""
 }
@@ -35,6 +41,16 @@ human_size() {
     elif [[ $bytes -ge 1048576 ]]; then awk -v b="$bytes" 'BEGIN { printf "%.1f MB\n", b / 1048576 }'
     elif [[ $bytes -ge 1024 ]]; then awk -v b="$bytes" 'BEGIN { printf "%.1f KB\n", b / 1024 }'
     else echo "$bytes bytes"; fi
+}
+
+get_config() {
+    local key="$1"
+    local default="$2"
+    if command -v python3 &>/dev/null; then
+        python3 -c "import json; print(json.load(open('config.json')).get('$key', $default))" 2>/dev/null || echo "$default"
+    else
+        echo "$default"
+    fi
 }
 
 # Check for NVIDIA GPU
@@ -86,7 +102,7 @@ select_model() {
             ((model_count++)) || true; model_paths+=("$f")
             local fname; fname="$(basename "$f")"
             model_names+=("$fname")
-            local fsize; fsize=$(stat --format="%s" "$f" 2>/dev/null || echo "0")
+            local fsize; fsize=$(stat --format="%s" "$f" 2>/dev/null || stat -f "%z" "$f" 2>/dev/null || echo "0")
             echo "  $model_count. $fname"; echo "     Size: $(human_size "$fsize")"; echo ""
         done; shopt -u nullglob
         if [[ $model_count -eq 0 ]]; then
@@ -147,21 +163,66 @@ init_server() {
     fi
     echo ""; echo -e "${GREEN}[OK] Memory optimization complete.${NC}"; sleep 1
 
+    # ==================================================
+    # CONFIG PARSING & VRAM DETECTION
+    # ==================================================
+    CTX_SIZE="$(get_config ctx_size 2048)"
+    BATCH_SIZE="$(get_config batch_size 512)"
+    UBATCH_SIZE="$(get_config ubatch_size 256)"
+    N_GPU_LAYERS="$(get_config n_gpu_layers '"auto"')"
+
+    GPU_LAYERS=20
+    PRINT_VRAM=0
+    
+    if [[ "$N_GPU_LAYERS" == "auto" ]]; then
+        VRAM_MB=""
+        if command -v nvidia-smi &>/dev/null; then
+            VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n 1 | awk '{print $1}')
+        fi
+        if [[ -z "$VRAM_MB" ]] && [[ -f /sys/class/drm/card0/device/mem_info_vram_total ]]; then
+            VRAM_BYTES=$(cat /sys/class/drm/card0/device/mem_info_vram_total 2>/dev/null)
+            if [[ -n "$VRAM_BYTES" ]]; then VRAM_MB=$((VRAM_BYTES / 1024 / 1024)); fi
+        fi
+        if [[ -z "$VRAM_MB" ]] && command -v glxinfo &>/dev/null; then
+            VRAM_MB=$(glxinfo 2>/dev/null | grep -i "Video memory" | awk '{print $3}')
+        fi
+        
+        if [[ -n "$VRAM_MB" ]] && [[ "$VRAM_MB" =~ ^[0-9]+$ ]]; then
+            if [[ "$VRAM_MB" -lt 1024 ]]; then GPU_LAYERS=0;
+            elif [[ "$VRAM_MB" -lt 2048 ]]; then GPU_LAYERS=10;
+            elif [[ "$VRAM_MB" -lt 4096 ]]; then GPU_LAYERS=20;
+            elif [[ "$VRAM_MB" -lt 6144 ]]; then GPU_LAYERS=33;
+            else GPU_LAYERS=40; fi
+            PRINT_VRAM=1
+        fi
+    else
+        GPU_LAYERS="$N_GPU_LAYERS"
+    fi
+
     clear 2>/dev/null || true; echo "=================================================="; echo "  STAGE 2 :: STARTING API SERVER"
     echo "=================================================="; echo ""
     echo "  OpenAI-compatible endpoint: http://127.0.0.1:$PORT/v1"; echo ""
     echo "  Model      : $SELECTED_NAME"; echo "  Backend    : NVIDIA CUDA"
-    echo "  Context    : 4096 tokens"; echo "  Threads    : 4"
-    echo "  GPU Layers : 20"; echo ""
+    echo "  Context    : $CTX_SIZE tokens"; echo "  Threads    : 4"
+    echo "  GPU Layers : $GPU_LAYERS"; echo ""
+    if [[ $PRINT_VRAM -eq 1 ]]; then
+        echo "[Lumina] VRAM detected: $VRAM_MB MB -> offloading $GPU_LAYERS layers to GPU"
+        echo ""
+    fi
     echo "Press Ctrl+C to stop the server."; echo "=================================================="; echo ""
 
     trap 'echo ""; echo "  SERVER STOPPED"; echo ""' SIGINT
     "$SERVER_EXE" -m "$SELECTED_MODEL" --host 127.0.0.1 --port "$PORT" \
-        --ctx-size 4096 --threads 4 --n-gpu-layers 20 --parallel 1 --verbose || true
+        --ctx-size "$CTX_SIZE" --batch-size "$BATCH_SIZE" --ubatch-size "$UBATCH_SIZE" \
+        --n-gpu-layers "$GPU_LAYERS" --flash-attn --mlock --threads 4 --parallel 1 --verbose || true
     trap - SIGINT
 
     echo "If unexpected: port in use, insufficient GPU memory, CUDA drivers missing"
-    read -r -p "Return to menu? (Y/N): " restart || true
+    if [[ -t 0 ]]; then
+        read -r -p "Return to menu? (Y/N): " restart || true
+    else
+        restart="N"
+    fi
     if [[ "${restart^^}" != "Y" ]]; then exit 0; fi
 }
 

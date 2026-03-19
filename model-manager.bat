@@ -22,6 +22,29 @@ if not exist "%MODELS%" (
 )
 
 :: ==================================================
+:: VERSION CHECK (fetch once)
+:: ==================================================
+set LOCAL_BUILD=
+set LATEST_BUILD=
+set BUILD_DIFF=0
+set BIN=%ROOT%\bin
+if exist "%BIN%\llama-cli.exe" (
+    FOR /F "tokens=2 delims=b" %%A IN ('"%BIN%\llama-cli.exe" --version 2^>nul ^| findstr /C:"version:"') DO (
+        FOR /F "delims=)" %%B IN ("%%A") DO SET LOCAL_BUILD=%%B
+    )
+    if defined LOCAL_BUILD (
+        FOR /F "tokens=*" %%T IN ('powershell -NoProfile -Command "try { (Invoke-RestMethod 'https://api.github.com/repos/ggml-org/llama.cpp/releases/latest' -ErrorAction Stop).tag_name.Substring(1) } catch { '' }"') DO SET LATEST_BUILD=%%T
+        if defined LATEST_BUILD (
+            echo(!LOCAL_BUILD!| findstr /r "^[0-9][0-9]*$" >nul && (
+                echo(!LATEST_BUILD!| findstr /r "^[0-9][0-9]*$" >nul && (
+                    set /a BUILD_DIFF=!LATEST_BUILD! - !LOCAL_BUILD!
+                )
+            )
+        )
+    )
+)
+
+:: ==================================================
 :: MAIN MENU
 :: ==================================================
 :main_menu
@@ -32,6 +55,12 @@ echo ==================================================
 echo.
 echo   Models location: %MODELS%
 echo.
+
+if !BUILD_DIFF! GTR 30 (
+    echo [^^!] Your llama.cpp binaries may be outdated ^(local: b!LOCAL_BUILD!, latest: b!LATEST_BUILD!^).
+    echo     Re-download from: github.com/ggml-org/llama.cpp/releases
+    echo.
+)
 echo   1. Download a new model
 echo   2. List downloaded models
 echo   3. Delete a model
@@ -62,7 +91,9 @@ echo   1. Phi-3-mini-4k-instruct  (2.3GB) - Fast, good for 4GB RAM
 echo   2. TinyLlama-1.1B-Chat     (0.7GB) - Very small, very fast
 echo   3. Mistral-7B-Instruct-v0.2 (4.1GB) - Balanced quality
 echo   4. Llama-3-8B-Instruct      (4.7GB) - High quality
-echo   5. Custom URL
+echo   5. Mistral-7B-Instruct IQ4_XS  (4.0GB) - Better quality than Q4_K_M, same size
+echo   6. Llama-3-8B-Instruct IQ4_XS  (4.6GB) - Better quality than Q4_K_M, same size
+echo   7. Custom URL
 echo   0. Back
 echo.
 echo ==================================================
@@ -90,7 +121,17 @@ if "%choice%"=="4" (
     set MODEL_NAME=llama-3-8b-instruct.Q4_K_M.gguf
     goto download
 )
-if "%choice%"=="5" goto custom_download
+if "%choice%"=="5" (
+    set MODEL_URL=https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3-IQ4_XS.gguf
+    set MODEL_NAME=Mistral-7B-Instruct-v0.3-IQ4_XS.gguf
+    goto download
+)
+if "%choice%"=="6" (
+    set MODEL_URL=https://huggingface.co/bartowski/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct-IQ4_XS.gguf
+    set MODEL_NAME=Meta-Llama-3-8B-Instruct-IQ4_XS.gguf
+    goto download
+)
+if "%choice%"=="7" goto custom_download
 if "%choice%"=="0" goto main_menu
 goto download_menu
 
@@ -199,10 +240,10 @@ echo   Location: %MODELS%
 echo.
 
 set count=0
-for %%F in ("%MODELS%\*.gguf") do (
+for /f "usebackq delims=" %%F in (`dir /b /a:-d "%MODELS%\*.gguf" 2^>nul`) do (
     set /a count+=1
-    echo   !count!. %%~nxF
-    for %%G in ("%%F") do echo      Size: %%~zG bytes
+    echo   !count!. %%F
+    for %%G in ("%MODELS%\%%F") do echo      Size: %%~zG bytes
     echo.
 )
 
@@ -229,10 +270,10 @@ echo   Select a model to delete:
 echo.
 
 set count=0
-for %%F in ("%MODELS%\*.gguf") do (
+for /f "usebackq delims=" %%F in (`dir /b /a:-d "%MODELS%\*.gguf" 2^>nul`) do (
     set /a count+=1
-    set model!count!=%%~nxF
-    echo   !count!. %%~nxF
+    set "model!count!=%%F"
+    echo   !count!. %%F
 )
 
 if %count% EQU 0 (
