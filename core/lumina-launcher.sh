@@ -521,7 +521,7 @@ launch_api() {
     fi
     
     # Build command with environment variables based on GPU backend
-    local cmd=("$SERVER_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -c "$CTX_SIZE" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE" --n-gpu-layers "$GPU_LAYERS" -p "$PORT")
+    local cmd=("$SERVER_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -c "$CTX_SIZE" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE" --n-gpu-layers "$GPU_LAYERS" --temp "$TEMPERATURE" -p "$PORT")
     
     "${cmd[@]}"
 }
@@ -560,8 +560,24 @@ launch_core() {
     echo ""
     progress_bar "Warming prompt engine" 12 0.02
     
+    if [[ "$OPT_BENCHMARK" == true ]]; then
+        BENCH_EXE=$(select_executable "bench")
+        if [[ -n "$BENCH_EXE" ]]; then
+            status "Running benchmark before core..."
+            echo ""
+            "$BENCH_EXE" -m "$SELECTED_MODEL" --n-gpu-layers "$GPU_LAYERS" -o json 2>/dev/null || true
+            echo ""
+            divider
+            echo ""
+        fi
+    fi
+    
     # Build command
-    local cmd=("$CLI_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -c "$CTX_SIZE" -n 128 --n-gpu-layers "$GPU_LAYERS")
+    local cmd=("$CLI_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -c "$CTX_SIZE" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE" -n 128 --n-gpu-layers "$GPU_LAYERS" --temp "$TEMPERATURE")
+    
+    if [[ "$OPT_JSON_OUTPUT" == true ]]; then
+        cmd+=("--format" "json")
+    fi
     
     "${cmd[@]}"
 }

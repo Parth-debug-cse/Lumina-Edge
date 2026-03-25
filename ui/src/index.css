@@ -3,6 +3,8 @@
    Deep dark glassmorphism with electric violet accent
    ======================================================== */
 
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
@@ -55,9 +57,10 @@
   --sidebar-w: 220px;
 }
 
+
 html { font-size: 15px; }
 body {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Outfit', 'Inter', system-ui, sans-serif;
   background: var(--bg-base);
   color: var(--text-primary);
   line-height: 1.6;
@@ -121,7 +124,7 @@ body {
 .logo-name {
   font-size: 0.9rem; font-weight: 700; letter-spacing: 0.02em;
   background: linear-gradient(90deg, #fff, var(--text-accent));
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
 }
 .logo-version {
   font-size: 0.65rem; color: var(--text-muted); letter-spacing: 0.04em;
@@ -666,7 +669,7 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.25); }
   font-size: 2rem; font-weight: 800;
   font-family: 'JetBrains Mono', monospace;
   background: linear-gradient(135deg, #fff, var(--text-accent));
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
   line-height: 1.2; margin-bottom: 4px;
 }
 .stat-label { font-size: 0.68rem; color: var(--text-muted); font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
