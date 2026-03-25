@@ -135,3 +135,231 @@ export async function getSupportedFormats() {
     return { formats: ['gguf', 'safetensors', 'bin', 'pt'], converter_available: false }
   }
 }
+
+// ============================================================
+// MULTI-MODEL ROUTING & PARALLEL LOADING
+// ============================================================
+
+/**
+ * Get multi-model router status
+ */
+export async function getRouterStatus() {
+  try {
+    const res = await fetch('/api/router/status')
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Get all registered models in router
+ */
+export async function getRegisteredModels() {
+  try {
+    const res = await fetch('/api/router/models')
+    if (!res.ok) return []
+    const data = await res.json()
+    return data.models || []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Get model routes (endpoints) for available models
+ */
+export async function getModelRoutes() {
+  try {
+    const res = await fetch('/api/router/routes')
+    if (!res.ok) return []
+    const data = await res.json()
+    return data.routes || []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Load a model via router (parallel loading)
+ * @param {string} modelPath - Path to model file
+ * @param {number} portOffset - Port offset from base (for parallel instances)
+ * @returns {Promise<Object>} - Instance info
+ */
+export async function loadModel(modelPath, portOffset = 0) {
+  try {
+    const res = await fetch('/api/router/load', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model_path: modelPath,
+        port_offset: portOffset,
+      }),
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Load error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to load model: ${err.message}`)
+  }
+}
+
+/**
+ * Unload a model via router
+ * @param {string} modelId - Model instance ID
+ * @returns {Promise<Object>} - Confirmation
+ */
+export async function unloadModel(modelId) {
+  try {
+    const res = await fetch(`/api/router/unload/${modelId}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Unload error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to unload model: ${err.message}`)
+  }
+}
+
+/**
+ * Set routing policy for multi-model requests
+ * @param {string} policy - 'round-robin', 'load-balanced', or 'first-available'
+ */
+export async function setRoutingPolicy(policy) {
+  try {
+    const res = await fetch('/api/router/policy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ policy }),
+    })
+    if (!res.ok) throw new Error(`Policy error ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to set routing policy: ${err.message}`)
+  }
+}
+
+/**
+ * Stream chat with model selection (router picks best model)
+ */
+export async function streamChatWithRouting({ messages, routerSelection = 'auto', temperature = 0.7, topP = 0.9, onChunk, signal }) {
+  try {
+    // If auto, let router decide. Otherwise, specify model endpoint
+    const endpoint = routerSelection === 'auto' ? `${BASE_URL}/chat/completions` : routerSelection
+    
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      body: JSON.stringify({
+        model: 'local',
+        messages,
+        temperature,
+        top_p: topP,
+        stream: true,
+      }),
+    })
+
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Server error ${res.status}: ${err}`)
+    }
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop()
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed || trimmed === 'data: [DONE]') continue
+        if (!trimmed.startsWith('data: ')) continue
+        try {
+          const json = JSON.parse(trimmed.slice(6))
+          const delta = json.choices?.[0]?.delta?.content
+          if (delta) onChunk(delta)
+        } catch {
+          // skip malformed
+        }
+      }
+    }
+  } catch (err) {
+    throw new Error(`Streaming failed: ${err.message}`)
+  }
+}
+
+// ============================================================
+// SHARDED MODEL DETECTION & CONVERSION
+// ============================================================
+
+/**
+ * Detect if a model is sharded
+ * @param {string} modelPath - Path to model directory or file
+ */
+export async function detectModelShards(modelPath) {
+  try {
+    const res = await fetch('/api/convert/detect-shards', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_path: modelPath }),
+    })
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Convert sharded model to GGUF
+ * @param {string} modelPath - Path to sharded model directory
+ * @param {string} outputPath - Output GGUF file path
+ * @param {string} quantization - Quantization method
+ */
+export async function convertShardedModel(modelPath, outputPath, quantization = 'Q4_K_M') {
+  try {
+    const res = await fetch('/api/convert/sharded', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model_path: modelPath,
+        output_path: outputPath,
+        quantization,
+      }),
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Conversion error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to convert sharded model: ${err.message}`)
+  }
+}
+
+/**
+ * Get memory estimate for sharded model
+ */
+export async function getShardedModelMemory(modelPath) {
+  try {
+    const res = await fetch('/api/convert/memory-estimate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_path: modelPath }),
+    })
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}

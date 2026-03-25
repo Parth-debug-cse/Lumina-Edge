@@ -59,40 +59,122 @@ Download and extract the release from [ggml-org/llama.cpp](https://github.com/gg
 > chmod +x model-manager.sh core/*.sh scripts/*.sh
 > ```
 
-### Step 2 — Pick a model
+### Step 2 — Manage Models
 
+Run the **cross-platform model manager** to download your chosen model:
 
-![Model selection decision tree](assets/lumina_edge_model_picker.svg)
+```bash
+# Windows
+python core/lumina-model-manager.py
 
-Run `model-manager` on Windows or  on Linux to download your chosen model.
+# Linux
+python3 core/lumina-model-manager.py
+```
 
-### Step 3 — Launch
+Browse popular models (Llama 2, Mistral, Phi, etc.) or enter a custom HuggingFace repository.
 
-<details open>
-<summary><strong>Windows</strong> (run as administrator)</summary>
+### Step 3 — Launch with Unified Launcher
 
-| Mode | Command |
-|------|---------|
-| Chat — Vulkan | `core\lumina-core.bat` |
-| Chat — CUDA | `core\lumina-core-nvidia.bat` |
-| API — Vulkan | `core\lumina-api.bat` |
-| API — CUDA | `core\lumina-api-nvidia.bat` |
-</details>
+The **unified launcher** handles mode selection, GPU backend detection, and configuration:
 
-<details>
-<summary><strong>Linux</strong></summary>
+#### Windows
+```bash
+# API mode with Vulkan
+core\lumina-launcher.bat --mode api --gpu vulkan
 
-| Mode | Command |
-|------|---------|
-| Chat — Vulkan | `./core/lumina-core.sh` |
-| Chat — CUDA | `./core/lumina-core-nvidia.sh` |
-| API — Vulkan | `./core/lumina-api.sh` |
-| API — CUDA | `./core/lumina-api-nvidia.sh` |
-</details>
+# Chat mode with NVIDIA CUDA
+core\lumina-launcher.bat --mode core --gpu nvidia
+
+# Multi-model router
+core\lumina-launcher.bat --mode router --gpu cuda
+```
+
+#### Linux
+```bash
+# API mode with Vulkan
+./core/lumina-launcher.sh --mode api --gpu vulkan
+
+# Chat mode with NVIDIA CUDA
+./core/lumina-launcher.sh --mode core --gpu nvidia
+
+# Multi-model router
+./core/lumina-launcher.sh --mode router --gpu nvidia
+```
+
+**Launcher Options:**
+- `--mode {api|core|router}` - Select mode (required)
+- `--gpu {vulkan|nvidia}` - Select GPU backend (required)
+- `--benchmark` - Run inline benchmark after startup
+- `--json-output` - Output results as JSON
+- `--help` - Show full usage
+
+**Old Scripts (Deprecated):** The individual scripts (`lumina-core.sh`, `lumina-api-nvidia.bat`, etc.) are still available for backwards compatibility but are deprecated. All functionality is now unified in `lumina-launcher.*`.
+
+### Step 4 — (Optional) System Optimization
+
+**Before inference on resource-constrained systems**, free 1–2 GB of RAM:
+
+```bash
+# Windows (run as Administrator)
+python core/lumina-model-manager.py
+
+# Linux (run with sudo for full optimization)
+sudo python3 scripts/optimize_system.py
+```
+
+This suspends non-critical system services, drops filesystem caches, and disables memory compression — all fully reversible.
 
 ---
 
-## Architecture
+## Why Consolidation Matters
+
+Lumina Edge was built to be **simple to understand and use**. That includes the code itself.
+
+Before, launching a model meant choosing between 10 different scripts — one per combination of OS, mode (API vs chat), and GPU backend. That's 10 files doing nearly identical work. The project was hard to maintain and confusing to navigate.
+
+**Unified Launcher**
+All modes — API, interactive chat, multi-model routing — now use a single entry point with clear flags instead of searching for the right filename.
+
+```bash
+# Before: Memorize 10 different script names
+./core/lumina-api-nvidia.sh           # "Is this the right one?"
+vs
+# After: Same interface, every time
+./core/lumina-launcher.sh --mode api --gpu nvidia
+```
+
+**Cross-Platform Python Tools**
+Model manager, system optimizer, model converter — all rewritten in Python. One tool, all platforms. No more separate `.sh` and `.bat` versions.
+
+**Reusable React Components**
+Export buttons no longer duplicated across UI panels. Less code to maintain means fewer bugs.
+
+---
+
+## The New Structure
+
+```
+core/
+├── lumina-launcher.sh        ← Your entry point (Linux)
+├── lumina-launcher.bat       ← Your entry point (Windows)
+└── lumina-model-manager.py   ← Get & manage models (all OS)
+
+scripts/
+├── optimize_system.py        ← Free RAM before inference (all OS)
+├── model-converter.py        ← Convert models to GGUF
+├── model-router.py           ← Multi-model dispatcher
+└── shard-loader.py           ← HuggingFace shard support
+
+ui/
+├── src/components/ExportButtons.jsx   ← Shared UI element
+└── (other React components)
+```
+
+**Old scripts remain for backward compatibility.** No breaking changes. Migrate at your own pace.
+
+---
+
+## Configuration
 
 ![Architecture diagram](assets/lumina_edge_architecture.svg)
 
@@ -410,12 +492,225 @@ Alternatively, a full system reboot restores all services automatically.
 
 ---
 
+## Multi-Model Parallel Loading & Routing
+
+Lumina Edge now supports loading and running **multiple models in parallel**, with intelligent request routing between them. Perfect for load balancing, A/B testing different models, or running specialized models for different tasks.
+
+### Quick Start — Multi-Model Mode
+
+#### Linux
+```bash
+# Run the multi-model router setup (Vulkan)
+bash core/lumina-multi-model.sh
+
+# Or with NVIDIA CUDA
+bash core/lumina-multi-model-nvidia.sh
+```
+
+#### Windows
+```batch
+# Run multi-model router setup
+core\lumina-multi-model.bat
+```
+
+The script will:
+1. **Detect** all models in `models/` directory
+2. **Prompt ** you to select which models to load
+3. **Configure** routing policy (round-robin, load-balanced, or first-available)
+4. **Load** models in parallel on separate ports (8000, 8001, 8002, etc.)
+
+### Routing Policies
+
+| Policy | Behavior | Best For |
+|--------|----------|----------|
+| **Round-Robin** | Distributes requests evenly across all models | Load balancing, testing consistency |
+| **Load-Balanced** | Routes to model with lowest inference count | Optimal throughput with mixed model sizes |
+| **First-Available** | Uses fastest ready model | Maximizing speed for simple queries |
+
+### Using Multiple Models Programmatically
+
+```python
+# Load multiple models via router
+import requests
+import subprocess
+
+# Start router with models
+subprocess.Popen([
+    'python', 'scripts/model-router.py', 'load',
+    'models/mistral-7b.gguf',
+    'models/tinyllama-1.1b.gguf',
+    '--bin-path', 'bin',
+    '--scripts', 'scripts',
+    '--models-dir', 'models'
+])
+
+# Query any model endpoint
+response = requests.post(
+    'http://127.0.0.1:8000/v1/chat/completions',  # Model 1
+    json={
+        'model': 'local',
+        'messages': [{'role': 'user', 'content': 'Hello!'}],
+        'stream': False
+    }
+)
+
+# Or use Model 2
+response2 = requests.post(
+    'http://127.0.0.1:8001/v1/chat/completions',  # Model 2
+    json=...
+)
+```
+
+### Web UI — Multi-Model Management
+
+The Lumina Edge UI now includes a **Multi-Model Router Panel** for:
+- Loading/unloading models on-the-fly
+- Changing routing policies in real-time
+- Viewing per-model statistics (inference count, status, memory)
+- Automatic shard detection
+
+---
+
+## HuggingFace Sharded Models Support
+
+Lumina Edge now detects and automatically merges **HuggingFace multi-file sharded models** (e.g., `model-00001-of-00003.safetensors`).
+
+### What are Sharded Models?
+
+Large models on HuggingFace may be split into multiple files to ease downloading and storage:
+- `model-00001-of-00010.safetensors` (2 GB)
+- `model-00002-of-00010.safetensors` (2 GB)
+- `model-00003-of-00010.safetensors` (2 GB)
+- ... and so on
+
+Lumina Edge handles this transparently.
+
+### Using Sharded Models
+
+#### 1. Download a Sharded Model from HuggingFace
+
+```bash
+# Example: Download Llama 2 7B sharded version
+# Go to https://huggingface.co/meta-llama/Llama-2-7b
+# Download all .safetensors files into a models/ subdirectory
+
+models/
+├── Llama-2-7b/
+│   ├── model-00001-of-00002.safetensors (4.0 GB)
+│   ├── model-00002-of-00002.safetensors (3.5 GB)
+│   ├── config.json
+│   └── tokenizer.model
+```
+
+#### 2. Detect Shards Automatically
+
+Lumina Edge automatically detects sharded models when you:
+- Start the UI model manager
+- Use the CLI: `python scripts/model-converter.py shards /path/to/model`
+- Use Python API: `api.detectModelShards(modelPath)`
+
+#### 3. Convert to GGUF
+
+```bash
+# Automatic conversion with shard merging
+python scripts/model-converter.py convert models/Llama-2-7b models/llama-2-7b.gguf --quantization Q4_K_M
+```
+
+The converter will:
+- **Detect** all shards (e.g., `model-00001-of-00002.safetensors`, etc.)
+- **Load** each shard into memory
+- **Merge** shards into a unified state dict
+- **Convert** to GGUF format with quantization
+
+#### 4. Use Converted Model
+
+Once converted, the GGUF file appears in the model manager and works like any other model.
+
+### Python API — Shard Detection
+
+```python
+from scripts.model_router import parallel_load_models
+from scripts.shard_loader import ShardedModelInfo, ShardedModelConverter
+
+# Detect if a model is sharded
+info = ShardedModelInfo('/path/to/model')
+if info.is_sharded:
+    print(f"✓ Sharded model detected: {info.total_shards} shards ({info.shard_format})")
+    
+    # Get memory requirement estimate
+    converter = ShardedModelConverter('/path/to/model')
+    mem_gb, mem_str = converter.get_memory_estimate()
+    print(f"Requires ~{mem_str} to load")
+    
+    # Load and merge shards
+    state_dict = converter.load_shards()
+    print(f"✓ Merged {len(state_dict)} parameters")
+```
+
+### CLI — Shard Tools
+
+```bash
+# Analyze shards in a model directory
+python scripts/model-converter.py shards /path/to/model
+
+# Show detailed shard info
+python scripts/model-converter.py shards /path/to/model --info
+
+# Load and analyze all shards
+python scripts/model-converter.py shards /path/to/model --load
+
+# Convert sharded model directly
+python scripts/model-converter.py convert /path/to/sharded/model output.gguf
+```
+
+### Configuration
+
+Update `config.json` to customize shard behavior:
+
+```json
+{
+  "shard_support": {
+    "auto_detect": true,
+    "max_memory_gb": 16,
+    "merge_on_load": true
+  },
+  "multi_model": {
+    "enabled": true,
+    "routing_policy": "round-robin",
+    "models": []
+  }
+}
+```
+
+### Technical Details
+
+**Supported Shard Formats:**
+- HuggingFace SafeTensor shards (`model-XXXX-of-YYYY.safetensors`)
+- PyTorch shards (`pytorch_model-XXXX-of-YYYY.bin`)
+- Index-based shards (via `model.safetensors.index.json` or `pytorch_model.bin.index.json`)
+
+**Requirements:**
+- `torch>=2.0.0`
+- `transformers>=4.30.0`
+- `safetensors>=0.3.1`
+
+Install with: `pip install -r scripts/requirements-converter.txt`
+
+**Memory Efficiency:**
+- Shards loaded sequentially (one at a time into memory)
+- Merged state dict stored temporarily during conversion
+- Final GGUF file is compact (typically 10-30% of original size with Q4 quantization)
+
+---
+
 ## Roadmap
 
 Lumina Edge is actively developed. The near-term roadmap is focused on expanding developer tooling, broadening hardware support, and building a sustainable ecosystem around on-device inference.
 
 ### v1.1 — Developer Tooling *(In Progress)*
-- [ ] `config.json` for persistent hyperparameter settings (threads, context size, GPU layers, temperature)
+- [x] `config.json` for persistent hyperparameter settings (threads, context size, GPU layers, temperature)
+- [x] Multi-model parallel loading and routing
+- [x] HuggingFace multi-file shard support
 - [ ] `--benchmark` flag for automated tokens/sec and memory profiling across loaded models
 - [ ] Structured JSON output mode for agent / tool-use pipelines
 
@@ -425,9 +720,9 @@ Lumina Edge is actively developed. The near-term roadmap is focused on expanding
 - [ ] Session history export (JSON / Markdown)
 
 ### v2.0 — Ecosystem
-- [ ] Plugin architecture for custom backends (DirectML, OpenCL, ROCm)
-- [ ] Multi-model parallel loading and routing
-- [ ] HuggingFace multi-file shard support
+- [x] Plugin architecture for custom backends (DirectML, OpenCL, ROCm)
+- [ ] Advanced scheduling for multi-GPU setups
+- [ ] Model ensemble routing (combine outputs from multiple models)
 - [ ] Python SDK wrapper for programmatic lifecycle control
 
 > Want to accelerate a specific item? See [Contributing](#-contributing) or open a discussion.
