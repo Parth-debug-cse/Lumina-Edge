@@ -59,6 +59,7 @@ while [[ $# -gt 0 ]]; do
             echo "GPU Backends:"
             echo "  vulkan    - Cross-platform Vulkan (AMD, NVIDIA, Intel)"
             echo "  nvidia    - NVIDIA CUDA (requires nvidia-smi)"
+            echo "  mlx       - Apple Silicon MLX (macOS only)"
             echo ""
             echo "Options:"
             echo "  --benchmark     - Run inline benchmark after startup"
@@ -85,9 +86,14 @@ if [[ -z "$MODE" ]]; then
 fi
 
 if [[ -z "$GPU" ]]; then
-    echo -e "${DANGER}✗${NC} ERROR: --gpu is required (vulkan or nvidia)"
-    echo "Use --help for usage information"
-    exit 1
+    if [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+        GPU="mlx"
+        warn_msg "Auto-detected Apple Silicon: using 'mlx' backend"
+    else
+        echo -e "${DANGER}✗${NC} ERROR: --gpu is required (vulkan, nvidia, or mlx)"
+        echo "Use --help for usage information"
+        exit 1
+    fi
 fi
 
 if [[ ! "$MODE" =~ ^(api|core|router)$ ]]; then
@@ -95,8 +101,8 @@ if [[ ! "$MODE" =~ ^(api|core|router)$ ]]; then
     exit 1
 fi
 
-if [[ ! "$GPU" =~ ^(vulkan|nvidia)$ ]]; then
-    echo -e "${DANGER}✗${NC} ERROR: Invalid GPU backend '$GPU'. Must be vulkan or nvidia"
+if [[ ! "$GPU" =~ ^(vulkan|nvidia|mlx)$ ]]; then
+    echo -e "${DANGER}✗${NC} ERROR: Invalid GPU backend '$GPU'. Must be vulkan, nvidia, or mlx"
     exit 1
 fi
 
@@ -455,8 +461,10 @@ select_model() {
         
         if [[ "$model_choice" =~ ^[0-9]+$ ]] && (( model_choice >= 1 && model_choice <= model_count )); then
             local selected_file="${model_paths[$((model_choice - 1))]}"
-            check_and_convert_model "$selected_file" || { sleep 2; continue; }
-            if [[ "${selected_file##*.}" != "gguf" ]] && [[ -f "${selected_file%.*}.gguf" ]]; then
+            if [[ "$GPU" != "mlx" ]]; then
+                check_and_convert_model "$selected_file" || { sleep 2; continue; }
+            fi
+            if [[ "$GPU" != "mlx" ]] && [[ "${selected_file##*.}" != "gguf" ]] && [[ -f "${selected_file%.*}.gguf" ]]; then
                 SELECTED_MODEL="${selected_file%.*}.gguf"
             else
                 SELECTED_MODEL="$selected_file"
@@ -497,6 +505,8 @@ launch_api() {
     fi
     if [[ "$GPU" == "nvidia" ]]; then
         echo -e "${CYAN}ℹ${NC} Backend    : NVIDIA CUDA"
+    elif [[ "$GPU" == "mlx" ]]; then
+        echo -e "${CYAN}ℹ${NC} Backend    : Apple MLX"
     else
         echo -e "${CYAN}ℹ${NC} Backend    : Vulkan"
     fi
@@ -504,6 +514,18 @@ launch_api() {
     
     divider
     echo ""
+    
+    if [[ "$GPU" == "mlx" ]]; then
+        status "Starting MLX backend..."
+        echo ""
+        local mlx_cmd=("python3" "$SCRIPTS/mlx_backend.py" "--mode" "api" "--model" "$SELECTED_MODEL" "--port" "$PORT")
+        if [[ "$OPT_BENCHMARK" == true ]]; then
+            mlx_cmd+=("--benchmark")
+        fi
+        "${mlx_cmd[@]}"
+        return
+    fi
+    
     status "Starting llama-server..."
     echo ""
     progress_bar "Preflight checks" 14 0.02
@@ -550,12 +572,29 @@ launch_core() {
     fi
     if [[ "$GPU" == "nvidia" ]]; then
         echo -e "${CYAN}ℹ${NC} Backend    : NVIDIA CUDA"
+    elif [[ "$GPU" == "mlx" ]]; then
+        echo -e "${CYAN}ℹ${NC} Backend    : Apple MLX"
     else
         echo -e "${CYAN}ℹ${NC} Backend    : Vulkan"
     fi
     
     divider
     echo ""
+    
+    if [[ "$GPU" == "mlx" ]]; then
+        status "Starting MLX interactive mode..."
+        echo ""
+        local mlx_cmd=("python3" "$SCRIPTS/mlx_backend.py" "--mode" "core" "--model" "$SELECTED_MODEL")
+        if [[ "$OPT_BENCHMARK" == true ]]; then
+            mlx_cmd+=("--benchmark")
+        fi
+        if [[ "$OPT_JSON_OUTPUT" == true ]]; then
+            mlx_cmd+=("--json-output")
+        fi
+        "${mlx_cmd[@]}"
+        return
+    fi
+    
     status "Starting llama-cli (interactive mode)..."
     echo ""
     progress_bar "Warming prompt engine" 12 0.02

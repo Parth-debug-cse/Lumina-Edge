@@ -80,7 +80,7 @@ export default function ChatPanel({ serverStatus, toast }) {
   const sendMessage = async () => {
     if (!input.trim() || streaming) return
     if (serverStatus !== 'online') {
-      toast('Server offline — start lumina-api.sh first', 'error'); return
+      toast('Model server is loading... Please wait or load a model in the Model Manager', 'error'); return
     }
 
     let session = activeSession

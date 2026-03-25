@@ -260,6 +260,35 @@ def convert_sharded_to_gguf(
         return False
 
 
+def convert_to_mlx(
+    input_path: str,
+    output_path: str,
+    quantization: str = 'q4'
+) -> bool:
+    """Convert HuggingFace model to MLX format using mlx_lm.convert."""
+    try:
+        import subprocess
+        logger.info(f"Converting to MLX format from {input_path}")
+        logger.info(f"Target path: {output_path}")
+        
+        cmd = [sys.executable, "-m", "mlx_lm.convert", "--hf-path", input_path, "--mlx-path", output_path, "-q"]
+        
+        logger.info(f"Running MLX conversion... This may take a while.")
+        subprocess.run(cmd, check=True)
+        
+        logger.info("✓ Model successfully converted to MLX")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"MLX conversion failed with exit code: {e.returncode}")
+        return False
+    except ImportError:
+        logger.error("mlx-lm package is not installed. Run: pip install mlx-lm")
+        return False
+    except Exception as e:
+        logger.error(f"MLX conversion failed: {e}")
+        return False
+
+
 def validate_gguf_output(gguf_path: str) -> bool:
     """Validate that the output GGUF file was created properly."""
     gguf_file = Path(gguf_path)
@@ -291,24 +320,32 @@ def convert_model(
     input_path: str,
     output_path: str,
     quantization: str = 'Q4_K_M',
-    force: bool = False
+    force: bool = False,
+    format_target: str = 'gguf'
 ) -> bool:
     """
     Main conversion function.
     
     Args:
         input_path: Path to input model file or directory (.safetensors, .bin, or sharded model directory)
-        output_path: Path to output GGUF file
+        output_path: Path to output GGUF or MLX directory
         quantization: Quantization method (Q4_K_M, Q8_0, etc.)
         force: Overwrite existing output file
+        format_target: 'gguf' or 'mlx'
     
     Returns:
         True if conversion successful, False otherwise
     """
     
-    # Check dependencies
-    if not check_dependencies():
+    # Check dependencies only for GGUF conversion
+    if format_target == 'gguf' and not check_dependencies():
         return False
+        
+    if format_target == 'mlx':
+        success = convert_to_mlx(input_path, output_path, quantization)
+        if success:
+            logger.info("✓ MLX Conversion completed successfully!")
+        return success
     
     # Validate input file/directory
     input_file = Path(input_path)
@@ -431,6 +468,7 @@ Examples:
     )
     convert_parser.add_argument('--force', action='store_true', help='Overwrite existing output file')
     convert_parser.add_argument('--check-only', action='store_true', help='Only check format')
+    convert_parser.add_argument('--format', choices=['gguf', 'mlx'], default='gguf', help='Target conversion format')
     
     # Shards subcommand
     shards_parser = subparsers.add_parser('shards', help='Detect and analyze sharded models')
@@ -502,6 +540,7 @@ Examples:
             quantization = args_raw.quantization
             force = args_raw.force
             check_only = args_raw.check_only
+            format_target = getattr(args_raw, 'format', 'gguf')
         
         if check_only:
             logger.info("Dependency check...")
@@ -522,7 +561,8 @@ Examples:
             input_arg,
             output_arg,
             quantization,
-            force
+            force,
+            format_target='gguf' if args_raw.command is None else format_target
         )
         
         return 0 if success else 1
