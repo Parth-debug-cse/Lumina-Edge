@@ -1,0 +1,8 @@
+# Model Converter Dependencies
+# Required for safetensor and FP16 to GGUF conversion
+# Install with: pip install -r scripts/requirements-converter.txt
+
+torch>=2.0.0
+transformers>=4.30.0
+safetensors>=0.3.1
+numpy>=1.24.0

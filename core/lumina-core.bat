@@ -1,12 +1,21 @@
 @echo off
 setlocal EnableDelayedExpansion
 title LUMINA EDGE :: CORE CONTROLLER
-color 0A
+color 0B
+cls
+
+:: ====================================
+:: HEADER BANNER
+:: ====================================
+echo.
+echo  ^^!^^! LUMINA EDGE  ^^|  Interactive Chat Mode
+echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo.
 
 :: ==================================================
 :: AUTO-DETECT PROJECT ROOT
 :: ==================================================
-:: %~dp0 = Path where this batch file is located (core\)
+:: %%~dp0 = Path where this batch file is located (core\)
 :: .. = Go up one level to project root
 set ROOT=%~dp0..
 set BIN=%ROOT%\bin
@@ -20,43 +29,49 @@ cd /d "%ROOT%"
 :: ==================================================
 if not exist "%BIN%" (
     cls
-    echo ==================================================
-    echo ERROR :: bin directory not found
-    echo ==================================================
+    color 0C
     echo.
-    echo Expected at: %BIN%
+    echo  ^^! ERROR  ::  bin directory not found
+    echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     echo.
-    echo Please install llama.cpp binaries in the bin folder.
+    echo   Expected at: %BIN%
+    echo.
+    echo   Please install llama.cpp binaries in the bin folder.
     echo.
     pause
+    color 0B
     exit /b 1
 )
 
 if not exist "%MODELS%" (
     cls
-    echo ==================================================
-    echo ERROR :: models directory not found
-    echo ==================================================
+    color 0C
     echo.
-    echo Expected at: %MODELS%
+    echo  ^^! ERROR  ::  models directory not found
+    echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     echo.
-    echo Please create the models folder and add your GGUF files.
+    echo   Expected at: %MODELS%
+    echo.
+    echo   Please create the models folder and add your GGUF files.
     echo.
     pause
+    color 0B
     exit /b 1
 )
 
 if not exist "%SCRIPTS%" (
     cls
-    echo ==================================================
-    echo ERROR :: scripts directory not found
-    echo ==================================================
+    color 0C
     echo.
-    echo Expected at: %SCRIPTS%
+    echo  ^^! ERROR  ::  scripts directory not found
+    echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     echo.
-    echo Please create the scripts folder.
+    echo   Expected at: %SCRIPTS%
+    echo.
+    echo   Please create the scripts folder.
     echo.
     pause
+    color 0B
     exit /b 1
 )
 
@@ -65,16 +80,18 @@ if not exist "%SCRIPTS%" (
 :: ==================================================
 if not exist "%BIN%\llama-cli.exe" (
     cls
-    echo ==================================================
-    echo   ERROR :: llama-cli.exe NOT FOUND
-    echo ==================================================
+    color 0C
     echo.
-    echo Expected:
-    echo   %BIN%\llama-cli.exe
+    echo  ^^! ERROR  ::  llama-cli.exe not found
+    echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     echo.
-    echo Install llama.cpp correctly and retry.
+    echo   Expected:
+    echo     %BIN%\llama-cli.exe
+    echo.
+    echo   Install llama.cpp correctly and retry.
     echo.
     pause
+    color 0B
     exit /b 1
 )
 
@@ -83,42 +100,63 @@ if not exist "%BIN%\llama-cli.exe" (
 :: ==================================================
 :select_model
 cls
-echo ==================================================
-echo   LUMINA EDGE :: SELECT A MODEL
-echo ==================================================
+color 0B
 echo.
-echo Available models:
+echo  ^^! LUMINA EDGE  ^^|  Select a Model
+echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo.
+echo   Available models:
 echo.
 
 set MODEL_COUNT=0
-for /f "usebackq delims=" %%F in (`dir /b /a:-d "%MODELS%\*.gguf" 2^>nul`) do (
-    set /a MODEL_COUNT+=1
-    set "MODEL_!MODEL_COUNT!=%MODELS%\%%F"
-    set "MODEL_NAME_!MODEL_COUNT!=%%F"
-    set "CUR_NAME=%%F"
-    for %%G in ("%MODELS%\%%F") do set "CUR_SIZE=%%~zG"
-    echo   !MODEL_COUNT!. !CUR_NAME!
-    echo      Size: !CUR_SIZE! bytes
-    echo.
+setlocal EnableDelayedExpansion
+
+:: Scan for all supported formats: .gguf, .safetensors, .bin, .pt
+for %%E in (gguf safetensors bin pt) do (
+    for /f "usebackq delims=" %%F in (`dir /b /a:-d "%MODELS%\*.%%E" 2^>nul`) do (
+        set /a MODEL_COUNT+=1
+        set "MODEL_!MODEL_COUNT!=%MODELS%\%%F"
+        set "MODEL_NAME_!MODEL_COUNT!=%%F"
+        
+        :: Detect format from extension
+        set "EXT=%%E"
+        if "!EXT!"=="gguf" (set "FMT_!MODEL_COUNT!=GGUF") else if "!EXT!"=="safetensors" (set "FMT_!MODEL_COUNT!=SafeTensor") else (set "FMT_!MODEL_COUNT!=FP16")
+        
+        :: Get file size
+        for %%G in ("%MODELS%\%%F") do set "CUR_SIZE=%%~zG"
+        
+        :: Check if conversion is needed
+        set "STATUS_!MODEL_COUNT!="
+        if not "!EXT!"=="gguf" (
+            if not exist "%MODELS%\%%~nF.gguf" (
+                set "STATUS_!MODEL_COUNT!=  [needs conversion]"
+            )
+        )
+        
+        echo   !MODEL_COUNT!. %%F [!FMT_%MODEL_COUNT%!]!STATUS_%MODEL_COUNT%!
+        echo      • Size: !CUR_SIZE! bytes
+        echo.
+    )
 )
+endlocal & setlocal EnableDelayedExpansion
 
 if %MODEL_COUNT% EQU 0 (
-    echo   No models found in:
-    echo   %MODELS%
+    echo   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     echo.
-    echo   Please download a model using model-manager.bat first.
+    echo   ^^ No models found
+    echo   Run model-manager.bat to download a model
     echo.
     pause
     exit /b 1
 )
 
-echo   D. Download a new model
-echo   0. Exit
-echo.
-echo ==================================================
+echo   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo   D  Download a new model
+echo   0  Exit
+echo   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 echo.
 set "model_choice="
-set /p model_choice="Select model (1-%MODEL_COUNT%): "
+set /p model_choice=" ^> Select model (1-%MODEL_COUNT%): "
 
 if /i "%model_choice%"=="D" (
     start "" /d "%ROOT%" "%ROOT%\model-manager.bat"
@@ -139,6 +177,41 @@ if not defined MODEL (
     timeout /t 2 >nul
     goto select_model
 )
+
+:: Check if conversion is needed
+set "NEEDS_CONVERSION=0"
+for /f "usebackq delims=." %%E in (`echo !MODEL!`) do set "EXT=!MODEL:*.=!"
+if not "!EXT!"=="gguf" (
+    if not exist "!MODEL:.safetensors=!.gguf" if not exist "!MODEL:.bin=!.gguf" if not exist "!MODEL:.pt=!.gguf" (
+        set "NEEDS_CONVERSION=1"
+    )
+)
+
+if %NEEDS_CONVERSION% EQU 1 (
+    if exist "%SCRIPTS%\model-converter.py" (
+        echo.
+        echo [INFO] This model needs conversion to GGUF format.
+        echo.
+        set "convert_choice="
+        set /p convert_choice="Convert now? (y/n): "
+        if /i "!convert_choice!"=="y" (
+            echo Converting model to GGUF...
+            python "%SCRIPTS%\model-converter.py" "!MODEL!" "!MODEL:.safetensors=!.gguf" "!MODEL:.bin=!.gguf" "!MODEL:.pt=!.gguf"
+            if !errorlevel! EQU 0 (
+                set "MODEL=!MODEL:.safetensors=!.gguf"
+                set "MODEL=!MODEL:.bin=!.gguf"
+                set "MODEL=!MODEL:.pt=!.gguf"
+            ) else (
+                echo [WARN] Conversion failed. Continuing anyway...
+                timeout /t 2 >nul
+            )
+        )
+    )
+)
+
+endlocal & setlocal EnableDelayedExpansion
+set MODEL=%MODEL%
+set SELECTED_NAME=%SELECTED_NAME%
 
 :: ==================================================
 :: BOOT SCREEN
