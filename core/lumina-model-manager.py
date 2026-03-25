@@ -35,39 +35,58 @@ class ModelManager:
         # Ensure models directory exists
         self.models_dir.mkdir(parents=True, exist_ok=True)
         
-        # Popular models from HuggingFace
-        self.popular_models = [
-            {
-                'name': 'Llama 2 7B (Q4)',
-                'repo': 'TheBloke/Llama-2-7B-Chat-GGUF',
-                'file': 'llama-2-7b-chat.Q4_K_M.gguf'
-            },
-            {
-                'name': 'Mistral 7B (Q4)',
-                'repo': 'TheBloke/Mistral-7B-Instruct-v0.1-GGUF',
-                'file': 'mistral-7b-instruct-v0.1.Q4_K_M.gguf'
-            },
-            {
-                'name': 'Phi 2 (Q4)',
-                'repo': 'TheBloke/phi-2-GGUF',
-                'file': 'phi-2.Q4_K_M.gguf'
-            },
-            {
-                'name': 'Neural Chat 7B (Q4)',
-                'repo': 'TheBloke/neural-chat-7B-v3-1-GGUF',
-                'file': 'neural-chat-7b-v3-1.Q4_K_M.gguf'
-            },
-            {
-                'name': 'Orca Mini 3B (Q4)',
-                'repo': 'TheBloke/orca_mini_v3_7B-GGUF',
-                'file': 'orca-mini-3b.Q4_K_M.gguf'
-            },
-            {
-                'name': 'Zephyr 7B (Q4)',
-                'repo': 'TheBloke/zephyr-7B-beta-GGUF',
-                'file': 'zephyr-7b-beta.Q4_K_M.gguf'
-            }
-        ]
+        is_mac = platform.system() == "Darwin" and platform.machine() == "arm64"
+        if is_mac:
+            self.popular_models = [
+                {
+                    'name': 'Llama 3 8B (4-bit MLX)',
+                    'repo': 'mlx-community/Meta-Llama-3-8B-Instruct-4bit',
+                    'dir_name': 'Llama-3-8b.mlx'
+                },
+                {
+                    'name': 'Mistral 7B (4-bit MLX)',
+                    'repo': 'mlx-community/Mistral-7B-Instruct-v0.2-4bit',
+                    'dir_name': 'Mistral-7b.mlx'
+                },
+                {
+                    'name': 'Phi-3 Mini (4-bit MLX)',
+                    'repo': 'mlx-community/Phi-3-mini-4k-instruct-4bit',
+                    'dir_name': 'Phi-3-mini.mlx'
+                }
+            ]
+        else:
+            self.popular_models = [
+                {
+                    'name': 'Llama 2 7B (Q4)',
+                    'repo': 'TheBloke/Llama-2-7B-Chat-GGUF',
+                    'file': 'llama-2-7b-chat.Q4_K_M.gguf'
+                },
+                {
+                    'name': 'Mistral 7B (Q4)',
+                    'repo': 'TheBloke/Mistral-7B-Instruct-v0.1-GGUF',
+                    'file': 'mistral-7b-instruct-v0.1.Q4_K_M.gguf'
+                },
+                {
+                    'name': 'Phi 2 (Q4)',
+                    'repo': 'TheBloke/phi-2-GGUF',
+                    'file': 'phi-2.Q4_K_M.gguf'
+                },
+                {
+                    'name': 'Neural Chat 7B (Q4)',
+                    'repo': 'TheBloke/neural-chat-7B-v3-1-GGUF',
+                    'file': 'neural-chat-7b-v3-1.Q4_K_M.gguf'
+                },
+                {
+                    'name': 'Orca Mini 3B (Q4)',
+                    'repo': 'TheBloke/orca_mini_v3_7B-GGUF',
+                    'file': 'orca-mini-3b.Q4_K_M.gguf'
+                },
+                {
+                    'name': 'Zephyr 7B (Q4)',
+                    'repo': 'TheBloke/zephyr-7B-beta-GGUF',
+                    'file': 'zephyr-7b-beta.Q4_K_M.gguf'
+                }
+            ]
     
     def log_info(self, msg: str):
         """Info message"""
@@ -92,7 +111,7 @@ class ModelManager:
     def get_models(self) -> List[Path]:
         """Get list of existing models"""
         models = []
-        for ext in ['*.gguf', '*.safetensors', '*.bin', '*.pt']:
+        for ext in ['*.gguf', '*.safetensors', '*.bin', '*.pt', '*.mlx']:
             models.extend(self.models_dir.glob(ext))
         return sorted(models)
     
@@ -138,7 +157,12 @@ class ModelManager:
             return
         
         for i, model_path in enumerate(models, 1):
-            size = self.get_human_size(model_path.stat().st_size)
+            if model_path.is_dir():
+                # Get size of directory contents
+                size_b = sum(f.stat().st_size for f in model_path.rglob('*') if f.is_file())
+                size = self.get_human_size(size_b)
+            else:
+                size = self.get_human_size(model_path.stat().st_size)
             print(f"  {Colors.BOLD}{i}{Colors.NC}. {Colors.GREEN}{model_path.name}{Colors.NC}")
             print(f"      {Colors.GRAY}Size: {size}{Colors.NC}\n")
     
@@ -163,7 +187,10 @@ class ModelManager:
             self.custom_download_menu()
         elif choice.isdigit() and 1 <= int(choice) <= len(self.popular_models):
             model = self.popular_models[int(choice) - 1]
-            self.download_hf_model(model['repo'], model['file'])
+            if 'dir_name' in model:
+                self.download_hf_repo(model['repo'], model['dir_name'])
+            else:
+                self.download_hf_model(model['repo'], model['file'])
         else:
             self.log_error("Invalid selection")
     
@@ -175,6 +202,13 @@ class ModelManager:
         if not repo:
             self.log_error("Repository required")
             return
+            
+        is_mac = platform.system() == "Darwin" and platform.machine() == "arm64"
+        if is_mac:
+            print(f"\n{Colors.GRAY}Since you are on Mac, the entire repo will be downloaded as an MLX directory.{Colors.NC}")
+            dir_name = repo.split('/')[-1] + ".mlx"
+            self.download_hf_repo(repo, dir_name)
+            return
         
         print()
         filename = input(f"{Colors.CYAN}Enter model filename (e.g., model.Q4_K_M.gguf): {Colors.NC}").strip()
@@ -185,6 +219,28 @@ class ModelManager:
         
         self.download_hf_model(repo, filename)
     
+    def download_hf_repo(self, repo: str, dir_name: str):
+        """Download entire HuggingFace repo (for MLX)"""
+        dest_path = self.models_dir / dir_name
+        
+        if dest_path.exists():
+            self.log_warn(f"Model already exists: {dir_name}")
+            overwrite = input(f"{Colors.CYAN}Overwrite? (y/n): {Colors.NC}").strip().lower()
+            if overwrite != 'y':
+                return
+                
+        try:
+            self.log_info(f"Downloading MLX repository from {repo}...")
+            # Use huggingface_hub to download entire directory
+            import subprocess
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "huggingface_hub"])
+            from huggingface_hub import snapshot_download
+            snapshot_download(repo_id=repo, local_dir=str(dest_path))
+            self.log_success(f"Downloaded MLX model to: {dir_name}")
+            print(f"\n{Colors.GRAY}Models can now be used natively with MLX!{Colors.NC}\n")
+        except Exception as e:
+            self.log_error(f"Download failed: {e}")
+
     def download_hf_model(self, repo: str, filename: str):
         """Download model from HuggingFace"""
         url = f"https://huggingface.co/{repo}/resolve/main/{filename}"
@@ -229,7 +285,11 @@ class ModelManager:
             model_to_delete = models[int(choice) - 1]
             confirm = input(f"{Colors.YELLOW}Delete {model_to_delete.name}? (y/n): {Colors.NC}").strip().lower()
             if confirm == 'y':
-                model_to_delete.unlink()
+                if model_to_delete.is_dir():
+                    import shutil
+                    shutil.rmtree(model_to_delete)
+                else:
+                    model_to_delete.unlink()
                 self.log_success(f"Deleted: {model_to_delete.name}")
         else:
             self.log_error("Invalid selection")

@@ -4,6 +4,7 @@ import ModelManager   from './components/ModelManager.jsx'
 import SettingsPanel  from './components/SettingsPanel.jsx'
 import BenchmarkPanel from './components/BenchmarkPanel.jsx'
 import SessionHistory from './components/SessionHistory.jsx'
+import MultiModelPanel from './components/MultiModelPanel.jsx'
 import { checkServerHealth } from './utils/api.js'
 
 // ============================================================
@@ -13,6 +14,7 @@ const NAV = [
   { id: 'chat',      icon: '💬', label: 'Chat' },
   { id: 'models',    icon: '📦', label: 'Models' },
   { id: 'benchmark', icon: '⚡', label: 'Benchmark' },
+  { id: 'router',    icon: '🔄', label: 'Router' },
   { id: 'history',   icon: '📋', label: 'History' },
   { id: 'settings',  icon: '⚙',  label: 'Settings' },
 ]
@@ -21,7 +23,8 @@ const PANEL_TITLES = {
   chat:      { title: 'Chat',          sub: 'Local LLM conversation' },
   models:    { title: 'Model Manager', sub: 'Browse, tag, and download GGUF models' },
   benchmark: { title: 'Benchmark',     sub: 'Measure inference speed and memory usage' },
-  history:   { title: 'Session History', sub: 'Browse and export past conversations' },
+  router:    { title: 'Multi-Model Router', sub: 'Load and route between multiple models' },
+  history:    { title: 'Session History', sub: 'Browse and export past conversations' },
   settings:  { title: 'Settings',      sub: 'Configure hyperparameters and server options' },
 }
 
@@ -71,6 +74,7 @@ export default function App() {
       case 'chat':      return <ChatPanel      serverStatus={serverStatus} toast={addToast} />
       case 'models':    return <ModelManager   localModels={localModels}   toast={addToast} />
       case 'benchmark': return <BenchmarkPanel serverStatus={serverStatus} toast={addToast} />
+      case 'router':    return <MultiModelPanel                            toast={addToast} />
       case 'history':   return <SessionHistory                             toast={addToast} />
       case 'settings':  return <SettingsPanel                              toast={addToast} />
       default:          return null

@@ -9,23 +9,26 @@
     "build": "vite build",
     "preview": "vite preview",
     "electron:start": "electron .",
-    "start": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && npm run electron:start\""
+    "api": "node api-server.js",
+    "start": "concurrently \"npm run api\" \"npm run dev\" \"wait-on http://localhost:5173 && npm run electron:start\""
   },
   "dependencies": {
+    "chart.js": "^4.4.4",
+    "cors": "^2.8.6",
+    "date-fns": "^3.6.0",
+    "express": "^5.2.1",
+    "lucide-react": "^0.446.0",
     "react": "^18.3.1",
+    "react-chartjs-2": "^5.2.0",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",
-    "remark-gfm": "^4.0.0",
-    "chart.js": "^4.4.4",
-    "react-chartjs-2": "^5.2.0",
-    "date-fns": "^3.6.0",
-    "lucide-react": "^0.446.0"
+    "remark-gfm": "^4.0.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
-    "vite": "^5.4.8",
-    "electron": "^30.0.0",
     "concurrently": "^8.2.2",
+    "electron": "^30.0.0",
+    "vite": "^5.4.8",
     "wait-on": "^7.2.0"
   }
 }
