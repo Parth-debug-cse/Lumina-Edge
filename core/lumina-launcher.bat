@@ -82,6 +82,8 @@ if exist "%ROOT%\config.json" (
     for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('threads', 4))" 2^>nul') do set "THREADS=%%A"
     for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('ctx_size', 4096))" 2^>nul') do set "CTX_SIZE=%%A"
     for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('batch_size', 512))" 2^>nul') do set "BATCH_SIZE=%%A"
+    for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('ubatch_size', 256))" 2^>nul') do set "UBATCH_SIZE=%%A"
+    for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('temperature', 0.7))" 2^>nul') do set "TEMPERATURE=%%A"
     for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('api_port', 1234))" 2^>nul') do set "API_PORT=%%A"
 )
 
@@ -147,7 +149,16 @@ call :select_model
 if !errorlevel! neq 0 exit /b 1
 
 call :ui_progress "Launching engine" 26 18
-"!SERVER_EXE!" -m "!SELECTED_MODEL!" -t !THREADS! -c !CTX_SIZE! -b !BATCH_SIZE! --n-gpu-layers !GPU_LAYERS! -p !API_PORT!
+
+if "!OPT_BENCHMARK!"=="true" (
+    if exist "%BIN%\llama-bench.exe" (
+        call :ui_section "Benchmark"
+        "%BIN%\llama-bench.exe" -m "!SELECTED_MODEL!" --n-gpu-layers !GPU_LAYERS! -o json 2>nul
+        echo.
+    )
+)
+
+"!SERVER_EXE!" -m "!SELECTED_MODEL!" -t !THREADS! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! --temp !TEMPERATURE! --n-gpu-layers !GPU_LAYERS! -p !API_PORT!
 goto end
 
 :launch_core
@@ -161,7 +172,21 @@ call :select_model
 if !errorlevel! neq 0 exit /b 1
 
 call :ui_progress "Booting prompt engine" 14 18
-"!CLI_EXE!" -m "!SELECTED_MODEL!" -t !THREADS! -c !CTX_SIZE! -n 128 --n-gpu-layers !GPU_LAYERS!
+
+if "!OPT_BENCHMARK!"=="true" (
+    if exist "%BIN%\llama-bench.exe" (
+        call :ui_section "Benchmark"
+        "%BIN%\llama-bench.exe" -m "!SELECTED_MODEL!" --n-gpu-layers !GPU_LAYERS! -o json 2>nul
+        echo.
+    )
+)
+
+set "CLI_CMD="!CLI_EXE!" -m "!SELECTED_MODEL!" -t !THREADS! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! --temp !TEMPERATURE! -n 128 --n-gpu-layers !GPU_LAYERS!"
+if "!OPT_JSON_OUTPUT!"=="true" (
+    set "CLI_CMD=!CLI_CMD! --format json"
+)
+
+!CLI_CMD!
 goto end
 
 :launch_router

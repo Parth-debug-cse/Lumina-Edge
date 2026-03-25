@@ -166,8 +166,9 @@ scripts/
 └── shard-loader.py           ← HuggingFace shard support
 
 ui/
-├── src/components/ExportButtons.jsx   ← Shared UI element
-└── (other React components)
+├── electron-main.cjs         ← Desktop app entry point
+├── package.json              ← NPM configuration
+└── src/                      ← React UI source code (App, ModelManager, etc.)
 ```
 
 **Old scripts remain for backward compatibility.** No breaking changes. Migrate at your own pace.
@@ -209,6 +210,9 @@ Download, list, and delete quantized models with a numbered menu. No file renami
 **OpenAI-Compatible Local API**
 Spin up a fully OpenAI-compatible REST endpoint at `http://127.0.0.1:1234/v1`. Drop it into any existing codebase that uses the OpenAI SDK — change only the `base_url`. Full details in the [API section](#-openai-compatible-api) below.
 
+**Stunning Desktop Interface**
+Features advanced model tagging, session history exports in Markdown/JSON, and a beautiful typography using Outfit and Inter.
+
 ---
 
 ## Supported Model Formats
@@ -225,36 +229,9 @@ Additionally, you can import models from **SafeTensor** (`.safetensors`) and **F
 
 ### Automatic Format Detection & Conversion
 
-When you launch Lumina Edge or use the model manager:
+When you launch Lumina Edge or use the model manager, any non-GGUF models (like `.safetensors` or `.pt`) are automatically detected. The UI will prompt you to convert and optimize them into the native GGUF format with a single click.
 
-1. **Scan**: All model files (`.gguf`, `.safetensors`, `.bin`, `.pt`) in `models/` are detected
-2. **Display**: Format badge shows next to model name (e.g., `[GGUF]`, `[SafeTensor]`, `[FP16]`)
-3. **Status**: Non-GGUF models show `[needs conversion]` indicator
-4. **Convert**: If you select a non-GGUF model, you're prompted to convert. Choose "Convert now?" and the tool runs automatically
-5. **Optimize**: Conversion includes quantization selection (default: Q4_K_M — excellent quality/size balance)
-6. **Use**: Converted GGUF file is saved to `models/` with extension `.gguf` (original file is preserved)
-
-### Manual Conversion (Python)
-
-If you prefer to convert models outside the UI:
-
-```bash
-pip install -r scripts/requirements-converter.txt
-python scripts/model-converter.py <input.safetensors> <output.gguf> --quantization Q4_K_M
-```
-
-**Quantization options:** `Q4_K_M` (default, ~4-bit), `Q8_0` (8-bit, higher quality), `F16` (full precision), `F32` (full precision, high RAM)
-
-### Example: Adding a SafeTensor Model
-
-1. Download a LLM in SafeTensor format (e.g., from HuggingFace)
-2. Place it in `models/` folder
-3. Run `lumina-core.bat` (Windows) or `./lumina-core.sh` (Linux)
-4. Model appears in list with `[SafeTensor]` badge and `[needs conversion]` warning
-5. Select the model → approve conversion → tool runs automatically
-6. Once complete, model is ready to use as a native GGUF
-
-No additional setup or manual compilation required.
+No manual PyTorch scripts or complex compilation required—just drop your weights in the `models/` folder and you're ready to go.
 
 ---
 
@@ -573,153 +550,29 @@ The Lumina Edge UI now includes a **Multi-Model Router Panel** for:
 
 ## HuggingFace Sharded Models Support
 
-Lumina Edge now detects and automatically merges **HuggingFace multi-file sharded models** (e.g., `model-00001-of-00003.safetensors`).
+> **What are Sharded Models?**
+> Think of sharded models like a large file split into multiple smaller ZIP volumes so it can be downloaded more easily. They are just pieces of the exact same puzzle. 
 
-### What are Sharded Models?
-
-Large models on HuggingFace may be split into multiple files to ease downloading and storage:
-- `model-00001-of-00010.safetensors` (2 GB)
-- `model-00002-of-00010.safetensors` (2 GB)
-- `model-00003-of-00010.safetensors` (2 GB)
-- ... and so on
-
-Lumina Edge handles this transparently.
-
-### Using Sharded Models
-
-#### 1. Download a Sharded Model from HuggingFace
-
-```bash
-# Example: Download Llama 2 7B sharded version
-# Go to https://huggingface.co/meta-llama/Llama-2-7b
-# Download all .safetensors files into a models/ subdirectory
-
-models/
-├── Llama-2-7b/
-│   ├── model-00001-of-00002.safetensors (4.0 GB)
-│   ├── model-00002-of-00002.safetensors (3.5 GB)
-│   ├── config.json
-│   └── tokenizer.model
-```
-
-#### 2. Detect Shards Automatically
-
-Lumina Edge automatically detects sharded models when you:
-- Start the UI model manager
-- Use the CLI: `python scripts/model-converter.py shards /path/to/model`
-- Use Python API: `api.detectModelShards(modelPath)`
-
-#### 3. Convert to GGUF
-
-```bash
-# Automatic conversion with shard merging
-python scripts/model-converter.py convert models/Llama-2-7b models/llama-2-7b.gguf --quantization Q4_K_M
-```
-
-The converter will:
-- **Detect** all shards (e.g., `model-00001-of-00002.safetensors`, etc.)
-- **Load** each shard into memory
-- **Merge** shards into a unified state dict
-- **Convert** to GGUF format with quantization
-
-#### 4. Use Converted Model
-
-Once converted, the GGUF file appears in the model manager and works like any other model.
-
-### Python API — Shard Detection
-
-```python
-from scripts.model_router import parallel_load_models
-from scripts.shard_loader import ShardedModelInfo, ShardedModelConverter
-
-# Detect if a model is sharded
-info = ShardedModelInfo('/path/to/model')
-if info.is_sharded:
-    print(f"✓ Sharded model detected: {info.total_shards} shards ({info.shard_format})")
-    
-    # Get memory requirement estimate
-    converter = ShardedModelConverter('/path/to/model')
-    mem_gb, mem_str = converter.get_memory_estimate()
-    print(f"Requires ~{mem_str} to load")
-    
-    # Load and merge shards
-    state_dict = converter.load_shards()
-    print(f"✓ Merged {len(state_dict)} parameters")
-```
-
-### CLI — Shard Tools
-
-```bash
-# Analyze shards in a model directory
-python scripts/model-converter.py shards /path/to/model
-
-# Show detailed shard info
-python scripts/model-converter.py shards /path/to/model --info
-
-# Load and analyze all shards
-python scripts/model-converter.py shards /path/to/model --load
-
-# Convert sharded model directly
-python scripts/model-converter.py convert /path/to/sharded/model output.gguf
-```
-
-### Configuration
-
-Update `config.json` to customize shard behavior:
-
-```json
-{
-  "shard_support": {
-    "auto_detect": true,
-    "max_memory_gb": 16,
-    "merge_on_load": true
-  },
-  "multi_model": {
-    "enabled": true,
-    "routing_policy": "round-robin",
-    "models": []
-  }
-}
-```
-
-### Technical Details
-
-**Supported Shard Formats:**
-- HuggingFace SafeTensor shards (`model-XXXX-of-YYYY.safetensors`)
-- PyTorch shards (`pytorch_model-XXXX-of-YYYY.bin`)
-- Index-based shards (via `model.safetensors.index.json` or `pytorch_model.bin.index.json`)
-
-**Requirements:**
-- `torch>=2.0.0`
-- `transformers>=4.30.0`
-- `safetensors>=0.3.1`
-
-Install with: `pip install -r scripts/requirements-converter.txt`
-
-**Memory Efficiency:**
-- Shards loaded sequentially (one at a time into memory)
-- Merged state dict stored temporarily during conversion
-- Final GGUF file is compact (typically 10-30% of original size with Q4 quantization)
-
+Lumina Edge automatically detects all the pieces (shards) in a folder (e.g., `model-00001-of-00003.safetensors`) and seamlessly glues them back together into one complete, optimized GGUF model for you. No manual merging or configuration is required!
 ---
 
 ## Roadmap
 
 Lumina Edge is actively developed. The near-term roadmap is focused on expanding developer tooling, broadening hardware support, and building a sustainable ecosystem around on-device inference.
 
-### v1.1 — Developer Tooling *(In Progress)*
+### v1.1 — Developer Tooling *(Completed)*
 - [x] `config.json` for persistent hyperparameter settings (threads, context size, GPU layers, temperature)
 - [x] Multi-model parallel loading and routing
 - [x] HuggingFace multi-file shard support
-- [ ] `--benchmark` flag for automated tokens/sec and memory profiling across loaded models
-- [ ] Structured JSON output mode for agent / tool-use pipelines
+- [x] `--benchmark` flag for automated tokens/sec and memory profiling across loaded models
+- [x] Structured JSON output mode for agent / tool-use pipelines
 
-### v1.2 — Interface Expansion
-- [ ] Electron / React web UI — browser-based chat and model management
-- [ ] Model tagging and search inside the model manager
-- [ ] Session history export (JSON / Markdown)
+### v1.2 — Interface Expansion *(Completed)*
+- [x] Electron / React web UI — browser-based chat and model management
+- [x] Model tagging and search inside the model manager
+- [x] Session history export (JSON / Markdown)
 
-### v2.0 — Ecosystem
+### v2.0 — Ecosystem *(In Progress)*
 - [x] Plugin architecture for custom backends (DirectML, OpenCL, ROCm)
 - [ ] Advanced scheduling for multi-GPU setups
 - [ ] Model ensemble routing (combine outputs from multiple models)
