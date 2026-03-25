@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import {
   getSessions, deleteSession,
-  exportAsJSON, exportAsMarkdown,
 } from '../utils/storage.js'
+import ExportButtons from './ExportButtons.jsx'
 
 function formatDate(iso) {
   try { return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }
@@ -41,14 +41,11 @@ export default function SessionHistory({ toast }) {
           />
         </div>
         {sessions.length > 0 && (
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button className="btn btn-ghost btn-sm" onClick={() => { sessions.forEach(s => exportAsJSON(s)); toast(`Exported ${sessions.length} sessions as JSON`, 'success') }}>
-              Export All JSON
-            </button>
-            <button className="btn btn-ghost btn-sm" onClick={() => { sessions.forEach(s => exportAsMarkdown(s)); toast(`Exported ${sessions.length} sessions as Markdown`, 'success') }}>
-              Export All MD
-            </button>
-          </div>
+          <ExportButtons
+            data={sessions}
+            label="Session"
+            toast={toast}
+          />
         )}
       </div>
 
