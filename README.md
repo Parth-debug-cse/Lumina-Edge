@@ -128,7 +128,55 @@ Download, list, and delete quantized models with a numbered menu. No file renami
 Spin up a fully OpenAI-compatible REST endpoint at `http://127.0.0.1:1234/v1`. Drop it into any existing codebase that uses the OpenAI SDK — change only the `base_url`. Full details in the [API section](#-openai-compatible-api) below.
 
 ---
-## How the Memory Optimization Works
+
+## Supported Model Formats
+
+Lumina Edge natively supports **GGUF format** (the fastest, most efficient format for local inference).
+
+Additionally, you can import models from **SafeTensor** (`.safetensors`) and **FP16** (`.bin`, `.pt`) formats, which will be **automatically converted** to GGUF for maximum performance.
+
+| Format | Extension | Status | Performance | Notes |
+|--------|-----------|--------|-------------|-------|
+| GGUF | `.gguf` | ✅ Native | Fastest | Recommended. Full quantization support (Q4, Q8, etc.) |
+| SafeTensor | `.safetensors` | ✅ Converts | Equal to GGUF | After conversion. Safe format, no code execution on load. |
+| FP16 | `.bin`, `.pt` | ✅ Converts | Equal to GGUF | After conversion. Standard PyTorch format. |
+
+### Automatic Format Detection & Conversion
+
+When you launch Lumina Edge or use the model manager:
+
+1. **Scan**: All model files (`.gguf`, `.safetensors`, `.bin`, `.pt`) in `models/` are detected
+2. **Display**: Format badge shows next to model name (e.g., `[GGUF]`, `[SafeTensor]`, `[FP16]`)
+3. **Status**: Non-GGUF models show `[needs conversion]` indicator
+4. **Convert**: If you select a non-GGUF model, you're prompted to convert. Choose "Convert now?" and the tool runs automatically
+5. **Optimize**: Conversion includes quantization selection (default: Q4_K_M — excellent quality/size balance)
+6. **Use**: Converted GGUF file is saved to `models/` with extension `.gguf` (original file is preserved)
+
+### Manual Conversion (Python)
+
+If you prefer to convert models outside the UI:
+
+```bash
+pip install -r scripts/requirements-converter.txt
+python scripts/model-converter.py <input.safetensors> <output.gguf> --quantization Q4_K_M
+```
+
+**Quantization options:** `Q4_K_M` (default, ~4-bit), `Q8_0` (8-bit, higher quality), `F16` (full precision), `F32` (full precision, high RAM)
+
+### Example: Adding a SafeTensor Model
+
+1. Download a LLM in SafeTensor format (e.g., from HuggingFace)
+2. Place it in `models/` folder
+3. Run `lumina-core.bat` (Windows) or `./lumina-core.sh` (Linux)
+4. Model appears in list with `[SafeTensor]` badge and `[needs conversion]` warning
+5. Select the model → approve conversion → tool runs automatically
+6. Once complete, model is ready to use as a native GGUF
+
+No additional setup or manual compilation required.
+
+---
+
+
 
 ![Memory optimization flowchart](assets/lumina_edge_optimization_flow.svg)
 

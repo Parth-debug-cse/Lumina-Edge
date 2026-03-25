@@ -1,6 +1,16 @@
 {
-  "ctx_size": 2048,
+  "threads": 4,
+  "ctx_size": 4096,
   "batch_size": 512,
   "ubatch_size": 256,
-  "n_gpu_layers": "auto"
+  "n_gpu_layers": "auto",
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "repeat_penalty": 1.1,
+  "json_output": false,
+  "api_port": 1234,
+  "system_prompt": "You are a precise, efficient AI assistant.",
+  "auto_convert_models": false,
+  "default_quantization": "Q4_K_M",
+  "converter_available": "auto"
 }

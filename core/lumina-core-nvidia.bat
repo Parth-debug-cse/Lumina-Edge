@@ -1,7 +1,16 @@
 @echo off
 setlocal EnableDelayedExpansion
 title LUMINA EDGE :: CORE CONTROLLER (NVIDIA)
-color 0C
+color 0B
+cls
+
+:: ====================================
+:: HEADER BANNER
+:: ====================================
+echo.
+echo  ^^!^^! LUMINA EDGE  ^^|  Interactive Chat Mode (NVIDIA CUDA)
+echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo.
 
 :: ==================================================
 :: AUTO-DETECT PROJECT ROOT
@@ -19,19 +28,21 @@ cd /d "%ROOT%"
 nvidia-smi >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     cls
-    echo ==================================================
-    echo ERROR :: NVIDIA GPU NOT DETECTED
-    echo ==================================================
+    color 0C
     echo.
-    echo This script requires an NVIDIA GPU with CUDA support.
-    echo Please ensure you have:
-    echo - NVIDIA GPU installed
-    echo - NVIDIA drivers installed
-    echo - CUDA toolkit installed
+    echo  ^^! ERROR  ::  NVIDIA GPU not detected
+    echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     echo.
-    echo Or use the non-NVIDIA version: lumina-core.bat
+    echo   This script requires an NVIDIA GPU with CUDA support.
+    echo   Please ensure you have:
+    echo   • NVIDIA GPU installed
+    echo   • NVIDIA drivers installed
+    echo   • CUDA toolkit installed
+    echo.
+    echo   Or use the non-NVIDIA version: lumina-core.bat
     echo.
     pause
+    color 0B
     exit /b 1
 )
 
@@ -40,39 +51,45 @@ if %ERRORLEVEL% NEQ 0 (
 :: ==================================================
 if not exist "%BIN%" (
     cls
-    echo ==================================================
-    echo ERROR :: bin directory not found
-    echo ==================================================
+    color 0C
     echo.
-    echo Expected at: %BIN%
+    echo  ^^! ERROR  ::  bin directory not found
+    echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     echo.
-    echo Please install llama.cpp CUDA binaries in the bin folder.
+    echo   Expected at: %BIN%
+    echo.
+    echo   Please install llama.cpp CUDA binaries in the bin folder.
     echo.
     pause
+    color 0B
     exit /b 1
 )
 
 if not exist "%MODELS%" (
     cls
-    echo ==================================================
-    echo ERROR :: models directory not found
-    echo ==================================================
+    color 0C
     echo.
-    echo Expected at: %MODELS%
+    echo  ^^! ERROR  ::  models directory not found
+    echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    echo.
+    echo   Expected at: %MODELS%
     echo.
     pause
+    color 0B
     exit /b 1
 )
 
 if not exist "%SCRIPTS%" (
     cls
-    echo ==================================================
-    echo ERROR :: scripts directory not found
-    echo ==================================================
+    color 0C
     echo.
-    echo Expected at: %SCRIPTS%
+    echo  ^^! ERROR  ::  scripts directory not found
+    echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    echo.
+    echo   Expected at: %SCRIPTS%
     echo.
     pause
+    color 0B
     exit /b 1
 )
 
@@ -81,16 +98,18 @@ if not exist "%SCRIPTS%" (
 :: ==================================================
 if not exist "%BIN%\llama-cli.exe" (
     cls
-    echo ==================================================
-    echo   ERROR :: llama-cli.exe NOT FOUND
-    echo ==================================================
+    color 0C
     echo.
-    echo Expected:
-    echo   %BIN%\llama-cli.exe
+    echo  ^^! ERROR  ::  llama-cli.exe not found
+    echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     echo.
-    echo Install llama.cpp CUDA build and retry.
+    echo   Expected:
+    echo     %BIN%\llama-cli.exe
+    echo.
+    echo   Install llama.cpp CUDA build and retry.
     echo.
     pause
+    color 0B
     exit /b 1
 )
 
@@ -99,28 +118,55 @@ if not exist "%BIN%\llama-cli.exe" (
 :: ==================================================
 :select_model
 cls
-echo ==================================================
-echo   LUMINA EDGE :: SELECT A MODEL
-echo ==================================================
+color 0B
 echo.
-echo Available models:
+echo  ^^! LUMINA EDGE  ^^|  Select a Model (NVIDIA CUDA)
+echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo.
+echo   Available models:
 echo.
 
 set MODEL_COUNT=0
-for /f "usebackq delims=" %%F in (`dir /b /a:-d "%MODELS%\*.gguf" 2^>nul`) do (
-    set /a MODEL_COUNT+=1
-    set "MODEL_!MODEL_COUNT!=%MODELS%\%%F"
-    set "MODEL_NAME_!MODEL_COUNT!=%%F"
-    set "CUR_NAME=%%F"
-    for %%G in ("%MODELS%\%%F") do set "CUR_SIZE=%%~zG"
-    echo   !MODEL_COUNT!. !CUR_NAME!
-    echo      Size: !CUR_SIZE! bytes
-    echo.
+setlocal EnableDelayedExpansion
+
+:: Scan for all supported formats: .gguf, .safetensors, .bin, .pt
+for %%E in (gguf safetensors bin pt) do (
+    for /f "usebackq delims=" %%F in (`dir /b /a:-d "%MODELS%\*.%%E" 2^>nul`) do (
+        set /a MODEL_COUNT+=1
+        set "MODEL_!MODEL_COUNT!=%MODELS%\%%F"
+        set "MODEL_NAME_!MODEL_COUNT!=%%F"
+        
+        :: Detect format from extension
+        set "EXT=%%E"
+        if "!EXT!"=="gguf" (set "FMT_!MODEL_COUNT!=GGUF") else if "!EXT!"=="safetensors" (set "FMT_!MODEL_COUNT!=SafeTensor") else (set "FMT_!MODEL_COUNT!=FP16")
+        
+        :: Get file size
+        for %%G in ("%MODELS%\%%F") do set "CUR_SIZE=%%~zG"
+        
+        :: Check if conversion is needed
+        set "STATUS_!MODEL_COUNT!="
+        if not "!EXT!"=="gguf" (
+            if not exist "%MODELS%\%%~nF.gguf" (
+                set "STATUS_!MODEL_COUNT!= ^(needs conversion^)"
+            )
+        )
+        
+        echo   '!MODEL_COUNT!'  %%F
+        echo       Format: !FMT_%MODEL_COUNT%!
+        if not "!STATUS_%MODEL_COUNT%!"=="" (
+            color 0C
+            echo       Status: !STATUS_%MODEL_COUNT%!
+            color 0B
+        )
+        echo.
+    )
 )
+endlocal & setlocal EnableDelayedExpansion
 
 if %MODEL_COUNT% EQU 0 (
-    echo   No models found in:
-    echo   %MODELS%
+    color 0C
+    echo   ^^! No models found in %MODELS%
+    color 0B
     echo.
     echo   Please download a model using model-manager.bat first.
     echo.
@@ -128,13 +174,13 @@ if %MODEL_COUNT% EQU 0 (
     exit /b 1
 )
 
-echo   D. Download a new model
-echo   0. Exit
-echo.
-echo ==================================================
+echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo   D  Download a new model
+echo   0  Exit
+echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 echo.
 set "model_choice="
-set /p model_choice="Select model (1-%MODEL_COUNT%): "
+set /p model_choice=" ^> Select model (1-%MODEL_COUNT%): "
 
 if /i "%model_choice%"=="D" (
     start "" /d "%ROOT%" "%ROOT%\model-manager.bat"
