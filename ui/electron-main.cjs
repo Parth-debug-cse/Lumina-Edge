@@ -12,16 +12,18 @@ function isPortOpen(port, timeout = 5000) {
   return new Promise((resolve) => {
     const startTime = Date.now();
     const check = () => {
-      const req = http.get(`http://127.0.0.1:${port}/api/supported-formats`, (res) => {
-        resolve(true);
+      const req = http.get(`http://127.0.0.1:${port}/api/health`, (res) => {
+        res.on('data', () => {}); // Consume response
+        resolve(res.statusCode === 200);
       });
       req.on('error', () => {
         if (Date.now() - startTime < timeout) {
-          setTimeout(check, 100);
+          setTimeout(check, 50); // Check every 50ms instead of 100ms
         } else {
           resolve(false);
         }
       });
+      req.setTimeout(1000);
       req.end();
     };
     check();

@@ -22,7 +22,7 @@ function formatTime(iso) {
   catch { return '' }
 }
 
-export default function ChatPanel({ serverStatus, toast }) {
+export default function ChatPanel({ serverStatus, serverModel, toast }) {
   const cfg = getConfig()
   const [sessions, setSessions]       = useState(getSessions)
   const [activeId, setActiveId]       = useState(getActiveSessionId)
@@ -79,8 +79,20 @@ export default function ChatPanel({ serverStatus, toast }) {
   // ---- Send message ----
   const sendMessage = async () => {
     if (!input.trim() || streaming) return
-    if (serverStatus !== 'online') {
-      toast('Model server is loading... Please wait or load a model in the Model Manager', 'error'); return
+    
+    if (serverStatus === 'offline') {
+      toast('❌ API server is offline. Please restart the app.', 'error')
+      return
+    }
+    if (serverStatus === 'checking') {
+      toast('⏳ Server is loading... Please wait.', 'info')
+      return
+    }
+    
+    // Check if model is loaded
+    if (!serverModel || serverModel === 'none') {
+      toast('📦 No model loaded. Go to Model Manager → Download or Load tab to load a model.', 'error')
+      return
     }
 
     let session = activeSession
