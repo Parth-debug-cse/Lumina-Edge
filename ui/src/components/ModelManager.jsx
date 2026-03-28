@@ -4,6 +4,7 @@ import {
   getSessions, exportAsJSON, exportAsMarkdown,
   deleteSession,
 } from '../utils/storage.js'
+import { downloadModel } from '../utils/api.js'
 
 // Helper to detect model format
 function getModelFormat(filename) {
@@ -335,7 +336,40 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
 }
 
 function DownloadCard({ model, toast }) {
+  const [downloading, setDownloading] = useState(false)
   const q = QUALITY_BADGE[model.quality] || QUALITY_BADGE['medium']
+  
+  const handleDownload = async () => {
+    if (downloading) return
+    setDownloading(true)
+    console.log(`[Download] Starting download: ${model.name}`)
+    console.log(`[Download] URL: ${model.url}`)
+    console.log(`[Download] Filename: ${model.filename}`)
+    
+    try {
+      toast(`Starting download of ${model.name}...`, 'info')
+      const result = await downloadModel(model.url, model.filename)
+      
+      console.log(`[Download] Response:`, result)
+      
+      if (result.error) {
+        console.error(`[Download] Error: ${result.error}`)
+        toast(`Download failed: ${result.error}`, 'error')
+      } else if (result.status === 'exists') {
+        toast(`Model already exists in models/ folder`, 'info')
+      } else if (result.status === 'started') {
+        toast(`✓ ${model.name} is downloading in the background. Check the console for progress.`, 'success')
+      } else {
+        toast(`${model.name} download initiated`, 'success')
+      }
+    } catch (err) {
+      console.error(`[Download] Exception:`, err)
+      toast(`Error: ${err.message}`, 'error')
+    }
+    
+    setDownloading(false)
+  }
+  
   return (
     <div className="model-card" style={{ cursor: 'default' }}>
       <div className="model-card-header">
@@ -352,18 +386,16 @@ function DownloadCard({ model, toast }) {
       <div style={{ fontSize: '0.73rem', color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.5 }}>
         {model.desc}
       </div>
-      <a
-        href={model.url}
-        target="_blank"
-        rel="noopener noreferrer"
+      <button
         className="btn btn-primary"
-        style={{ width: '100%', justifyContent: 'center' }}
-        onClick={() => toast(`Opening download for ${model.name}…`, 'info')}
+        style={{ width: '100%', justifyContent: 'center', opacity: downloading ? 0.6 : 1, cursor: downloading ? 'not-allowed' : 'pointer' }}
+        onClick={handleDownload}
+        disabled={downloading}
       >
-        Download from HuggingFace
-      </a>
+        {downloading ? '⏳ Downloading...' : '⬇ Download'}
+      </button>
       <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>
-        Save to <span className="font-mono">models/</span> then reload the app
+        Saves to <span className="font-mono">models/</span> folder automatically
       </div>
     </div>
   )

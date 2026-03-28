@@ -4,6 +4,7 @@ import { spawn, exec } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { fileURLToPath } from 'url';
 
 const app = express();
 app.use(cors());
@@ -11,11 +12,26 @@ app.use(express.json());
 
 const PORT = 1235;
 
+// Create __dirname for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 // Root paths
 const rootDir = path.resolve(__dirname, '..');
 const scriptsDir = path.join(rootDir, 'scripts');
 const modelsDir = path.join(rootDir, 'models');
 const binDir = path.join(rootDir, 'bin');
+
+console.log('[API Server] Starting Lumina Edge API Gateway');
+console.log('[API Server] Root directory:', rootDir);
+console.log('[API Server] Models directory:', modelsDir);
+console.log('[API Server] Listening on port:', PORT);
+
+// Ensure models directory exists
+if (!fs.existsSync(modelsDir)) {
+  fs.mkdirSync(modelsDir, { recursive: true });
+  console.log('[API Server] Created models directory');
+}
 
 // State maps
 const conversionJobs = new Map(); // file -> status
@@ -23,7 +39,16 @@ const routerModels = new Map(); // id -> model info
 let routingPolicy = 'round-robin';
 let nextPort = 8000;
 
-// === CONVERSION API ===
+// === HEALTH CHECK ===
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.get('/api/test', (req, res) => {
+  console.log('[Test Endpoint] Hit');
+  res.json({ test: 'success', message: 'API server is working' });
+});
 
 app.get('/api/supported-formats', (req, res) => {
   const isMac = os.platform() === 'darwin' && os.arch() === 'arm64';
@@ -31,6 +56,35 @@ app.get('/api/supported-formats', (req, res) => {
     formats: isMac ? ['safetensors', 'mlx', 'gguf', 'pt', 'bin'] : ['gguf', 'safetensors', 'bin', 'pt'],
     converter_available: fs.existsSync(path.join(scriptsDir, 'model-converter.py'))
   });
+});
+
+app.get('/api/models/list', (req, res) => {
+  try {
+    const files = fs.readdirSync(modelsDir);
+    const models = files
+      .filter(f => ['.gguf', '.safetensors', '.bin', '.pt'].includes(path.extname(f).toLowerCase()))
+      .map(f => {
+        const stats = fs.statSync(path.join(modelsDir, f));
+        return {
+          name: f,
+          size: (stats.size / 1024 / 1024 / 1024).toFixed(2) + ' GB',
+          mtime: stats.mtime
+        };
+      });
+    res.json(models);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/save-config', (req, res) => {
+  try {
+    const configPath = path.join(rootDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify(req.body, null, 2));
+    res.json({ status: 'success' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/convert-model', (req, res) => {
@@ -158,7 +212,7 @@ app.post('/api/router/load', (req, res) => {
       '--host', '127.0.0.1',
       '--ctx-size', (config.ctx_size || 4096).toString(),
       '--n-gpu-layers', (config.n_gpu_layers || 99).toString(),
-      '--flash-attn',
+      '--flash-attn', 'on',
       '--mlock'
     ];
     
@@ -199,6 +253,132 @@ app.delete('/api/router/unload/:id', (req, res) => {
   res.json({ status: 'success' });
 });
 
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Lumina Edge Internal API Gateway listening on port ${PORT}`);
+// === MODEL DOWNLOAD ===
+
+app.post('/api/download-model', async (req, res) => {
+  const { url, filename } = req.body;
+  console.log('[Download] Request received:', { url: url?.substring(0, 80), filename });
+  
+  if (!url || !filename) {
+    console.error('[Download] Missing url or filename');
+    return res.status(400).json({ error: 'url and filename required' });
+  }
+  
+  const outputPath = path.join(modelsDir, filename);
+  
+  // Check if already exists
+  if (fs.existsSync(outputPath)) {
+    console.log('[Download] File already exists:', filename);
+    return res.json({ status: 'exists', path: outputPath, filename });
+  }
+  
+  // Make sure directory exists
+  if (!fs.existsSync(modelsDir)) {
+    fs.mkdirSync(modelsDir, { recursive: true });
+  }
+  
+  res.json({ status: 'started', filename });
+  
+  // Download in background
+  downloadInBackground(url, outputPath, filename);
+});
+
+async function downloadInBackground(url, outputPath, filename) {
+  try {
+    console.log(`[Download] Starting: ${filename}`);
+    
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    const fileStream = fs.createWriteStream(outputPath);
+    await new Promise((resolve, reject) => {
+      response.body.pipe(fileStream);
+      fileStream.on('finish', resolve);
+      fileStream.on('error', reject);
+    });
+    
+    const stats = fs.statSync(outputPath);
+    console.log(`[Download] ✓ Complete: ${filename} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
+  } catch (err) {
+    console.error(`[Download] ✗ Failed: ${filename}`, err.message);
+    fs.unlink(outputPath, () => {});
+  }
+}
+
+// ===== SERVER STARTUP =====
+const server = app.listen(PORT, '127.0.0.1', () => {
+  console.log(`[API Server] ✓ Listening on http://127.0.0.1:${PORT}`);
+  console.log(`[API Server] Ready to accept connections`);
+});
+
+// Handle startup errors
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[API Server] ✗ Port ${PORT} is already in use`);
+    console.error(`[API Server] Make sure no other Lumina Edge instance is running`);
+  } else {
+    console.error(`[API Server] ✗ Server error:`, err.message);
+  }
+  process.exit(1);
+});
+
+// Proxy /v1 requests to the first ready model
+app.all(/^\/v1\/.*/, async (req, res) => {
+  const readyModel = Array.from(routerModels.values()).find(m => m.status === 'ready');
+  if (!readyModel) {
+    return res.status(502).json({ error: 'No models currently loaded. Port 8000 is inactive.' });
+  }
+
+  const targetUrl = `http://127.0.0.1:${readyModel.port}${req.originalUrl}`;
+  const headers = { ...req.headers };
+  delete headers.host;
+  delete headers['content-length']; // Let fetch recalculate this
+
+  try {
+    console.log(`[API Proxy] Fetching: ${targetUrl}`);
+    const fetchOptions = {
+      method: req.method,
+      headers: headers,
+    };
+
+    if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body) {
+      fetchOptions.body = JSON.stringify(req.body);
+    }
+
+    const response = await fetch(targetUrl, fetchOptions);
+
+    res.status(response.status);
+    for (const [key, value] of response.headers.entries()) {
+      res.setHeader(key, value);
+    }
+
+    if (response.body) {
+      const reader = response.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+    }
+    res.end();
+  } catch (err) {
+    console.error(`[API Proxy] Error: ${err.message}`);
+    res.status(500).json({ error: 'Proxy failed', message: err.message });
+  }
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('[API Server] Shutting down...');
+  server.close(() => {
+    console.log('[API Server] Closed');
+    process.exit(0);
+  });
 });

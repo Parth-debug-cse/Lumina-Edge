@@ -52,17 +52,45 @@ export default function App() {
   const [localModels, setLocalModels]   = useState([]) // populated from server models list
   const { toasts, addToast } = useToasts()
 
+  // ---- Fetch local models ----
+  const fetchLocalModels = useCallback(async () => {
+    try {
+      const res = await fetch('/api/models/list')
+      if (res.ok) {
+        const data = await res.json()
+        setLocalModels(data)
+      }
+    } catch (err) {
+      console.error('Failed to fetch models:', err)
+    }
+  }, [])
+
   // ---- Server health polling ----
   const pollHealth = useCallback(async () => {
     const result = await checkServerHealth()
     setServerStatus(result.status)
     if (result.model) setServerModel(result.model)
-  }, [])
+    // Also refresh models list when checking health
+    fetchLocalModels()
+  }, [fetchLocalModels])
 
   useEffect(() => {
+    // Poll immediately on mount
     pollHealth()
-    const interval = setInterval(pollHealth, 8000)
-    return () => clearInterval(interval)
+    
+    // Then poll frequently for first 10 seconds, then back off
+    let rapidCount = 0;
+    const rapidInterval = setInterval(() => {
+      pollHealth()
+      rapidCount++
+      if (rapidCount >= 10) {
+        clearInterval(rapidInterval)
+        // Switch to slower polling after initial startup
+        setInterval(pollHealth, 8000)
+      }
+    }, 1000) // Check every second for first 10 seconds
+    
+    return () => clearInterval(rapidInterval)
   }, [pollHealth])
 
   // ---- Panel title ----
@@ -71,7 +99,7 @@ export default function App() {
   // ---- Render current panel ----
   const renderPanel = () => {
     switch (activePanel) {
-      case 'chat':      return <ChatPanel      serverStatus={serverStatus} toast={addToast} />
+      case 'chat':      return <ChatPanel      serverStatus={serverStatus} serverModel={serverModel} toast={addToast} />
       case 'models':    return <ModelManager   localModels={localModels}   toast={addToast} />
       case 'benchmark': return <BenchmarkPanel serverStatus={serverStatus} toast={addToast} />
       case 'router':    return <MultiModelPanel                            toast={addToast} />
@@ -120,17 +148,28 @@ export default function App() {
             <div className={`status-dot ${serverStatus}`} />
             <div>
               <div style={{ fontWeight: 600, fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                {serverStatus === 'online'   ? 'Server Online'  :
-                 serverStatus === 'offline'  ? 'Server Offline' : 'Connecting…'}
+                {serverStatus === 'offline' ? '🔴 Offline' :
+                 serverStatus === 'checking' ? '🟠 Starting...' :
+                 serverModel && serverModel !== 'none' ? '🟢 Model Loaded' : '🟡 API Ready'}
               </div>
-              {serverStatus === 'online' && serverModel && (
+              {serverStatus === 'offline' && (
+                <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                  Restart the app
+                </div>
+              )}
+              {serverStatus === 'checking' && (
+                <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                  Initializing...
+                </div>
+              )}
+              {serverStatus === 'online' && serverModel && serverModel !== 'none' && (
                 <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: 2, fontFamily: "'JetBrains Mono', monospace", maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {serverModel}
                 </div>
               )}
-              {serverStatus === 'offline' && (
+              {serverStatus === 'online' && (!serverModel || serverModel === 'none') && (
                 <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                  Run lumina-api.sh
+                  Load a model to chat
                 </div>
               )}
             </div>

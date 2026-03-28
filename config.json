@@ -1,6 +1,6 @@
 {
-  "threads": 4,
-  "ctx_size": 4096,
+  "threads": 8,
+  "ctx_size": 8192,
   "batch_size": 512,
   "ubatch_size": 256,
   "n_gpu_layers": "auto",
@@ -8,28 +8,6 @@
   "top_p": 0.9,
   "repeat_penalty": 1.1,
   "json_output": false,
-  "api_port": 1234,
-  "cli_port": 1234,
-  "system_prompt": "You are a precise, efficient AI assistant.",
-  "auto_convert_models": false,
-  "default_quantization": "Q4_K_M",
-  "converter_available": "auto",
-  "multi_model": {
-    "enabled": false,
-    "routing_policy": "round-robin",
-    "models": []
-  },
-  "shard_support": {
-    "auto_detect": true,
-    "max_memory_gb": 16,
-    "merge_on_load": true
-  },
-  "_documentation": {
-    "launcher": "Use 'core/lumina-launcher.sh' (Linux) or 'core/lumina-launcher.bat' (Windows) with --mode and --gpu flags",
-    "modes": ["api (OpenAI-compatible server)", "core (interactive chat)", "router (multi-model)"],
-    "gpu_backends": ["vulkan (cross-platform)", "nvidia (CUDA)"],
-    "model_manager": "Use 'python core/lumina-model-manager.py' to download and manage models",
-    "optimization": "Use 'python scripts/optimize_system.py' to free memory before inference"
-  }
+  "api_port": 1235,
+  "system_prompt": "You are a precise, efficient AI assistant."
 }
-

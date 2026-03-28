@@ -5,6 +5,21 @@
 const BASE_URL = '/v1'
 
 /**
+ * Test if the API server is accessible
+ */
+export async function testAPI() {
+  try {
+    const res = await fetch('/api/test')
+    const data = await res.json()
+    console.log('[API Test] Success:', data)
+    return { ok: true, data }
+  } catch (err) {
+    console.error('[API Test] Failed:', err)
+    return { ok: false, error: err.message }
+  }
+}
+
+/**
  * Send a chat message to the llama-server OpenAI-compat API.
  * Calls onChunk(text) for each streamed token.
  */
@@ -54,19 +69,39 @@ export async function streamChat({ messages, model, temperature = 0.7, topP = 0.
 }
 
 /**
- * Check if llama-server is reachable.
+ * Check if the API gateway and Llama server are reachable.
  */
 export async function checkServerHealth() {
   try {
+    // Check if API gateway is alive
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 3000)
-    const res = await fetch(`${BASE_URL}/models`, { signal: controller.signal })
+    const timeout = setTimeout(() => controller.abort(), 2000)
+    
+    const apiRes = await fetch('/api/health', { signal: controller.signal })
     clearTimeout(timeout)
-    if (!res.ok) return { status: 'offline' }
-    const data = await res.json()
-    const model = data.data?.[0]?.id || 'unknown'
-    return { status: 'online', model }
-  } catch {
+    
+    if (!apiRes.ok) return { status: 'offline' }
+    
+    // API gateway is alive - check if a model is loaded
+    let modelName = 'none'
+    try {
+      const llmController = new AbortController()
+      const llmTimeout = setTimeout(() => llmController.abort(), 1000)
+      const llmRes = await fetch(`${BASE_URL}/models`, { signal: llmController.signal })
+      clearTimeout(llmTimeout)
+      
+      if (llmRes.ok) {
+        const data = await llmRes.json()
+        modelName = data.data?.[0]?.id || 'unknown'
+        return { status: 'online', model: modelName }
+      }
+    } catch {
+      // Model server not responding - that's fine, just means no model loaded
+    }
+    
+    // API is alive, just no model loaded
+    return { status: 'online', model: modelName }
+  } catch (err) {
     return { status: 'offline' }
   }
 }
@@ -82,6 +117,36 @@ export async function getModels() {
     return data.data || []
   } catch {
     return []
+  }
+}
+
+/**
+ * Download a model from HuggingFace to the models/ folder.
+ */
+export async function downloadModel(url, filename) {
+  try {
+    console.log('[API] Download request:', { url, filename })
+    
+    const res = await fetch('/api/download-model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, filename }),
+    })
+    
+    console.log('[API] Download response status:', res.status)
+    
+    if (!res.ok) {
+      const errorText = await res.text()
+      console.error('[API] Download endpoint error:', errorText)
+      return { error: `Server error: ${res.status}` }
+    }
+    
+    const result = await res.json()
+    console.log('[API] Download response:', result)
+    return result
+  } catch (err) {
+    console.error('[API] Download exception:', err)
+    return { error: err.message }
   }
 }
 

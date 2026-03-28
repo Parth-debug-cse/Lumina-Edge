@@ -54,10 +54,23 @@ export default function SettingsPanel({ toast }) {
     setSaved(false)
   }
 
-  const save = () => {
+  const save = async () => {
     saveConfig(cfg)
-    toast('Settings saved to disk', 'success')
-    setSaved(true)
+    try {
+      const res = await fetch('/api/save-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg)
+      })
+      if (res.ok) {
+        toast('Settings saved to disk', 'success')
+        setSaved(true)
+      } else {
+        toast('Failed to save to config.json', 'error')
+      }
+    } catch (err) {
+      toast(`Save error: ${err.message}`, 'error')
+    }
   }
 
   const reset = () => {

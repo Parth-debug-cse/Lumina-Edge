@@ -187,8 +187,10 @@ body {
 .status-dot.online  { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse-green 2s infinite; }
 .status-dot.offline { background: var(--red); }
 .status-dot.checking{ background: var(--yellow); animation: pulse-yellow 1s infinite; }
+.status-dot.ready   { background: #ff9800; animation: pulse-orange 1.5s infinite; }
 @keyframes pulse-green  { 0%,100%{opacity:1} 50%{opacity:0.5} }
 @keyframes pulse-yellow { 0%,100%{opacity:1} 50%{opacity:0.4} }
+@keyframes pulse-orange { 0%,100%{opacity:1} 50%{opacity:0.5} }
 
 /* ========================================================
    MAIN CONTENT AREA
