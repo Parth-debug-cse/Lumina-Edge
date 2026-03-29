@@ -428,3 +428,15 @@ export async function getShardedModelMemory(modelPath) {
     return null
   }
 }
+/**
+ * Trigger system optimization (frees RAM, stops background services)
+ */
+export async function optimizeSystem() {
+  try {
+    const res = await fetch('/api/system/optimize', { method: 'POST' })
+    if (!res.ok) throw new Error(`Optimization error ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to optimize system: ${err.message}`)
+  }
+}
