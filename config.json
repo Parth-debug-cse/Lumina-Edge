@@ -8,6 +8,5 @@
   "top_p": 0.9,
   "repeat_penalty": 1.1,
   "json_output": false,
-  "api_port": 1235,
-  "system_prompt": "You are a precise, efficient AI assistant."
+  "api_port": 1235
 }

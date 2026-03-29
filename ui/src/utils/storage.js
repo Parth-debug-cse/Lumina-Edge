@@ -120,7 +120,6 @@ export const DEFAULT_CONFIG = {
   repeat_penalty: 1.1,
   json_output: false,
   api_port: 1234,
-  system_prompt: 'You are a precise, efficient AI assistant.',
 }
 
 export function getConfig() {

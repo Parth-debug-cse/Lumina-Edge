@@ -138,11 +138,6 @@ export default function ChatPanel({ serverStatus, serverModel, toast }) {
 
     try {
       const apiMsgs = updatedMsgs.map(({ role, content }) => ({ role, content }))
-      // Prepend system prompt if not present
-      if (apiMsgs[0]?.role !== 'system') {
-        apiMsgs.unshift({ role: 'system', content: cfg.system_prompt || 'You are a precise, efficient AI assistant.' })
-      }
-
       let accumulated = ''
       await streamChat({
         messages: apiMsgs,

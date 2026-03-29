@@ -149,6 +149,35 @@ app.post('/api/convert/detect-shards', (req, res) => {
   });
 });
 
+// === SYSTEM OPTIMIZATION ===
+
+app.post('/api/system/optimize', (req, res) => {
+  const pythonCmd = os.platform() === 'win32' ? 'python' : 'python3';
+  const scriptPath = path.join(scriptsDir, 'optimize_system.py');
+  
+  console.log('[System Optimizer] Starting optimization...');
+  
+  const proc = spawn(pythonCmd, [scriptPath]);
+  let output = '';
+  
+  proc.stdout.on('data', (data) => {
+    output += data.toString();
+  });
+  
+  proc.stderr.on('data', (data) => {
+    output += data.toString();
+  });
+  
+  proc.on('close', (code) => {
+    console.log('[System Optimizer] Process finished with code:', code);
+    res.json({
+      success: code === 0,
+      output: output,
+      code: code
+    });
+  });
+});
+
 // === ROUTER BACKEND ===
 
 app.get('/api/router/status', (req, res) => {

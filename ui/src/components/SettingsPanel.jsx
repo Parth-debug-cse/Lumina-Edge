@@ -30,13 +30,6 @@ const SECTIONS = [
     ],
   },
   {
-    id: 'prompt',
-    title: 'Prompt',
-    fields: [
-      { key: 'system_prompt', label: 'System Prompt',  type: 'textarea', hint: 'Default system prompt for new chat sessions.' },
-    ],
-  },
-  {
     id: 'output',
     title: 'Output Mode',
     fields: [

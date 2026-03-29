@@ -4,7 +4,7 @@ import {
   getSessions, exportAsJSON, exportAsMarkdown,
   deleteSession,
 } from '../utils/storage.js'
-import { downloadModel } from '../utils/api.js'
+import { downloadModel, optimizeSystem, loadModel as apiLoadModel } from '../utils/api.js'
 
 // Helper to detect model format
 function getModelFormat(filename) {
@@ -179,6 +179,29 @@ export default function ModelManager({ localModels = [], toast }) {
             >{t}</button>
           ))}
         </div>
+
+        {/* System optimization button */}
+        <button 
+          className="btn btn-secondary btn-sm"
+          style={{ gap: 6, borderColor: 'var(--color-cyan)', color: 'var(--color-cyan)', marginLeft: 'auto' }}
+          onClick={async () => {
+            const confirmed = window.confirm("This will free up system RAM and pause non-essential background services. Continue?")
+            if (!confirmed) return
+            toast('⚙ Optimizing system... please wait.', 'info')
+            try {
+              const res = await optimizeSystem()
+              if (res.success) {
+                toast('✓ System optimized successfully!', 'success')
+              } else {
+                toast('⚠ Optimization partially complete.', 'info')
+              }
+            } catch (err) {
+              toast(`Error: ${err.message}`, 'error')
+            }
+          }}
+        >
+          ⚡ Optimize System
+        </button>
       </div>
 
       {/* Content */}
@@ -226,6 +249,7 @@ export default function ModelManager({ localModels = [], toast }) {
 }
 
 function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, onAddTag, onRemoveTag, onToggleAdding, toast }) {
+  const [loading, setLoading] = useState(false)
   const [converting, setConverting] = useState(false)
   const format = getModelFormat(model.name)
   const needsConversion = format.type !== 'GGUF'
@@ -253,6 +277,24 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
       toast(`Conversion error: ${err.message}`, 'error')
     } finally {
       setConverting(false)
+    }
+  }
+
+  const handleLoad = async () => {
+    if (loading) return
+    setLoading(true)
+    try {
+      toast(`Loading ${model.name}...`, 'info')
+      const result = await apiLoadModel(model.name)
+      if (result.status === 'success') {
+        toast(`✓ Model loaded successfully on port ${result.port}!`, 'success')
+      } else {
+        toast(`Failed to load: ${result.error}`, 'error')
+      }
+    } catch (err) {
+      toast(`Error loading model: ${err.message}`, 'error')
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -317,7 +359,6 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
           <button className="btn btn-primary btn-sm" onClick={() => onAddTag(tagInputVal)}>Add</button>
         </div>
       )}
-
       {needsConversion && (
         <div style={{ marginTop: 8, padding: 8, background: 'rgba(255,165,0,0.1)', borderRadius: 'var(--r-sm)', border: '1px solid rgba(255,165,0,0.3)', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
           <div style={{ marginBottom: 6 }}>This model is in {format.label} format. Convert to GGUF to use it.</div>
@@ -328,6 +369,19 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
             disabled={converting}
           >
             {converting ? '⏳ Converting...' : '🔄 Convert to GGUF'}
+          </button>
+        </div>
+      )}
+
+      {!needsConversion && (
+        <div style={{ marginTop: 8 }}>
+          <button
+            className="btn btn-primary btn-sm"
+            style={{ width: '100%', background: 'var(--color-green)', borderColor: 'var(--color-green)' }}
+            onClick={handleLoad}
+            disabled={loading}
+          >
+            {loading ? '⏳ Loading...' : '▶ Load Model'}
           </button>
         </div>
       )}
