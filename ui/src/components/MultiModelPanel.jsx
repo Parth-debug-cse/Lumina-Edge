@@ -28,7 +28,6 @@ export default function MultiModelPanel({ toast }) {
         setRoutingPolicy(status.routing_policy || 'round-robin')
       }
     } catch (err) {
-      console.error('Failed to load router status:', err)
     }
   }
 

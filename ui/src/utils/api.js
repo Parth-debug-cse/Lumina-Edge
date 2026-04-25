@@ -5,21 +5,6 @@
 const BASE_URL = '/v1'
 
 /**
- * Test if the API server is accessible
- */
-export async function testAPI() {
-  try {
-    const res = await fetch('/api/test')
-    const data = await res.json()
-    console.log('[API Test] Success:', data)
-    return { ok: true, data }
-  } catch (err) {
-    console.error('[API Test] Failed:', err)
-    return { ok: false, error: err.message }
-  }
-}
-
-/**
  * Send a chat message to the llama-server OpenAI-compat API.
  * Calls onChunk(text) for each streamed token.
  */

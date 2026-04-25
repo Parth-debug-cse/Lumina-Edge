@@ -8,6 +8,7 @@
 import os
 import sys
 import json
+import subprocess
 import urllib.request
 import urllib.error
 import platform
@@ -327,7 +328,10 @@ class ModelManager:
 def main():
     """Main entry point"""
     # Clear screen (cross-platform)
-    os.system('cls' if os.name == 'nt' else 'clear')
+    try:
+        subprocess.run(['cls' if os.name == 'nt' else 'clear'], shell=True, check=False)
+    except Exception:
+        pass
     
     manager = ModelManager()
     try:

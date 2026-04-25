@@ -45,11 +45,6 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-app.get('/api/test', (req, res) => {
-  console.log('[Test Endpoint] Hit');
-  res.json({ test: 'success', message: 'API server is working' });
-});
-
 app.get('/api/supported-formats', (req, res) => {
   const isMac = os.platform() === 'darwin' && os.arch() === 'arm64';
   res.json({
@@ -138,7 +133,8 @@ app.post('/api/convert/detect-shards', (req, res) => {
   const target = path.isAbsolute(model_path) ? model_path : path.join(modelsDir, model_path);
   
   const pythonCmd = os.platform() === 'win32' ? 'python' : 'python3';
-  exec(`${pythonCmd} ${path.join(scriptsDir, 'model-converter.py')} shards "${target}"`, (err, stdout) => {
+  const { execFile } = require('child_process');
+  execFile(pythonCmd, [path.join(scriptsDir, 'model-converter.py'), 'shards', target], (err, stdout) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json({
       is_sharded: stdout.includes('Sharded: True'),

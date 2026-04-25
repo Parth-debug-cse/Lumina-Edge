@@ -396,9 +396,7 @@ function DownloadCard({ model, toast }) {
   const handleDownload = async () => {
     if (downloading) return
     setDownloading(true)
-    console.log(`[Download] Starting download: ${model.name}`)
-    console.log(`[Download] URL: ${model.url}`)
-    console.log(`[Download] Filename: ${model.filename}`)
+
     
     try {
       toast(`Starting download of ${model.name}...`, 'info')
@@ -407,7 +405,6 @@ function DownloadCard({ model, toast }) {
       console.log(`[Download] Response:`, result)
       
       if (result.error) {
-        console.error(`[Download] Error: ${result.error}`)
         toast(`Download failed: ${result.error}`, 'error')
       } else if (result.status === 'exists') {
         toast(`Model already exists in models/ folder`, 'info')
@@ -417,7 +414,6 @@ function DownloadCard({ model, toast }) {
         toast(`${model.name} download initiated`, 'success')
       }
     } catch (err) {
-      console.error(`[Download] Exception:`, err)
       toast(`Error: ${err.message}`, 'error')
     }
     

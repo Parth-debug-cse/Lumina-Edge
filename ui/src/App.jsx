@@ -61,7 +61,7 @@ export default function App() {
         setLocalModels(data)
       }
     } catch (err) {
-      console.error('Failed to fetch models:', err)
+      // Silently handle fetch error
     }
   }, [])
 
