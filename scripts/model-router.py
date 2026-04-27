@@ -16,6 +16,9 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 import time
 import uuid
+import urllib.request
+import urllib.error
+import concurrent.futures
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -64,6 +67,7 @@ class ModelRouter:
         self.models: Dict[str, ModelInstance] = {}
         self.routing_policy = "round-robin"  # round-robin, load-balanced, first-available
         self.model_lock = threading.Lock()
+        self._rr_index = 0  # For true round-robin
         self.load_config()
     
     def load_config(self):
@@ -132,12 +136,18 @@ class ModelRouter:
             return ready_models[0]
         
         if self.routing_policy == "round-robin":
-            # Simple round-robin by selection count
-            return min(ready_models, key=lambda m: m.inference_count)
+            # True round-robin: cycle through all ready models
+            with self.model_lock:
+                selected = ready_models[self._rr_index % len(ready_models)]
+                self._rr_index += 1
+            return selected
         
         elif self.routing_policy == "load-balanced":
-            # Balance by inference count and model size
-            return min(ready_models, key=lambda m: m.inference_count)
+            # Balance by inference count, skip dead processes
+            alive_models = [m for m in ready_models if self._is_process_alive(m)]
+            if not alive_models:
+                return None
+            return min(alive_models, key=lambda m: m.inference_count)
         
         elif self.routing_policy == "first-available":
             # Return first ready model
@@ -162,13 +172,15 @@ class ModelRouter:
                 self.models[model_id].loaded_at = time.time()
                 logger.info(f"✓ Model {model_id} is ready (PID: {process_id})")
     
-    def mark_error(self, model_id: str, error_msg: str):
-        """Mark model as errored"""
-        with self.model_lock:
-            if model_id in self.models:
-                self.models[model_id].status = ModelStatus.ERROR
-                self.models[model_id].error_message = error_msg
-                logger.error(f"✗ Model {model_id} error: {error_msg}")
+    def _is_process_alive(self, model: ModelInstance) -> bool:
+        """Check if model's process is still alive"""
+        if not model.process_id:
+            return False
+        try:
+            os.kill(model.process_id, 0)  # Signal 0 just checks if process exists
+            return True
+        except ProcessLookupError:
+            return False
     
     def record_inference(self, model_id: str):
         """Record an inference call"""
@@ -293,30 +305,42 @@ class MultiModelServer:
             
             logger.info(f"🚀 Starting model server: {' '.join(cmd)}")
             
-            # Start process
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
+            # Redirect stdout/stderr to log file
+            log_file = f"/tmp/lumina_model_{port}.log"
+            with open(log_file, 'w') as log_f:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
             
             self.server_processes[instance.id] = process
+            logger.info(f"✓ Model server started (PID: {process.pid}), logs: {log_file}")
             
-            # Wait for server to be ready (poll endpoint)
-            import requests
-            max_retries = 30
-            for attempt in range(max_retries):
+            # Wait for server to be ready (poll /health endpoint)
+            start_time = time.time()
+            timeout = 60  # 60 seconds total
+            
+            while time.time() - start_time < timeout:
+                if process.poll() is not None:
+                    # Process died
+                    self.router.mark_error(instance.id, f"Process exited early (rc={process.returncode})")
+                    return None
+                
                 try:
-                    resp = requests.get(f"http://127.0.0.1:{port}/v1/models", timeout=2)
-                    if resp.status_code == 200:
-                        self.router.mark_ready(instance.id, process.pid)
-                        logger.info(f"✓ Model server ready on port {port}")
-                        return instance
-                except:
-                    time.sleep(0.5)
+                    req = urllib.request.Request(f"http://127.0.0.1:{port}/health", method='GET')
+                    with urllib.request.urlopen(req, timeout=2) as response:
+                        if response.status == 200:
+                            self.router.mark_ready(instance.id, process.pid)
+                            logger.info(f"✓ Model server ready on port {port}")
+                            return instance
+                except urllib.error.URLError:
+                    pass
+                
+                time.sleep(1)
             
-            logger.warning(f"Server did not respond after {max_retries} attempts")
+            logger.warning(f"Server did not respond after {timeout} seconds")
             self.router.mark_error(instance.id, "Server startup timeout")
             return None
         
@@ -364,6 +388,134 @@ class MultiModelServer:
         
         self.server_processes.clear()
         logger.info("✓ All models shut down")
+
+
+class AgentDispatcher:
+    """
+    Sends inference tasks to models via HTTP and collects results.
+    Supports: single dispatch, parallel ensemble, sequential pipeline.
+    """
+
+    def __init__(self, server: MultiModelServer):
+        self.server = server
+
+    def _call_model(self, model: ModelInstance, prompt: str, system: str = "",
+                    max_tokens: int = 512, temperature: float = 0.7) -> dict:
+        """
+        POST to http://127.0.0.1:{port}/v1/chat/completions (OpenAI-compatible).
+        Use urllib.request (no external deps).
+        """
+        payload = {
+            "model": "local",
+            "messages": [
+                {"role": "system", "content": system} if system else None,
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": False
+        }
+        payload["messages"] = [m for m in payload["messages"] if m is not None]
+        
+        data = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{model.port}/v1/chat/completions",
+            data=data,
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+        
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+                self.server.router.record_inference(model.id)
+                return {
+                    "model_id": model.id,
+                    "model_name": model.name,
+                    "content": content,
+                    "error": None
+                }
+        except Exception as e:
+            return {
+                "model_id": model.id,
+                "model_name": model.name,
+                "content": None,
+                "error": str(e)
+            }
+
+    def dispatch_single(self, prompt: str, system: str = "",
+                        max_tokens: int = 512, temperature: float = 0.7,
+                        policy: str = None) -> dict:
+        """Send prompt to ONE model selected by routing policy."""
+        model = self.server.router.select_model()
+        if not model:
+            return {"model_id": None, "model_name": None, "content": None, "error": "No models ready"}
+        return self._call_model(model, prompt, system, max_tokens, temperature)
+
+    def dispatch_ensemble(self, prompt: str, system: str = "",
+                          max_tokens: int = 512, temperature: float = 0.7,
+                          models: list = None) -> list:
+        """Send SAME prompt to MULTIPLE models in parallel."""
+        if models:
+            model_instances = [self.server.router.get_model_status(mid) for mid in models if self.server.router.get_model_status(mid)]
+        else:
+            model_instances = self.server.router.get_ready_models()
+        
+        if not model_instances:
+            return [{"model_id": None, "model_name": None, "content": None, "error": "No models ready"}]
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(model_instances)) as executor:
+            futures = [executor.submit(self._call_model, m, prompt, system, max_tokens, temperature) for m in model_instances]
+            return [f.result() for f in concurrent.futures.as_completed(futures)]
+
+    def dispatch_pipeline(self, steps: list) -> list:
+        """Sequential pipeline: output of step N becomes input of step N+1."""
+        results = []
+        prev_output = ""
+        
+        for step in steps:
+            prompt = step['prompt'].replace('{prev_output}', prev_output)
+            system = step.get('system', '')
+            model_id = step.get('model_id')
+            max_tokens = step.get('max_tokens', 512)
+            temperature = step.get('temperature', 0.7)
+            
+            if model_id:
+                model = self.server.router.get_model_status(model_id)
+                if not model or not model.is_ready():
+                    results.append({"step": len(results), "error": f"Model {model_id} not ready"})
+                    break
+                result = self._call_model(model, prompt, system, max_tokens, temperature)
+            else:
+                result = self.dispatch_single(prompt, system, max_tokens, temperature)
+            
+            results.append(result)
+            if result.get('error') or result.get('content') is None:
+                break
+            prev_output = result['content']
+        
+        return results
+
+    def dispatch_map_reduce(self, chunks: list, map_prompt: str,
+                             reduce_prompt: str, system: str = "") -> dict:
+        """MAP: send map_prompt + each chunk to different models in parallel. REDUCE: concatenate all map results, send with reduce_prompt."""
+        # Map phase
+        map_results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(chunks), 4)) as executor:
+            futures = []
+            for chunk in chunks:
+                prompt = map_prompt.replace('{chunk}', chunk)
+                future = executor.submit(self.dispatch_single, prompt, system)
+                futures.append(future)
+            map_results = [f.result() for f in concurrent.futures.as_completed(futures)]
+        
+        # Reduce phase
+        combined = '\n'.join([r['content'] for r in map_results if r['content']])
+        reduce_prompt_full = reduce_prompt.replace('{map_results}', combined)
+        final = self.dispatch_single(reduce_prompt_full, system)
+        
+        return {"map_results": map_results, "final": final}
 
 
 def parallel_load_models(bin_path: str, models_list: List[str], scripts_path: str, models_dir: str) -> MultiModelServer:
@@ -419,6 +571,38 @@ if __name__ == '__main__':
     load_parser.add_argument('--scripts', required=True, help='Path to scripts')
     load_parser.add_argument('--models-dir', required=True, help='Path to models directory')
     
+    # Dispatch commands
+    dispatch_parser = subparsers.add_parser('dispatch', help='Dispatch inference tasks')
+    dispatch_subparsers = dispatch_parser.add_subparsers(dest='dispatch_cmd')
+    
+    # dispatch single
+    single_parser = dispatch_subparsers.add_parser('single', help='Send prompt to one model')
+    single_parser.add_argument('prompt', help='Prompt text')
+    single_parser.add_argument('--system', help='System message')
+    single_parser.add_argument('--model', help='Specific model ID')
+    single_parser.add_argument('--max-tokens', type=int, default=512)
+    
+    # dispatch ensemble
+    ensemble_parser = dispatch_subparsers.add_parser('ensemble', help='Send prompt to multiple models')
+    ensemble_parser.add_argument('prompt', help='Prompt text')
+    ensemble_parser.add_argument('--system', help='System message')
+    ensemble_parser.add_argument('--models', help='Comma-separated model IDs')
+    ensemble_parser.add_argument('--max-tokens', type=int, default=512)
+    
+    # dispatch pipeline
+    pipeline_parser = dispatch_subparsers.add_parser('pipeline', help='Run sequential pipeline')
+    pipeline_parser.add_argument('pipeline_file', help='JSON file with pipeline steps')
+    
+    # dispatch map-reduce
+    mapreduce_parser = dispatch_subparsers.add_parser('map-reduce', help='Map-reduce over chunks')
+    mapreduce_parser.add_argument('chunks_file', help='File with chunks (one per line)')
+    mapreduce_parser.add_argument('--map-prompt', required=True, help='Map prompt template')
+    mapreduce_parser.add_argument('--reduce-prompt', required=True, help='Reduce prompt template')
+    
+    # Agent interactive
+    agent_parser = subparsers.add_parser('agent', help='Interactive agent mode')
+    agent_parser.add_argument('mode', choices=['interactive'], help='Agent mode')
+    
     # Config command
     config_parser = subparsers.add_parser('config', help='Set routing policy')
     config_parser.add_argument('--policy', choices=['round-robin', 'load-balanced', 'first-available'])
@@ -428,7 +612,7 @@ if __name__ == '__main__':
     
     if args.command == 'load':
         server = parallel_load_models(args.bin_path, args.models, args.scripts, args.models_dir)
-        server.router.export_state()
+        print(json.dumps(server.router.get_stats(), indent=2))
     
     elif args.command == 'status':
         router = ModelRouter()
@@ -437,10 +621,126 @@ if __name__ == '__main__':
     
     elif args.command == 'config':
         if args.policy:
-            config = {'routing_policy': args.policy}
+            # Read existing config
+            config = {}
+            if Path(args.config_file).exists():
+                with open(args.config_file, 'r') as f:
+                    config = json.load(f)
+            config['routing_policy'] = args.policy
             with open(args.config_file, 'w') as f:
                 json.dump(config, f, indent=2)
             print(f"✓ Set routing policy to: {args.policy}")
+    
+    elif args.command == 'dispatch':
+        # Load server from state or create new
+        server = MultiModelServer("/tmp/bin", "/tmp/scripts", "/tmp/models")  # Placeholder paths
+        dispatcher = AgentDispatcher(server)
+        
+        if args.dispatch_cmd == 'single':
+            result = dispatcher.dispatch_single(args.prompt, args.system or "", args.max_tokens)
+            print(json.dumps(result, indent=2))
+        
+        elif args.dispatch_cmd == 'ensemble':
+            models = args.models.split(',') if args.models else None
+            results = dispatcher.dispatch_ensemble(args.prompt, args.system or "", args.max_tokens, models=models)
+            print(json.dumps(results, indent=2))
+        
+        elif args.dispatch_cmd == 'pipeline':
+            with open(args.pipeline_file, 'r') as f:
+                steps = json.load(f)
+            results = dispatcher.dispatch_pipeline(steps)
+            print(json.dumps(results, indent=2))
+        
+        elif args.dispatch_cmd == 'map-reduce':
+            with open(args.chunks_file, 'r') as f:
+                chunks = [line.strip() for line in f if line.strip()]
+            result = dispatcher.dispatch_map_reduce(chunks, args.map_prompt, args.reduce_prompt)
+            print(json.dumps(result, indent=2))
+    
+    elif args.command == 'agent' and args.mode == 'interactive':
+        # Load server
+        server = MultiModelServer("/tmp/bin", "/tmp/scripts", "/tmp/models")  # Placeholder
+        dispatcher = AgentDispatcher(server)
+        
+        print("🤖 Lumina Edge Agent Mode")
+        print("Commands: /models, /use <id>, /ensemble, /pipeline, /policy <name>, /stats, /quit")
+        print()
+        
+        current_policy = "round-robin"
+        ensemble_mode = False
+        locked_model = None
+        
+        try:
+            while True:
+                prompt = input("agent> ").strip()
+                if not prompt:
+                    continue
+                
+                if prompt.startswith('/'):
+                    cmd = prompt[1:].split()
+                    if not cmd:
+                        continue
+                    
+                    if cmd[0] == 'models':
+                        models = server.router.get_ready_models()
+                        for m in models:
+                            print(f"  {m.id}: {m.name} (port {m.port})")
+                    
+                    elif cmd[0] == 'use' and len(cmd) > 1:
+                        model = server.router.get_model_status(cmd[1])
+                        if model and model.is_ready():
+                            locked_model = cmd[1]
+                            print(f"✓ Locked to model: {model.name}")
+                        else:
+                            print("✗ Model not found or not ready")
+                    
+                    elif cmd[0] == 'ensemble':
+                        ensemble_mode = not ensemble_mode
+                        print(f"✓ Ensemble mode: {'ON' if ensemble_mode else 'OFF'}")
+                    
+                    elif cmd[0] == 'pipeline':
+                        print("Enter pipeline steps (JSON array):")
+                        try:
+                            steps_json = input("pipeline> ")
+                            steps = json.loads(steps_json)
+                            results = dispatcher.dispatch_pipeline(steps)
+                            print(json.dumps(results, indent=2))
+                        except Exception as e:
+                            print(f"Error: {e}")
+                    
+                    elif cmd[0] == 'policy' and len(cmd) > 1:
+                        current_policy = cmd[1]
+                        print(f"✓ Policy: {current_policy}")
+                    
+                    elif cmd[0] == 'stats':
+                        stats = server.router.get_stats()
+                        print(json.dumps(stats, indent=2))
+                    
+                    elif cmd[0] == 'quit':
+                        break
+                    
+                    else:
+                        print("Unknown command")
+                
+                else:
+                    # Send prompt
+                    if ensemble_mode:
+                        results = dispatcher.dispatch_ensemble(prompt)
+                        for r in results:
+                            print(f"[{r['model_name']}] {r['content'] or r['error']}")
+                    elif locked_model:
+                        model = server.router.get_model_status(locked_model)
+                        if model:
+                            result = dispatcher._call_model(model, prompt)
+                            print(f"[{result['model_name']}] {result['content'] or result['error']}")
+                        else:
+                            print("Locked model no longer available")
+                    else:
+                        result = dispatcher.dispatch_single(prompt)
+                        print(f"[{result['model_name']}] {result['content'] or result['error']}")
+        
+        except KeyboardInterrupt:
+            print("\n👋 Goodbye!")
     
     else:
         parser.print_help()

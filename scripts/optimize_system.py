@@ -11,7 +11,6 @@ import platform
 import subprocess
 import json
 from pathlib import Path
-from typing import Tuple, List
 
 class Colors:
     """ANSI color codes"""
@@ -42,8 +41,8 @@ def get_platform() -> str:
     """Get OS name"""
     return platform.system().lower()
 
-def get_memory_stats() -> Tuple[int, int]:
-    """Get available memory in MB (before, after)"""
+def get_memory_stats() -> int:
+    """Get available memory in MB"""
     system = get_platform()
     
     try:
@@ -166,13 +165,28 @@ def optimize_linux() -> int:
     thp_path = Path('/sys/kernel/mm/transparent_hugepage/enabled')
     if have_root and thp_path.exists():
         try:
-            log_success("Disabling Transparent Huge Pages...")
+            log_success("Setting Transparent Huge Pages to madvise...")
             with open(thp_path, 'w') as f:
                 f.write('madvise')
         except Exception as e:
-            log_warn(f"THP disable failed: {e}")
+            log_warn(f"THP setting failed: {e}")
     
-    # 6. Reduce swappiness
+    # 6. CPU frequency governor
+    try:
+        result = subprocess.run(['sudo', 'cpupower', 'frequency-set', '-g', 'performance'], capture_output=True)
+        if result.returncode == 0:
+            log_success("CPU frequency governor set to performance")
+        else:
+            log_warn("Could not set CPU frequency governor (cpupower may not be installed)")
+    except Exception as e:
+        log_warn(f"CPU frequency governor setup failed: {e}")
+    
+    # 7. NUMA check and recommendation
+    numa_path = Path('/sys/devices/system/node/node1')
+    if numa_path.exists():
+        log_info("Multi-socket NUMA system detected. Recommendation: use --numa distribute flag for better performance")
+    
+    # 8. Reduce swappiness
     swappiness_path = Path('/proc/sys/vm/swappiness')
     if have_root and swappiness_path.exists():
         try:
@@ -220,7 +234,7 @@ def optimize_windows() -> int:
                 except Exception as e:
                     log_warn(f"Failed to clear {temp_path}: {e}")
         
-        # 2. Clear memory cache via ClearPageFileAtShutdown (requires admin)
+        # 2. Clear memory cache via PowerShell
         try:
             log_success("Clearing memory cache...")
             subprocess.run(['powershell', '-NoProfile', '-Command',
@@ -229,14 +243,30 @@ def optimize_windows() -> int:
         except Exception as e:
             log_warn(f"Cache clear failed: {e}")
         
-        # 3. Compact memory (Windows 10+)
+        # 3. Disable CPU parking
         try:
-            log_success("Compacting memory...")
-            subprocess.run(['powershell', '-NoProfile', '-Command',
-                          'Optimize-Volume -DriveLetter C -Defrag'],
+            log_success("Disabling CPU parking...")
+            subprocess.run(['powercfg', '-setacvalueindex', 'scheme_current', 'sub_processor', 'CPMINCORES', '100'],
                          capture_output=True)
         except Exception as e:
-            log_warn(f"Memory compaction failed: {e}")
+            log_warn(f"CPU parking disable failed: {e}")
+        
+        # 4. Switch to High Performance power plan
+        try:
+            log_success("Switching to High Performance power plan...")
+            subprocess.run(['powercfg', '/setactive', '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c'],
+                         capture_output=True)
+        except Exception as e:
+            log_warn(f"Power plan switch failed: {e}")
+        
+        # 5. Elevate llama process priority
+        try:
+            log_success("Setting llama process priority to High...")
+            subprocess.run(['powershell', '-NoProfile', '-Command',
+                          'Get-Process llama* -ErrorAction SilentlyContinue | ForEach-Object { $_.PriorityClass = "High" }'],
+                         capture_output=True)
+        except Exception as e:
+            log_warn(f"Process priority elevation failed: {e}")
         
     except Exception as e:
         log_error(f"Windows optimization failed: {e}")
@@ -263,21 +293,9 @@ def optimize_macos() -> int:
         log_success("Purging memory...")
         subprocess.run(['purge'], capture_output=True, check=False)
         
-        # 2. Clear caches
-        cache_paths = [
-            os.path.expanduser('~/Library/Caches'),
-            '/Library/Caches',
-        ]
+        # 2. MLX upgrade reminder
+        log_info("Recommendation: Run 'pip install --upgrade mlx mlx-lm' for latest Metal shader improvements")
         
-        for cache_path in cache_paths:
-            if os.path.exists(cache_path):
-                log_success(f"Clearing cache at {cache_path}...")
-                try:
-                    subprocess.run(['rm', '-rf', cache_path], 
-                                 capture_output=True, timeout=5)
-                except Exception as e:
-                    log_warn(f"Could not clear {cache_path}: {e}")
-    
     except Exception as e:
         log_error(f"macOS optimization failed: {e}")
         return 1

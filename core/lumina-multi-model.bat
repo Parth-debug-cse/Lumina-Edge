@@ -229,6 +229,13 @@ if %SELECTED_COUNT% EQU 0 (
 echo   ✓ Ready to load %SELECTED_COUNT% model(s)
 echo.
 
+:: Build models args
+set "MODELS_ARGS="
+for /L %%i in (1,1,%SELECTED_COUNT%) do (
+    set "MODEL=!SELECTED_%%i!"
+    set "MODELS_ARGS=!MODELS_ARGS! "!MODEL!""
+)
+
 :: ==================================================
 :: ROUTER CONFIGURATION
 :: ==================================================
@@ -280,10 +287,7 @@ if /i "%START_CHOICE%"=="y" (
     echo  ▸ Starting Parallel Model Loading
     echo.
     
-    call :ui_progress "Launching model router" 26 18
-    echo.
-    
-    python "%SCRIPTS%\model-router.py" load!SELECTED_1! ^
+    python "%SCRIPTS%\model-router.py" load%MODELS_ARGS% ^
         --bin-path "%BIN%" --scripts "%SCRIPTS%" --models-dir "%MODELS%"
     
     if %ERRORLEVEL% EQU 0 (

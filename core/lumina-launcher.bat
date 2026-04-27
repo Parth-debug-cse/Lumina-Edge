@@ -72,19 +72,29 @@ REM ==================================================
 set "THREADS=4"
 set "CTX_SIZE=4096"
 set "BATCH_SIZE=512"
-set "UBATCH_SIZE=256"
+set "UBATCH_SIZE=512"
 set "TEMPERATURE=0.7"
 set "GPU_LAYERS=20"
-set "API_PORT=1234"
+set "API_PORT=1235"
+set "FLASH_ATTN=true"
+set "KV_CACHE_QUANT=q8_0"
+set "SPLIT_MODE_NVIDIA=layer"
+set "SPLIT_MODE_VULKAN=row"
+set "MLOCK=true"
+set "HTTP_THREADS=4"
+set "CONT_BATCHING=true"
+set "PARALLEL_SLOTS=2"
 
 REM Try to load from config.json if python is available
 if exist "%ROOT%\config.json" (
     for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('threads', 4))" 2^>nul') do set "THREADS=%%A"
     for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('ctx_size', 4096))" 2^>nul') do set "CTX_SIZE=%%A"
     for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('batch_size', 512))" 2^>nul') do set "BATCH_SIZE=%%A"
-    for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('ubatch_size', 256))" 2^>nul') do set "UBATCH_SIZE=%%A"
+    for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('ubatch_size', 512))" 2^>nul') do set "UBATCH_SIZE=%%A"
     for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('temperature', 0.7))" 2^>nul') do set "TEMPERATURE=%%A"
-    for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('api_port', 1234))" 2^>nul') do set "API_PORT=%%A"
+    for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('api_port', 1235))" 2^>nul') do set "API_PORT=%%A"
+    for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('kv_cache_quant', 'q8_0'))" 2^>nul') do set "KV_CACHE_QUANT=%%A"
+    for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('http_threads', 4))" 2^>nul') do set "HTTP_THREADS=%%A"
 )
 
 REM ==================================================
@@ -158,7 +168,37 @@ if "!OPT_BENCHMARK!"=="true" (
     )
 )
 
-"!SERVER_EXE!" -m "!SELECTED_MODEL!" -t !THREADS! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! --temp !TEMPERATURE! --n-gpu-layers !GPU_LAYERS! -p !API_PORT!
+REM Power optimizations
+powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c >nul 2>&1
+powercfg -setacvalueindex scheme_current sub_processor CPMINCORES 100 >nul 2>&1
+powercfg -setactive scheme_current >nul 2>&1
+
+REM Create cache directory
+if not exist "%ROOT%\cache" mkdir "%ROOT%\cache"
+
+REM Set CPU affinity based on thread count
+set "AFFINITY=0xF"
+if !THREADS! gtr 4 set "AFFINITY=0xFF"
+if !THREADS! gtr 8 set "AFFINITY=0xFFFF"
+
+REM Build server command with optimized flags
+set "SERVER_CMD=!SERVER_EXE! -m "!SELECTED_MODEL!" -t !THREADS! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! --n-gpu-layers !GPU_LAYERS! --temp !TEMPERATURE! --top-p 1.0 --repeat-penalty 1.0 --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p 0.05 --top-k 20 --threads-http !HTTP_THREADS! -p !API_PORT! --cache-type-k !KV_CACHE_QUANT! --cache-type-v !KV_CACHE_QUANT! --slot-save-path cache\ --prompt-cache cache\system_prompt.bin"
+
+if "!CONT_BATCHING!"=="true" (
+    set "SERVER_CMD=!SERVER_CMD! --cont-batching --parallel !PARALLEL_SLOTS!"
+)
+
+if "!MLOCK!"=="true" (
+    set "SERVER_CMD=!SERVER_CMD! --mlock"
+)
+
+if "!GPU!"=="nvidia" (
+    set "SERVER_CMD=!SERVER_CMD! --split-mode layer"
+) else if "!GPU!"=="vulkan" (
+    set "SERVER_CMD=!SERVER_CMD! --split-mode row --no-kv-offload"
+)
+
+start "" /HIGH /AFFINITY !AFFINITY! cmd /c !SERVER_CMD!
 goto end
 
 :launch_core
@@ -181,12 +221,34 @@ if "!OPT_BENCHMARK!"=="true" (
     )
 )
 
-set "CLI_CMD="!CLI_EXE!" -m "!SELECTED_MODEL!" -t !THREADS! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! --temp !TEMPERATURE! -n 128 --n-gpu-layers !GPU_LAYERS!"
+REM Power optimizations
+powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c >nul 2>&1
+powercfg -setacvalueindex scheme_current sub_processor CPMINCORES 100 >nul 2>&1
+powercfg -setactive scheme_current >nul 2>&1
+
+REM Set CPU affinity based on thread count
+set "AFFINITY=0xF"
+if !THREADS! gtr 4 set "AFFINITY=0xFF"
+if !THREADS! gtr 8 set "AFFINITY=0xFFFF"
+
+REM Build CLI command with optimized flags
+set "CLI_CMD=!CLI_EXE! -m "!SELECTED_MODEL!" -t !THREADS! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! -n 128 --n-gpu-layers !GPU_LAYERS! --temp !TEMPERATURE! --top-p 1.0 --repeat-penalty 1.0 --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p 0.05 --top-k 20 --cache-type-k !KV_CACHE_QUANT! --cache-type-v !KV_CACHE_QUANT!"
+
+if "!MLOCK!"=="true" (
+    set "CLI_CMD=!CLI_CMD! --mlock"
+)
+
+if "!GPU!"=="nvidia" (
+    set "CLI_CMD=!CLI_CMD! --split-mode layer"
+) else if "!GPU!"=="vulkan" (
+    set "CLI_CMD=!CLI_CMD! --split-mode row --no-kv-offload"
+)
+
 if "!OPT_JSON_OUTPUT!"=="true" (
     set "CLI_CMD=!CLI_CMD! --format json"
 )
 
-!CLI_CMD!
+start "" /HIGH /AFFINITY !AFFINITY! cmd /c !CLI_CMD!
 goto end
 
 :launch_router
@@ -263,14 +325,11 @@ REM Args: label steps sleepMsPerStep
 set "UI_P_LABEL=%~1"
 set /a UI_P_STEPS=%~2
 if %UI_P_STEPS% LSS 1 set UI_P_STEPS=20
-set /a UI_P_SLEEP=%~3
-if %UI_P_SLEEP% LSS 1 set UI_P_SLEEP=18
 
 echo.
 <nul set /p ="  !UI_P_LABEL! "
 for /l %%i in (1,1,%UI_P_STEPS%) do (
     <nul set /p ="#"
-    call :sleepMs %UI_P_SLEEP%
 )
 echo.
 exit /b 0

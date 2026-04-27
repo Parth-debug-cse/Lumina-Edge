@@ -261,41 +261,47 @@ if [[ -z "$selection" ]]; then
     exit 1
 fi
 
-if [[ "${selection,,}" == "all" ]]; then
-    for ((i = 1; i <= MODEL_COUNT; i++)); do
-        add_selected_index "$i"
-    done
-else
-    declare -A seen=()
-    IFS=',' read -ra tokens <<< "$selection"
-    for tok in "${tokens[@]}"; do
-        tok="${tok//[[:space:]]/}"
-        if [[ "$tok" =~ ^([0-9]+)-([0-9]+)$ ]]; then
-            local start="${BASH_REMATCH[1]}"
-            local end="${BASH_REMATCH[2]}"
-            if (( start > end )); then
-                local tmp="$start"; start="$end"; end="$tmp"
-            fi
-            for ((idx=start; idx<=end; idx++)); do
-                if (( idx < 1 || idx > MODEL_COUNT )); then continue; fi
+parse_selection() {
+    local selection="$1"
+    
+    if [[ "${selection,,}" == "all" ]]; then
+        for ((i = 1; i <= MODEL_COUNT; i++)); do
+            add_selected_index "$i"
+        done
+    else
+        declare -A seen=()
+        IFS=',' read -ra tokens <<< "$selection"
+        for tok in "${tokens[@]}"; do
+            tok="${tok//[[:space:]]/}"
+            if [[ "$tok" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+                local start="${BASH_REMATCH[1]}"
+                local end="${BASH_REMATCH[2]}"
+                if (( start > end )); then
+                    local tmp="$start"; start="$end"; end="$tmp"
+                fi
+                for ((idx=start; idx<=end; idx++)); do
+                    if (( idx < 1 || idx > MODEL_COUNT )); then continue; fi
+                    if [[ -n "${seen[$idx]:-}" ]]; then continue; fi
+                    seen["$idx"]=1
+                    add_selected_index "$idx"
+                done
+            elif [[ "$tok" =~ ^[0-9]+$ ]]; then
+                local idx="$tok"
+                if (( idx < 1 || idx > MODEL_COUNT )); then
+                    warn_msg "Ignoring out-of-range model number: $idx"
+                    continue
+                fi
                 if [[ -n "${seen[$idx]:-}" ]]; then continue; fi
                 seen["$idx"]=1
                 add_selected_index "$idx"
-            done
-        elif [[ "$tok" =~ ^[0-9]+$ ]]; then
-            local idx="$tok"
-            if (( idx < 1 || idx > MODEL_COUNT )); then
-                warn_msg "Ignoring out-of-range model number: $idx"
-                continue
+            else
+                warn_msg "Ignoring invalid token: $tok"
             fi
-            if [[ -n "${seen[$idx]:-}" ]]; then continue; fi
-            seen["$idx"]=1
-            add_selected_index "$idx"
-        else
-            warn_msg "Ignoring invalid token: $tok"
-        fi
-    done
-fi
+        done
+    fi
+}
+
+parse_selection "$selection"
 
 if [[ ${#SELECTED_MODELS[@]} -eq 0 ]]; then
     error_msg "No models selected"
@@ -314,7 +320,7 @@ section "Parallel Loading Plan"
 for ((i = 0; i < ${#SELECTED_MODELS[@]}; i++)); do
     MODEL="${SELECTED_MODELS[$i]}"
     PORT="${SELECTED_PORTS[$i]}"
-    GPU_LAYERS=$(($i * 10 + BASE_GPU_LAYERS))
+    GPU_LAYERS=$BASE_GPU_LAYERS
     
     echo -e "  Model $((i+1)): $(basename "$MODEL")"
     echo -e "    ${GRAY}Port: $PORT${TEXT}"
@@ -417,7 +423,6 @@ if [[ "$start_choice" =~ ^[Yy]$ ]]; then
     echo ""
     info_msg "Launching model router..."
     
-    progress_bar "Loading models" 22 0.03
     cd "$PROJECT_ROOT"
     run_with_spinner "Model load & router startup" python3 "$SCRIPTS/model-router.py" load "${SELECTED_MODELS[@]}" \
         --bin-path "$BIN" \

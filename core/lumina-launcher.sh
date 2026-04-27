@@ -185,12 +185,12 @@ progress_bar() {
     # Args: label [steps] [sleep_s]
     local label="${1:-Working...}"
     local steps="${2:-24}"
-    local sleep_s="${3:-0.02}"
+    local sleep_s="${3:-0.001}"
     local i
     echo -ne "${GRAY}${label}${NC} "
     for ((i=0; i<steps; i++)); do
         printf "${PRIMARY}█${NC}"
-        sleep "${sleep_s}"
+        [[ "$sleep_s" != "0" ]] && sleep "${sleep_s}"
     done
     echo ""
 }
@@ -376,14 +376,25 @@ load_config() {
     THREADS="$(get_config threads 4)"
     CTX_SIZE="$(get_config ctx_size 4096)"
     BATCH_SIZE="$(get_config batch_size 512)"
-    UBATCH_SIZE="$(get_config ubatch_size 256)"
+    UBATCH_SIZE="$(get_config ubatch_size 512)"
     TEMPERATURE="$(get_config temperature 0.7)"
     N_GPU_LAYERS="$(get_config n_gpu_layers '"auto"')"
+    FLASH_ATTN="$(get_config flash_attn 'true')"
+    KV_CACHE_QUANT="$(get_config kv_cache_quant '"q8_0"')"
+    SPLIT_MODE="$(get_config split_mode '"row"')"
+    DEFRAG_THOLD="$(get_config defrag_thold 0.1)"
+    USE_MLOCK="$(get_config use_mlock 'true')"
+    NUMA_MODE="$(get_config numa_mode '"distribute"')"
+    MIN_P="$(get_config min_p 0.05)"
+    TOP_K="$(get_config top_k 20)"
+    HTTP_THREADS="$(get_config http_threads 4)"
+    CONT_BATCHING="$(get_config cont_batching 'true')"
+    PARALLEL_SLOTS="$(get_config parallel_slots 2)"
     
     if [[ "$MODE" == "api" ]]; then
-        PORT="$(get_config api_port 1234)"
+        PORT="$(get_config api_port 1235)"
     else
-        PORT="$(get_config cli_port 1234)"
+        PORT="$(get_config cli_port 1235)"
     fi
 
     GPU_LAYERS=20; VRAM_MB=""; PRINT_VRAM=0
@@ -542,8 +553,41 @@ launch_api() {
         fi
     fi
     
-    # Build command with environment variables based on GPU backend
-    local cmd=("$SERVER_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -c "$CTX_SIZE" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE" --n-gpu-layers "$GPU_LAYERS" --temp "$TEMPERATURE" -p "$PORT")
+    # Pre-launch optimizations (Linux only)
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        sudo cpupower frequency-set -g performance 2>/dev/null || true
+        echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/enabled > /dev/null 2>&1 || true
+    fi
+    
+    # Create cache directory
+    mkdir -p "$ROOT/cache"
+    
+    # Build command with optimized flags
+    local cmd=("$SERVER_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -c "$CTX_SIZE" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE" --n-gpu-layers "$GPU_LAYERS" --temp "$TEMPERATURE" --top-p 1.0 --repeat-penalty 1.0 --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p "$MIN_P" --top-k "$TOP_K" --threads-http "$HTTP_THREADS" -p "$PORT")
+    
+    # Add continuous batching if enabled
+    if [[ "$CONT_BATCHING" == "true" ]]; then
+        cmd+=(--cont-batching --parallel "$PARALLEL_SLOTS")
+    fi
+    
+    # Add mlock if enabled
+    if [[ "$USE_MLOCK" == "true" ]]; then
+        cmd+=(--mlock)
+    fi
+    
+    # Add KV cache quantization
+    cmd+=(--cache-type-k "$KV_CACHE_QUANT" --cache-type-v "$KV_CACHE_QUANT")
+    
+    # GPU-specific split-mode flags
+    if [[ "$GPU" == "nvidia" ]]; then
+        cmd+=(--split-mode layer)
+    elif [[ "$GPU" == "vulkan" ]]; then
+        # Vulkan: row-split faster for iGPU/shared VRAM; no-kv-offload avoids PCIe overhead
+        cmd+=(--split-mode row --no-kv-offload)
+    fi
+    
+    # Slot saving and prompt cache
+    cmd+=(--slot-save-path "$ROOT/cache/" --prompt-cache "$ROOT/cache/system_prompt.bin")
     
     "${cmd[@]}"
 }
@@ -611,8 +655,34 @@ launch_core() {
         fi
     fi
     
+    # Pre-launch optimizations (Linux only)
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        sudo cpupower frequency-set -g performance 2>/dev/null || true
+        echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/enabled > /dev/null 2>&1 || true
+    fi
+    
     # Build command
-    local cmd=("$CLI_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -c "$CTX_SIZE" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE" -n 128 --n-gpu-layers "$GPU_LAYERS" --temp "$TEMPERATURE")
+    local cmd=("$CLI_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -c "$CTX_SIZE" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE" -n 128 --n-gpu-layers "$GPU_LAYERS" --temp "$TEMPERATURE" --top-p 1.0 --repeat-penalty 1.0 --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p "$MIN_P" --top-k "$TOP_K")
+    
+    # Add mlock if enabled
+    if [[ "$USE_MLOCK" == "true" ]]; then
+        cmd+=(--mlock)
+    fi
+    
+    # Add KV cache quantization
+    cmd+=(--cache-type-k "$KV_CACHE_QUANT" --cache-type-v "$KV_CACHE_QUANT")
+    
+    # GPU-specific split-mode flags
+    if [[ "$GPU" == "nvidia" ]]; then
+        cmd+=(--split-mode layer)
+    elif [[ "$GPU" == "vulkan" ]]; then
+        cmd+=(--split-mode row --no-kv-offload)
+    fi
+    
+    # NUMA for Linux (skip MLX)
+    if [[ "$GPU" != "mlx" ]] && [[ "$NUMA_MODE" != "none" ]]; then
+        cmd+=(--numa "$NUMA_MODE")
+    fi
     
     if [[ "$OPT_JSON_OUTPUT" == true ]]; then
         cmd+=("--format" "json")
