@@ -1,13 +1,62 @@
+# Model files (all formats)
 models/*.gguf
+models/*.safetensors
+models/*.bin
+models/*.pth
+models/*.pt
+models/*.onnx
+models/*.h5
+models/*.pb
+
+# Entire model directories except .gitkeep
+models/*/
+!models/.gitkeep
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+
+# Build directories
 bin/
+build/
+dist/
+
+# Logs and cache
 *.log
+*.cache
+.cache/
+
+# UI build artifacts
 ui/dist/
+ui/build/
 ui/node_modules/
 ui/.env
 ui/.env.local
+
+# Python
 __pycache__/
 scripts/__pycache__/
 *.pyc
 *.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# OS files
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-*
+
+# Package files
+*.egg-info/
+.eggs/
