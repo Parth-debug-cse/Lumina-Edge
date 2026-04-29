@@ -1,29 +1,37 @@
 #!/usr/bin/env python3
 # ==============================================================================
-# Lumina Edge :: Model Converter — SafeTensor/FP16 to GGUF with Shard Support
-# Converts .safetensors and .bin (fp16) models to GGUF format for llama.cpp
-# Supports HuggingFace multi-file sharded models
+# Lumina Edge :: Model Converter — Cross-Platform LLM Format Converter
+# Platform backends:
+#   - Windows/Linux: llama.cpp (convert_hf_to_gguf.py + llama-quantize)
+#   - macOS: mlx-lm (MLX backend, loads safetensors directly + quantization)
 # ==============================================================================
 
 import sys
 import json
 import os
+import subprocess
+import shutil
+import struct
+import tempfile
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any, Callable
 import argparse
 import logging
+import platform
 
 # Try to import shard-loader module
 try:
     import importlib.util
-    spec = importlib.util.spec_from_file_location("shard_loader", 
-                                                    Path(__file__).parent / "shard-loader.py")
+    spec = importlib.util.spec_from_file_location(
+        "shard_loader",
+        Path(__file__).parent / "shard-loader.py"
+    )
     shard_loader_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(shard_loader_module)
     SHARD_LOADER_AVAILABLE = True
     ShardedModelInfo = shard_loader_module.ShardedModelInfo
     ShardedModelConverter = shard_loader_module.ShardedModelConverter
-except Exception as e:
+except Exception:
     SHARD_LOADER_AVAILABLE = False
     ShardedModelInfo = None
     ShardedModelConverter = None
@@ -36,54 +44,201 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def check_dependencies() -> bool:
-    """Check if required packages are available."""
-    required_packages = {
-        'torch': 'torch',
-        'transformers': 'transformers',
-        'safetensors': 'safetensors',
+# ==============================================================================
+# Progress Reporting (fixed shadowing bug with class-based approach)
+# ==============================================================================
+
+class ProgressReporter:
+    """Callable progress reporter that avoids naming conflicts."""
+    
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled
+        self.current = 0
+    
+    def __call__(self, percent: int):
+        """Report progress percentage."""
+        if self.enabled:
+            self.current = max(0, min(100, percent))
+            print(f"PROGRESS: {self.current}%", flush=True)
+    
+    def step(self, message: str, percent: int):
+        """Log a step and update progress."""
+        logger.info(message)
+        self(percent)
+
+
+# ==============================================================================
+# Platform Detection
+# ==============================================================================
+
+def get_platform() -> str:
+    """Detect platform: 'windows', 'linux', 'macos', or 'unknown'."""
+    system = platform.system().lower()
+    if system == 'darwin':
+        return 'macos'
+    elif system == 'windows':
+        return 'windows'
+    elif system == 'linux':
+        return 'linux'
+    return 'unknown'
+
+
+def is_mac_apple_silicon() -> bool:
+    """Check if running on macOS with Apple Silicon."""
+    if platform.system().lower() != 'darwin':
+        return False
+    try:
+        # Check for Apple Silicon
+        result = subprocess.run(['uname', '-m'], capture_output=True, text=True)
+        return result.stdout.strip() == 'arm64'
+    except Exception:
+        return False
+
+
+# ==============================================================================
+# Configuration
+# ==============================================================================
+
+def load_config() -> Dict[str, Any]:
+    """Load config.json from project root if present."""
+    script_dir = Path(__file__).parent
+    project_root = script_dir.parent
+    config_path = project_root / 'config.json'
+    
+    defaults = {
+        'llama_cpp_dir': None,
+        'models_dir': str(project_root / 'models'),
+        'default_quantization': 'Q4_K_M',
     }
     
-    missing = []
-    for display_name, import_name in required_packages.items():
+    if config_path.exists():
         try:
-            __import__(import_name)
-        except ImportError:
-            missing.append(display_name)
+            with open(config_path) as f:
+                config = json.load(f)
+                defaults.update(config)
+                logger.debug(f"Loaded config from {config_path}")
+        except Exception as e:
+            logger.warning(f"Failed to load config.json: {e}")
     
-    if missing:
-        logger.error(f"Missing required packages: {', '.join(missing)}")
-        logger.error("Install with: pip install -r scripts/requirements-converter.txt")
-        return False
-    return True
+    return defaults
 
+
+def find_llama_cpp_dir(cli_path: Optional[str] = None) -> Optional[Path]:
+    """Find llama.cpp directory from CLI arg, config, or common locations."""
+    if cli_path:
+        return Path(cli_path).expanduser().resolve()
+    
+    # Try config
+    config = load_config()
+    if config.get('llama_cpp_dir'):
+        path = Path(config['llama_cpp_dir']).expanduser().resolve()
+        if path.exists():
+            return path
+    
+    # Common locations
+    script_dir = Path(__file__).parent
+    project_root = script_dir.parent
+    candidates = [
+        project_root / 'llama.cpp',
+        project_root / 'llama-cpp',
+        Path.home() / 'llama.cpp',
+        Path.home() / 'llama-cpp',
+        Path('/usr/local/llama.cpp'),
+        Path('/opt/llama.cpp'),
+    ]
+    
+    for candidate in candidates:
+        if candidate.exists() and (candidate / 'convert_hf_to_gguf.py').exists():
+            return candidate
+    
+    return None
+
+
+def get_llama_cpp_tools(llama_cpp_dir: Path) -> Tuple[Optional[Path], Optional[Path]]:
+    """Get paths to convert_hf_to_gguf.py and llama-quantize binary."""
+    convert_script = llama_cpp_dir / 'convert_hf_to_gguf.py'
+    
+    # Find llama-quantize (varies by platform and build)
+    quantize_binary = None
+    quantize_names = ['llama-quantize', 'llama-quantize.exe', 'quantize', 'quantize.exe']
+    
+    for name in quantize_names:
+        candidate = llama_cpp_dir / name
+        if candidate.exists():
+            quantize_binary = candidate
+            break
+        # Check build/bin directories
+        for subdir in ['build', 'build/bin', 'bin', 'Release', 'Debug']:
+            candidate = llama_cpp_dir / subdir / name
+            if candidate.exists():
+                quantize_binary = candidate
+                break
+        if quantize_binary:
+            break
+    
+    return convert_script, quantize_binary
+
+
+# ==============================================================================
+# Model Format Detection (simplified)
+# ==============================================================================
 
 def detect_model_format(file_path: str) -> Tuple[str, bool]:
     """
-    Detect model format from file extension and structure.
-    Detects single files and sharded models.
+    Detect model format from file extension or directory structure.
     Returns: (format_type, is_valid)
     """
     path = Path(file_path)
-    ext = path.suffix.lower()
     
-    # Check if it's a directory (could be a sharded model)
+    # If directory: check for config.json (HF model) and shard index files
     if path.is_dir():
+        has_config = (path / 'config.json').exists()
+
+        # Check for MLX model directory: has safetensors weights + tokenizer (no conversion needed on macOS)
+        # MLX models typically contain *.safetensors + config.json + tokenizer files
+        has_safetensors = bool(list(path.glob('*.safetensors')))
+        has_tokenizer = (path / 'tokenizer.json').exists() or (path / 'tokenizer_config.json').exists() or (path / 'tokenizer.model').exists()
+        is_mlx_dir = (
+            has_safetensors and has_config
+            or has_safetensors and has_tokenizer
+            # Also match if directory name contains 'mlx' (common naming convention)
+            or 'mlx' in path.name.lower()
+        )
+        if is_mlx_dir:
+            return ('mlx', True)
+
+        # Check for sharded models
         if SHARD_LOADER_AVAILABLE:
             try:
                 info = ShardedModelInfo(file_path)
                 if info.is_sharded:
                     return (f'sharded-{info.shard_format}', True)
-            except:
+            except Exception:
                 pass
+        
+        # Check for safetensors index (non-MLX sharded)
+        if list(path.glob('model-*.safetensors')) or (path / 'model.safetensors').exists():
+            return ('safetensor', True)
+        if list(path.glob('pytorch_model-*.bin')) or (path / 'pytorch_model.bin').exists():
+            return ('fp16', True)
+        
+        # Generic HF model directory
+        if has_config:
+            return ('hf-directory', True)
+        
         return ('directory', False)
+    
+    # If file: use extension
+    ext = path.suffix.lower()
     
     if ext == '.gguf':
         return ('gguf', True)
     elif ext == '.safetensors':
         return ('safetensor', True)
-    elif ext in ['.bin', '.pt']:
+    elif ext in ['.bin', '.pt', '.pth']:
         return ('fp16', True)
+    elif ext == '.npz':
+        return ('npz', True)  # MLX format
     else:
         # Try to detect sharded model by checking parent directory
         if SHARD_LOADER_AVAILABLE:
@@ -96,212 +251,20 @@ def detect_model_format(file_path: str) -> Tuple[str, bool]:
         return ('unknown', False)
 
 
-def convert_safetensor_to_gguf(
-    input_path: str,
-    output_path: str,
-    quantization: str = 'Q4_K_M'
-) -> bool:
-    """Convert a .safetensors model to GGUF format."""
-    try:
-        import torch
-        from transformers import AutoModel, AutoTokenizer
-        from pathlib import Path
-        
-        logger.info(f"Converting safetensor model from {input_path}")
-        logger.info(f"Target quantization: {quantization}")
-        
-        # Load model - safetensors are typically loaded via transformers
-        model_dir = Path(input_path).parent
-        
-        logger.info("Loading safetensor model weights...")
-        try:
-            model = AutoModel.from_pretrained(
-                str(model_dir),
-                trust_remote_code=True,
-                device_map='cpu',
-                low_cpu_mem_usage=True,
-            )
-        except Exception as e:
-            logger.error(f"Failed to load model: {e}")
-            return False
-        
-        logger.info("Model loaded successfully")
-        
-        # Save in PyTorch format temporarily for ggml conversion
-        temp_pytorch_path = str(Path(output_path).parent / "temp_pytorch_model.bin")
-        logger.info(f"Saving to temporary PyTorch format: {temp_pytorch_path}")
-        torch.save(model.state_dict(), temp_pytorch_path)
-        
-        logger.info("✓ Model successfully converted to GGUF")
-        logger.info(f"Output saved to: {output_path}")
-        
-        # Cleanup temp file
-        if Path(temp_pytorch_path).exists():
-            os.remove(temp_pytorch_path)
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"Conversion failed: {e}")
-        return False
+# ==============================================================================
+# Validation
+# ==============================================================================
 
-
-def convert_fp16_to_gguf(
-    input_path: str,
-    output_path: str,
-    quantization: str = 'Q4_K_M'
-) -> bool:
-    """Convert a FP16 (.bin/.pt) model to GGUF format."""
-    try:
-        import torch
-        from transformers import AutoModel, AutoTokenizer
-        from pathlib import Path
-        
-        logger.info(f"Converting FP16 model from {input_path}")
-        logger.info(f"Target quantization: {quantization}")
-        
-        # Check if this is a single .bin file or part of a directory structure
-        model_path = Path(input_path)
-        model_dir = model_path.parent if model_path.is_file() else model_path
-        
-        logger.info("Loading FP16 model weights...")
-        try:
-            model = AutoModel.from_pretrained(
-                str(model_dir),
-                torch_dtype=torch.float16,
-                trust_remote_code=True,
-                device_map='cpu',
-                low_cpu_mem_usage=True,
-            )
-        except Exception as e:
-            logger.error(f"Failed to load model: {e}")
-            return False
-        
-        logger.info("Model loaded successfully")
-        logger.info("✓ Model successfully converted to GGUF")
-        logger.info(f"Output saved to: {output_path}")
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"Conversion failed: {e}")
-        return False
-
-
-def convert_sharded_to_gguf(
-    input_path: str,
-    output_path: str,
-    quantization: str = 'Q4_K_M'
-) -> bool:
-    """Convert a sharded model to GGUF format."""
-    if not SHARD_LOADER_AVAILABLE:
-        logger.error("Shard loader module not available")
-        return False
-    
-    try:
-        import torch
-        from transformers import AutoModel, AutoTokenizer
-        
-        input_dir = Path(input_path) if Path(input_path).is_dir() else Path(input_path).parent
-        
-        logger.info(f"Converting sharded model from {input_dir}")
-        logger.info(f"Target quantization: {quantization}")
-        
-        # Detect shards
-        info = ShardedModelInfo(str(input_dir))
-        
-        if not info.is_sharded:
-            logger.error("No shards detected in directory")
-            return False
-        
-        logger.info(f"✓ Detected {info.total_shards} {info.shard_format} shards")
-        
-        # Load and merge shards
-        converter = ShardedModelConverter(str(input_dir))
-        mem_estimate, mem_str = converter.get_memory_estimate()
-        logger.info(f"Memory required (estimate): {mem_str}")
-        
-        logger.info("⏳ Loading and merging shards...")
-        state_dict = converter.load_shards()
-        
-        # Load model using merged state dict
-        logger.info("Loading model architecture...")
-        try:
-            model = AutoModel.from_pretrained(
-                str(input_dir),
-                trust_remote_code=True,
-                device_map='cpu',
-                low_cpu_mem_usage=True,
-            )
-            # Load the merged state dict
-            model.load_state_dict(state_dict)
-        except Exception as e:
-            logger.error(f"Failed to load model: {e}")
-            return False
-        
-        logger.info("Model loaded successfully")
-        
-        # Save in PyTorch format temporarily for ggml conversion
-        temp_pytorch_path = str(Path(output_path).parent / "temp_pytorch_model_merged.bin")
-        logger.info(f"Saving merged model to temporary PyTorch format: {temp_pytorch_path}")
-        torch.save(model.state_dict(), temp_pytorch_path)
-        
-        logger.info("✓ Sharded model successfully converted to GGUF")
-        logger.info(f"Output saved to: {output_path}")
-        
-        # Cleanup temp file
-        if Path(temp_pytorch_path).exists():
-            os.remove(temp_pytorch_path)
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"Sharded model conversion failed: {e}")
-        return False
-
-
-def convert_to_mlx(
-    input_path: str,
-    output_path: str,
-    quantization: str = 'q4'
-) -> bool:
-    """Convert HuggingFace model to MLX format using mlx_lm.convert."""
-    try:
-        import subprocess
-        logger.info(f"Converting to MLX format from {input_path}")
-        logger.info(f"Target path: {output_path}")
-        
-        cmd = [sys.executable, "-m", "mlx_lm.convert", "--hf-path", input_path, "--mlx-path", output_path, "-q"]
-        
-        logger.info(f"Running MLX conversion... This may take a while.")
-        subprocess.run(cmd, check=True)
-        
-        logger.info("✓ Model successfully converted to MLX")
-        return True
-    except subprocess.CalledProcessError as e:
-        logger.error(f"MLX conversion failed with exit code: {e.returncode}")
-        return False
-    except ImportError:
-        logger.error("mlx-lm package is not installed. Run: pip install mlx-lm")
-        return False
-    except Exception as e:
-        logger.error(f"MLX conversion failed: {e}")
-        return False
-
-
-def validate_gguf_output(gguf_path: str) -> bool:
-    """Validate that the output GGUF file was created properly."""
-    gguf_file = Path(gguf_path)
-    
-    if not gguf_file.exists():
+def validate_gguf(gguf_path: Path) -> bool:
+    """Validate GGUF file by checking magic bytes."""
+    if not gguf_path.exists():
         logger.error(f"Output file not created: {gguf_path}")
         return False
     
-    if gguf_file.stat().st_size < 1000:  # At least 1KB
+    if gguf_path.stat().st_size < 1000:
         logger.error(f"Output file appears empty or corrupt: {gguf_path}")
         return False
     
-    # Check GGUF magic header
     try:
         with open(gguf_path, 'rb') as f:
             magic = f.read(4)
@@ -312,264 +275,651 @@ def validate_gguf_output(gguf_path: str) -> bool:
         logger.error(f"Failed to validate GGUF file: {e}")
         return False
     
-    logger.info(f"✓ GGUF validation passed")
+    logger.info(f"✓ GGUF validation passed: {gguf_path.name}")
     return True
 
+
+def validate_mlx(mlx_path: Path) -> bool:
+    """Validate MLX output contains expected files."""
+    if mlx_path.is_dir():
+        # Check for weights.npz or .safetensors files
+        has_weights = (mlx_path / 'weights.npz').exists()
+        has_safetensors = any(mlx_path.glob('*.safetensors'))
+        has_config = (mlx_path / 'config.json').exists()
+        
+        if not (has_weights or has_safetensors):
+            logger.error(f"MLX output missing weights: {mlx_path}")
+            return False
+        if not has_config:
+            logger.warning(f"MLX output missing config.json: {mlx_path}")
+        
+        logger.info(f"✓ MLX validation passed: {mlx_path.name}")
+        return True
+    else:
+        # Single file output
+        if not mlx_path.exists():
+            logger.error(f"MLX output not created: {mlx_path}")
+            return False
+        logger.info(f"✓ MLX validation passed: {mlx_path.name}")
+        return True
+
+
+# ==============================================================================
+# Streaming Subprocess Helpers
+# ==============================================================================
+
+def run_with_streaming(cmd: list, progress: ProgressReporter, 
+                       start_pct: int = 10, end_pct: int = 90) -> Tuple[bool, str]:
+    """Run a subprocess with real-time output streaming and progress updates."""
+    logger.info(f"Running: {' '.join(str(c) for c in cmd[:5])}...")
+    
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+        
+        output_lines = []
+        line_count = 0
+        
+        for line in iter(process.stdout.readline, ''):
+            line = line.strip()
+            if line:
+                output_lines.append(line)
+                logger.debug(line)
+                # Update progress based on output indicators
+                line_count += 1
+                if line_count % 100 == 0:
+                    pct = start_pct + (end_pct - start_pct) * min(line_count / 1000, 0.9)
+                    progress(int(pct))
+        
+        process.wait()
+        
+        if process.returncode != 0:
+            error_output = '\n'.join(output_lines[-20:])  # Last 20 lines
+            logger.error(f"Command failed with code {process.returncode}:\n{error_output}")
+            return False, '\n'.join(output_lines)
+        
+        progress(end_pct)
+        return True, '\n'.join(output_lines)
+        
+    except Exception as e:
+        logger.error(f"Failed to run command: {e}")
+        return False, str(e)
+
+
+# ==============================================================================
+# Windows/Linux: llama.cpp Backend
+# ==============================================================================
+
+def convert_with_llamacpp(
+    input_path: Path,
+    output_path: Path,
+    quantization: str,
+    llama_cpp_dir: Path,
+    progress: ProgressReporter
+) -> bool:
+    """
+    Convert model to GGUF using llama.cpp's convert_hf_to_gguf.py.
+    Then quantize using llama-quantize if needed.
+    """
+    convert_script, quantize_binary = get_llama_cpp_tools(llama_cpp_dir)
+    
+    if not convert_script or not convert_script.exists():
+        logger.error(f"convert_hf_to_gguf.py not found in {llama_cpp_dir}")
+        return False
+    
+    # Determine if input is a directory or file
+    input_is_dir = input_path.is_dir()
+    
+    # Create temporary F16 GGUF first
+    temp_gguf = output_path.with_suffix('.f16.gguf')
+    
+    try:
+        # Step 1: Convert to F16 GGUF
+        progress.step("Step 1/2: Converting to F16 GGUF format...", 10)
+        
+        cmd = [
+            sys.executable,
+            str(convert_script),
+            str(input_path),
+            '--outfile', str(temp_gguf),
+            '--outtype', 'f16'
+        ]
+        
+        success, _ = run_with_streaming(cmd, progress, 10, 60)
+        if not success:
+            logger.error("F16 conversion failed")
+            return False
+        
+        if not validate_gguf(temp_gguf):
+            return False
+        
+        # Step 2: Quantize if needed
+        if quantization == 'F16':
+            # Just rename the temp file
+            shutil.move(str(temp_gguf), str(output_path))
+            progress.step("✓ F16 model ready (no quantization needed)", 100)
+        elif quantize_binary and quantize_binary.exists():
+            progress.step(f"Step 2/2: Quantizing to {quantization}...", 60)
+            
+            cmd = [
+                str(quantize_binary),
+                str(temp_gguf),
+                str(output_path),
+                quantization
+            ]
+            
+            success, _ = run_with_streaming(cmd, progress, 60, 95)
+            if not success:
+                logger.error("Quantization failed")
+                return False
+            
+            # Clean up temp F16 file
+            if temp_gguf.exists():
+                temp_gguf.unlink()
+            
+            if not validate_gguf(output_path):
+                return False
+            
+            progress.step(f"✓ Quantization complete: {quantization}", 100)
+        else:
+            # No quantize binary, keep F16
+            shutil.move(str(temp_gguf), str(output_path))
+            logger.warning("llama-quantize not found, keeping F16 format")
+            progress.step("✓ F16 model ready (quantization skipped)", 100)
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Conversion failed: {e}")
+        # Cleanup on failure
+        if temp_gguf.exists():
+            temp_gguf.unlink()
+        if output_path.exists():
+            output_path.unlink()
+        return False
+
+
+def quantize_gguf_with_llamacpp(
+    input_path: Path,
+    output_path: Path,
+    quantization: str,
+    llama_cpp_dir: Path,
+    progress: ProgressReporter
+) -> bool:
+    """Quantize an existing GGUF file using llama-quantize."""
+    _, quantize_binary = get_llama_cpp_tools(llama_cpp_dir)
+    
+    if not quantize_binary or not quantize_binary.exists():
+        logger.error(f"llama-quantize not found in {llama_cpp_dir}")
+        return False
+    
+    if not validate_gguf(input_path):
+        return False
+    
+    try:
+        progress.step(f"Quantizing GGUF to {quantization}...", 10)
+        
+        cmd = [
+            str(quantize_binary),
+            str(input_path),
+            str(output_path),
+            quantization
+        ]
+        
+        success, _ = run_with_streaming(cmd, progress, 10, 95)
+        if not success:
+            logger.error("Quantization failed")
+            return False
+        
+        if not validate_gguf(output_path):
+            return False
+        
+        progress.step("✓ Quantization complete", 100)
+        return True
+        
+    except Exception as e:
+        logger.error(f"Quantization failed: {e}")
+        return False
+
+
+# ==============================================================================
+# macOS: MLX Backend
+# ==============================================================================
+
+def check_mlx_dependencies() -> bool:
+    """Check if MLX dependencies are available."""
+    try:
+        import mlx_lm
+        return True
+    except ImportError:
+        logger.error("mlx-lm not installed. Run: pip install mlx-lm")
+        return False
+
+
+def convert_with_mlx(
+    input_path: Path,
+    output_path: Path,
+    quantization: Optional[str],
+    progress: ProgressReporter
+) -> bool:
+    """
+    On macOS, MLX loads safetensors directly.
+    If quantization is requested, use mlx_lm.utils.quantize_model.
+    Otherwise, just copy/validate the input.
+    """
+    if not check_mlx_dependencies():
+        return False
+    
+    try:
+        from mlx_lm.utils import quantize_model as mlx_quantize
+        
+        # Check input format
+        fmt, valid = detect_model_format(str(input_path))
+        if not valid:
+            logger.error(f"Invalid input format: {fmt}")
+            return False
+        
+        # If no quantization requested and already safetensors, just copy
+        if not quantization or quantization == 'F16':
+            progress.step("Copying safetensors for MLX (no conversion needed)...", 50)
+            
+            if input_path.is_dir():
+                # Copy entire directory
+                if output_path.exists():
+                    shutil.rmtree(output_path)
+                shutil.copytree(input_path, output_path)
+            else:
+                # Copy single file
+                shutil.copy2(input_path, output_path)
+            
+            progress.step("✓ Model ready for MLX", 100)
+            return validate_mlx(output_path)
+        
+        # Quantization requested
+        progress.step(f"Quantizing with MLX to {quantization}...", 10)
+        
+        # Map quantization string to bits
+        quant_map = {
+            'Q4_0': 4, 'Q4_K_M': 4, 'Q4_K_S': 4,
+            'Q8_0': 8, 'Q8_K': 8,
+            'Q5_0': 5, 'Q5_K_M': 5,
+            'Q6_K': 6,
+            'Q2_K': 2,
+        }
+        bits = quant_map.get(quantization, 4)
+        
+        mlx_quantize(str(input_path), str(output_path), q_bits=bits)
+        
+        progress.step(f"✓ Quantized to {bits}-bit", 100)
+        return validate_mlx(output_path)
+        
+    except Exception as e:
+        logger.error(f"MLX conversion failed: {e}")
+        return False
+
+
+def quantize_with_mlx(
+    input_path: Path,
+    output_path: Path,
+    bits: int,
+    progress: ProgressReporter
+) -> bool:
+    """Quantize a safetensors model using MLX (macOS only)."""
+    if not check_mlx_dependencies():
+        return False
+    
+    try:
+        from mlx_lm.utils import quantize_model as mlx_quantize
+        
+        progress.step(f"Quantizing to {bits}-bit with MLX...", 10)
+        
+        mlx_quantize(str(input_path), str(output_path), q_bits=bits)
+        
+        progress.step("✓ Quantization complete", 100)
+        return validate_mlx(output_path)
+        
+    except Exception as e:
+        logger.error(f"MLX quantization failed: {e}")
+        return False
+
+
+# ==============================================================================
+# Sharded Model Handling (preserved)
+# ==============================================================================
+
+def merge_shards_to_temp(
+    input_path: Path,
+    progress: ProgressReporter
+) -> Optional[Path]:
+    """Merge sharded model into a temporary directory for conversion."""
+    if not SHARD_LOADER_AVAILABLE:
+        logger.error("Shard loader not available")
+        return None
+    
+    try:
+        progress.step("Merging model shards...", 10)
+        
+        converter = ShardedModelConverter(str(input_path))
+        merged_dir = Path(tempfile.mkdtemp(prefix="lumina_merge_"))
+        
+        # Merge and save as single safetensors
+        state_dict = converter.load_shards()
+        
+        # Save using safetensors
+        from safetensors.torch import save_file
+        import torch
+        
+        output_file = merged_dir / 'model.safetensors'
+        save_file(state_dict, str(output_file))
+        
+        # Copy config.json if present
+        config_src = input_path / 'config.json'
+        if config_src.exists():
+            shutil.copy2(config_src, merged_dir / 'config.json')
+        
+        progress.step(f"✓ Merged {len(state_dict)} parameters", 50)
+        return merged_dir
+        
+    except Exception as e:
+        logger.error(f"Shard merging failed: {e}")
+        return None
+
+
+# ==============================================================================
+# Main Conversion Interface
+# ==============================================================================
 
 def convert_model(
     input_path: str,
     output_path: str,
     quantization: str = 'Q4_K_M',
-    force: bool = False,
-    format_target: str = 'gguf'
+    llama_cpp_dir: Optional[str] = None,
+    report_progress_enabled: bool = False,
+    force: bool = False
 ) -> bool:
     """
-    Main conversion function.
+    Main conversion entry point. Routes to appropriate backend based on platform.
     
     Args:
-        input_path: Path to input model file or directory (.safetensors, .bin, or sharded model directory)
-        output_path: Path to output GGUF or MLX directory
-        quantization: Quantization method (Q4_K_M, Q8_0, etc.)
-        force: Overwrite existing output file
-        format_target: 'gguf' or 'mlx'
+        input_path: Input model file or directory
+        output_path: Output file path (GGUF on Win/Linux, safetensors/npz on macOS)
+        quantization: Quantization type (Q4_K_M, Q8_0, F16, etc.)
+        llama_cpp_dir: Path to llama.cpp directory (Win/Linux only)
+        report_progress_enabled: Enable progress reporting
+        force: Overwrite existing output
     
     Returns:
-        True if conversion successful, False otherwise
+        True if conversion successful
     """
+    input_p = Path(input_path).expanduser().resolve()
+    output_p = Path(output_path).expanduser().resolve()
     
-    # Check dependencies only for GGUF conversion
-    if format_target == 'gguf' and not check_dependencies():
-        return False
-        
-    if format_target == 'mlx':
-        success = convert_to_mlx(input_path, output_path, quantization)
-        if success:
-            logger.info("✓ MLX Conversion completed successfully!")
-        return success
-    
-    # Validate input file/directory
-    input_file = Path(input_path)
-    if not input_file.exists():
-        logger.error(f"Input file or directory not found: {input_path}")
+    # Validate input
+    if not input_p.exists():
+        logger.error(f"Input not found: {input_p}")
         return False
     
-    # Detect format
-    file_format, is_valid = detect_model_format(input_path)
-    
-    if not is_valid:
-        logger.error(f"Unsupported format detected: {file_format}")
-        return False
-    
-    if file_format == 'gguf':
-        logger.info("Input is already GGUF format. No conversion needed.")
-        return True
-    
-    # Check output file
-    output_file = Path(output_path)
-    if output_file.exists() and not force:
-        logger.warning(f"Output file already exists: {output_path}")
-        logger.warning("Use --force to overwrite")
+    # Check output exists
+    if output_p.exists() and not force:
+        logger.error(f"Output exists (use --force): {output_p}")
         return False
     
     # Ensure output directory exists
-    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_p.parent.mkdir(parents=True, exist_ok=True)
     
-    logger.info(f"Starting conversion from {file_format.upper()} to GGUF")
-    logger.info(f"Input:  {input_path}")
-    logger.info(f"Output: {output_path}")
-    logger.info(f"Quantization: {quantization}")
+    # Detect format
+    fmt, valid = detect_model_format(str(input_p))
+    if not valid:
+        logger.error(f"Unsupported format: {fmt}")
+        return False
     
-    # Perform conversion
-    success = False
-    try:
-        if file_format == 'safetensor':
-            success = convert_safetensor_to_gguf(input_path, output_path, quantization)
-        elif file_format == 'fp16':
-            success = convert_fp16_to_gguf(input_path, output_path, quantization)
-        elif file_format.startswith('sharded-'):
-            success = convert_sharded_to_gguf(input_path, output_path, quantization)
-        else:
-            logger.error(f"No converter available for format: {file_format}")
+    if fmt == 'gguf':
+        logger.info("Input is already GGUF, copying...")
+        shutil.copy2(input_p, output_p)
+        return validate_gguf(output_p)
+    
+    # Setup progress reporter
+    progress = ProgressReporter(report_progress_enabled)
+    
+    # Route to platform-specific backend
+    plat = get_platform()
+    
+    if plat == 'macos':
+        logger.info(f"Using MLX backend (macOS) for {fmt} -> MLX")
+        return convert_with_mlx(input_p, output_p, quantization, progress)
+    
+    else:
+        # Windows/Linux: llama.cpp backend
+        llama_dir = find_llama_cpp_dir(llama_cpp_dir)
+        if not llama_dir:
+            logger.error("llama.cpp directory not found. Use --llama-cpp-dir or set in config.json")
             return False
-    except KeyboardInterrupt:
-        logger.warning("Conversion cancelled by user")
-        if output_file.exists():
-            output_file.unlink()
-        return False
-    except Exception as e:
-        logger.error(f"Unexpected error during conversion: {e}")
-        return False
-    
-    if not success:
-        if output_file.exists():
-            output_file.unlink()
-        return False
-    
-    # Validate output
-    if not validate_gguf_output(output_path):
-        if output_file.exists():
-            output_file.unlink()
-        return False
-    
-    # Log metadata
-    metadata = {
-        'source_format': file_format,
-        'source_file': str(input_path),
-        'quantization': quantization,
-        'timestamp': __import__('datetime').datetime.now().isoformat(),
-    }
-    
-    metadata_path = str(output_file.parent / f"{output_file.stem}.metadata.json")
-    try:
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
-        logger.info(f"Metadata saved to: {metadata_path}")
-    except Exception as e:
-        logger.warning(f"Failed to save metadata: {e}")
-    
-    logger.info("✓ Conversion completed successfully!")
-    return True
+        
+        logger.info(f"Using llama.cpp backend ({plat}) from {llama_dir}")
+        logger.info(f"Converting {fmt} -> GGUF ({quantization})")
+        
+        # Handle sharded models
+        if fmt.startswith('sharded-'):
+            import tempfile
+            merged = merge_shards_to_temp(input_p, progress)
+            if not merged:
+                return False
+            try:
+                result = convert_with_llamacpp(
+                    merged, output_p, quantization, llama_dir, progress
+                )
+            finally:
+                # Cleanup temp merged directory
+                if merged and merged.exists():
+                    shutil.rmtree(merged)
+            return result
+        
+        return convert_with_llamacpp(input_p, output_p, quantization, llama_dir, progress)
 
+
+def quantize_model(
+    input_path: str,
+    output_path: str,
+    quantization: str,
+    llama_cpp_dir: Optional[str] = None,
+    bits: Optional[int] = None,
+    report_progress_enabled: bool = False,
+    force: bool = False
+) -> bool:
+    """
+    Quantize an existing model file.
+    
+    On Win/Linux: GGUF -> quantized GGUF using llama-quantize
+    On macOS: safetensors -> quantized safetensors using MLX
+    """
+    input_p = Path(input_path).expanduser().resolve()
+    output_p = Path(output_path).expanduser().resolve()
+    
+    if not input_p.exists():
+        logger.error(f"Input not found: {input_p}")
+        return False
+    
+    if output_p.exists() and not force:
+        logger.error(f"Output exists (use --force): {output_p}")
+        return False
+    
+    output_p.parent.mkdir(parents=True, exist_ok=True)
+    
+    progress = ProgressReporter(report_progress_enabled)
+    plat = get_platform()
+    
+    if plat == 'macos':
+        # MLX quantization
+        if bits is None:
+            # Map quantization string to bits
+            quant_map = {'Q4_0': 4, 'Q4_K_M': 4, 'Q8_0': 8, 'Q5_0': 5, 'Q6_K': 6, 'Q2_K': 2}
+            bits = quant_map.get(quantization, 4)
+        return quantize_with_mlx(input_p, output_p, bits, progress)
+    
+    else:
+        # llama.cpp quantization
+        llama_dir = find_llama_cpp_dir(llama_cpp_dir)
+        if not llama_dir:
+            logger.error("llama.cpp directory not found")
+            return False
+        
+        # Input must be GGUF
+        fmt, _ = detect_model_format(str(input_p))
+        if fmt != 'gguf':
+            logger.error(f"Input must be GGUF for quantization, got: {fmt}")
+            return False
+        
+        return quantize_gguf_with_llamacpp(input_p, output_p, quantization, llama_dir, progress)
+
+
+# ==============================================================================
+# CLI
+# ==============================================================================
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Convert SafeTensor, FP16, and sharded models to GGUF format for llama.cpp',
+        description='Lumina Edge Model Converter — Cross-platform LLM format converter',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
+Platform Backends:
+  Windows/Linux: llama.cpp (convert_hf_to_gguf.py + llama-quantize)
+  macOS: mlx-lm (MLX backend, loads safetensors directly)
+
 Examples:
-  # Convert safetensor model
-  python model-converter.py convert model.safetensors model.gguf
-  
-  # Convert FP16 model with specific quantization
-  python model-converter.py convert model.bin model.gguf --quantization Q8_0
-  
-  # Convert sharded model
-  python model-converter.py convert /path/to/sharded/model model.gguf
-  
-  # Detect shards in directory
-  python model-converter.py shards /path/to/model
-  
-  # Overwrite existing output
-  python model-converter.py convert model.safetensors model.gguf --force
+  # Convert to GGUF (Win/Linux) or copy for MLX (macOS)
+  python model-converter.py convert model_dir/ output.gguf --llama-cpp-dir ~/llama.cpp
+
+  # Convert with specific quantization
+  python model-converter.py convert model.safetensors model.gguf -q Q8_0
+
+  # Quantize existing GGUF (Win/Linux) or safetensors (macOS)
+  python model-converter.py quantize input.gguf output.gguf --quantization Q4_K_M
+
+  # MLX-specific bit quantization (macOS only)
+  python model-converter.py quantize model.safetensors model-q4.safetensors --bits 4
+
+  # Analyze sharded model
+  python model-converter.py shards /path/to/sharded_model
         '''
     )
     
-    subparsers = parser.add_subparsers(dest='command', help='Command to run')
+    subparsers = parser.add_subparsers(dest='command', required=True, help='Command')
     
-    # Convert subcommand
-    convert_parser = subparsers.add_parser('convert', help='Convert model to GGUF format')
-    convert_parser.add_argument('input', help='Input model file or directory')
-    convert_parser.add_argument('output', help='Output GGUF file path')
-    convert_parser.add_argument(
-        '--quantization',
-        default='Q4_K_M',
-        choices=['Q4_K_M', 'Q8_0', 'F16', 'F32', 'Q5_K_M'],
-        help='Quantization method (default: Q4_K_M)'
-    )
-    convert_parser.add_argument('--force', action='store_true', help='Overwrite existing output file')
-    convert_parser.add_argument('--check-only', action='store_true', help='Only check format')
-    convert_parser.add_argument('--format', choices=['gguf', 'mlx'], default='gguf', help='Target conversion format')
+    # Convert command
+    convert_p = subparsers.add_parser('convert', help='Convert model to target format')
+    convert_p.add_argument('input', help='Input model file or directory')
+    convert_p.add_argument('output', help='Output file path')
+    convert_p.add_argument('-q', '--quantization', default='Q4_K_M',
+                          choices=['F16', 'F32', 'Q4_0', 'Q4_K_M', 'Q4_K_S', 
+                                   'Q5_0', 'Q5_K_M', 'Q6_K', 'Q8_0', 'Q8_K', 'Q2_K'],
+                          help='Quantization type (default: Q4_K_M)')
+    convert_p.add_argument('--llama-cpp-dir', help='Path to llama.cpp directory (Win/Linux)')
+    convert_p.add_argument('--force', action='store_true', help='Overwrite existing output')
+    convert_p.add_argument('--report-progress', action='store_true', help='Report progress')
+    convert_p.add_argument('--check', action='store_true', help='Check dependencies and exit')
     
-    # Shards subcommand
-    shards_parser = subparsers.add_parser('shards', help='Detect and analyze sharded models')
-    shards_parser.add_argument('model_path', help='Path to model directory')
-    shards_parser.add_argument('--info', action='store_true', help='Show detailed shard information')
-    shards_parser.add_argument('--load', action='store_true', help='Load and analyze shards')
+    # Quantize command
+    quantize_p = subparsers.add_parser('quantize', help='Quantize existing model')
+    quantize_p.add_argument('input', help='Input model file')
+    quantize_p.add_argument('output', help='Output file path')
+    quantize_p.add_argument('--quantization', '-q', default='Q4_K_M',
+                           choices=['F16', 'F32', 'Q4_0', 'Q4_K_M', 'Q4_K_S',
+                                    'Q5_0', 'Q5_K_M', 'Q6_K', 'Q8_0', 'Q8_K', 'Q2_K'],
+                           help='Quantization type (Win/Linux)')
+    quantize_p.add_argument('--bits', type=int, choices=[2, 3, 4, 6, 8],
+                           help='Bit precision (macOS MLX only, default: 4)')
+    quantize_p.add_argument('--llama-cpp-dir', help='Path to llama.cpp directory (Win/Linux)')
+    quantize_p.add_argument('--force', action='store_true', help='Overwrite existing output')
+    quantize_p.add_argument('--report-progress', action='store_true', help='Report progress')
     
-    # Legacy non-subcommand syntax for backwards compatibility
-    # If no subcommand specified but 2+ args provided, assume it's 'convert'
-    args_raw = parser.parse_args()
+    # Shards command
+    shards_p = subparsers.add_parser('shards', help='Analyze sharded model')
+    shards_p.add_argument('path', help='Path to model directory')
+    shards_p.add_argument('--load', action='store_true', help='Load and validate shards')
     
-    # Handle shards command
-    if args_raw.command == 'shards':
+    args = parser.parse_args()
+    
+    # Check mode
+    if args.command == 'convert' and args.check:
+        plat = get_platform()
+        print(f"Platform: {plat}")
+        if plat == 'macos':
+            if check_mlx_dependencies():
+                print("✓ MLX dependencies available")
+                return 0
+            else:
+                print("✗ MLX dependencies missing")
+                return 1
+        else:
+            llama_dir = find_llama_cpp_dir(args.llama_cpp_dir)
+            if llama_dir:
+                convert_script, quantize_binary = get_llama_cpp_tools(llama_dir)
+                print(f"llama.cpp dir: {llama_dir}")
+                print(f"  convert_hf_to_gguf.py: {'✓' if convert_script else '✗'} {convert_script or 'NOT FOUND'}")
+                print(f"  llama-quantize: {'✓' if quantize_binary else '✗'} {quantize_binary or 'NOT FOUND'}")
+                if convert_script and quantize_binary:
+                    return 0
+                return 1
+            else:
+                print("✗ llama.cpp directory not found")
+                return 1
+    
+    # Execute command
+    if args.command == 'convert':
+        success = convert_model(
+            args.input,
+            args.output,
+            quantization=args.quantization,
+            llama_cpp_dir=args.llama_cpp_dir,
+            report_progress_enabled=args.report_progress,
+            force=args.force
+        )
+        return 0 if success else 1
+    
+    elif args.command == 'quantize':
+        success = quantize_model(
+            args.input,
+            args.output,
+            quantization=args.quantization,
+            llama_cpp_dir=args.llama_cpp_dir,
+            bits=args.bits,
+            report_progress_enabled=args.report_progress,
+            force=args.force
+        )
+        return 0 if success else 1
+    
+    elif args.command == 'shards':
         if not SHARD_LOADER_AVAILABLE:
-            logger.error("Shard loader module not available. Install shard-loader.py in scripts directory.")
+            logger.error("Shard loader not available")
             return 1
         
         try:
-            result = shard_loader_module.detect_model_type(args_raw.model_path)
+            info = ShardedModelInfo(args.path)
+            print(f"\nSharded Model Analysis: {args.path}")
+            print(f"  Is sharded: {info.is_sharded}")
+            print(f"  Format: {info.shard_format}")
+            print(f"  Total shards: {info.total_shards}")
+            print(f"  Index file: {info.index_file or 'N/A'}")
             
-            if result['status'] == 'success':
-                info = result['model_info']
-                print(f"\n✓ Model Detection Result:")
-                print(f"  Path: {result['model_path']}")
-                print(f"  Sharded: {info['is_sharded']}")
-                print(f"  Format: {info['format']}")
-                print(f"  Total Shards: {info['total_shards']}")
-                print(f"  Memory Estimate: {result['memory_estimate_str']}")
-                
-                if args_raw.info:
-                    print(f"\n  Shard Files:")
-                    for shard_id, shard_path in info['shards'].items():
-                        print(f"    [{shard_id}] {shard_path}")
-                    if info['index_file']:
-                        print(f"  Index File: {info['index_file']}")
-                
-                if args_raw.load:
-                    print(f"\n⏳ Loading shards...")
-                    converter = ShardedModelConverter(args_raw.model_path)
-                    state_dict = converter.load_shards()
-                    print(f"✓ Successfully loaded {len(state_dict)} parameters")
-                
-                return 0
-            else:
-                print(f"\n✗ Error: {result['error']}")
-                return 1
+            if info.is_sharded and args.load:
+                converter = ShardedModelConverter(args.path)
+                mem_estimate, mem_str = converter.get_memory_estimate()
+                print(f"  Memory required: {mem_str}")
+                state_dict = converter.load_shards()
+                print(f"  ✓ Loaded {len(state_dict)} parameters successfully")
+            
+            return 0
         except Exception as e:
-            logger.error(f"Error analyzing shards: {e}")
+            logger.error(f"Failed to analyze shards: {e}")
             return 1
     
-    # Handle convert command
-    elif args_raw.command == 'convert' or args_raw.command is None:
-        # Handle backwards compatibility: if no command specified but has input/output args
-        if args_raw.command is None:
-            # Re-parse with custom handling for legacy syntax
-            if len(sys.argv) >= 3:
-                # Treat as 'convert' with old syntax
-                input_arg = sys.argv[1]
-                output_arg = sys.argv[2]
-                quantization = 'Q4_K_M'
-                force = '--force' in sys.argv
-                check_only = '--check-only' in sys.argv
-            else:
-                parser.print_help()
-                return 1
-        else:
-            input_arg = args_raw.input
-            output_arg = args_raw.output
-            quantization = args_raw.quantization
-            force = args_raw.force
-            check_only = args_raw.check_only
-            format_target = getattr(args_raw, 'format', 'gguf')
-        
-        if check_only:
-            logger.info("Dependency check...")
-            if check_dependencies():
-                logger.info("✓ All dependencies available")
-                fmt, valid = detect_model_format(input_arg)
-                if valid:
-                    logger.info(f"✓ Format detected: {fmt.upper()}")
-                    if fmt.startswith('sharded-'):
-                        logger.info(f"  Shard format: {fmt.split('-')[1]}")
-                    return 0
-                else:
-                    logger.error(f"✗ Unknown format: {fmt}")
-                    return 1
-            return 1
-        
-        success = convert_model(
-            input_arg,
-            output_arg,
-            quantization,
-            force,
-            format_target='gguf' if args_raw.command is None else format_target
-        )
-        
-        return 0 if success else 1
-    
-    else:
-        parser.print_help()
-        return 1
+    return 1
 
 
 if __name__ == '__main__':

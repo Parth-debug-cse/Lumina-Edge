@@ -10,6 +10,7 @@ import json
 import logging
 import subprocess
 import threading
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
@@ -172,6 +173,14 @@ class ModelRouter:
                 self.models[model_id].loaded_at = time.time()
                 logger.info(f"✓ Model {model_id} is ready (PID: {process_id})")
     
+    def mark_error(self, model_id: str, message: str):
+        """Mark model as error with message"""
+        with self.model_lock:
+            if model_id in self.models:
+                self.models[model_id].status = ModelStatus.ERROR
+                self.models[model_id].error_message = message
+                logger.info(f"✗ Model {model_id} error: {message}")
+    
     def _is_process_alive(self, model: ModelInstance) -> bool:
         """Check if model's process is still alive"""
         if not model.process_id:
@@ -306,7 +315,7 @@ class MultiModelServer:
             logger.info(f"🚀 Starting model server: {' '.join(cmd)}")
             
             # Redirect stdout/stderr to log file
-            log_file = f"/tmp/lumina_model_{port}.log"
+            log_file = os.path.join(tempfile.gettempdir(), f"lumina_model_{port}.log")
             with open(log_file, 'w') as log_f:
                 process = subprocess.Popen(
                     cmd,
@@ -535,12 +544,17 @@ def parallel_load_models(bin_path: str, models_list: List[str], scripts_path: st
     
     logger.info(f"\n🔄 Starting parallel model loading ({len(models_list)} models)...\n")
     
-    for idx, model_path in enumerate(models_list):
+    def load_with_index(idx_model_path):
+        idx, model_path = idx_model_path
         instance = server.load_model(model_path, idx)
         if instance:
             logger.info(f"  [{idx+1}/{len(models_list)}] ✓ {Path(model_path).name}\n")
         else:
             logger.error(f"  [{idx+1}/{len(models_list)}] ✗ {Path(model_path).name}\n")
+        return instance
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(models_list), 4)) as executor:
+        list(executor.map(load_with_index, enumerate(models_list)))
     
     logger.info("\n📊 Multi-Model Router Status:")
     stats = server.router.get_stats()

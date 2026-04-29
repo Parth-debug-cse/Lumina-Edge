@@ -25,6 +25,13 @@ GREEN="$SUCCESS"
 YELLOW="$WARNING"
 
 # ==================================================
+# UTILITY FUNCTIONS (defined before use)
+# ==================================================
+warn_msg() {
+    echo -e "${YELLOW}⚠${NC} $1"
+}
+
+# ==================================================
 # PARSE ARGUMENTS
 # ==================================================
 MODE=""
@@ -149,10 +156,6 @@ success_msg() {
     echo -e "${SUCCESS}✓${NC} $1"
 }
 
-warn_msg() {
-    echo -e "${YELLOW}⚠${NC} $1"
-}
-
 error_msg() {
     echo -e "${DANGER}✗${NC} $1"
 }
@@ -163,6 +166,15 @@ human_size() {
     elif [[ $bytes -ge 1048576    ]]; then awk -v b="$bytes" 'BEGIN { printf "%.1f MB\n", b/1048576 }'
     elif [[ $bytes -ge 1024       ]]; then awk -v b="$bytes" 'BEGIN { printf "%.1f KB\n", b/1024 }'
     else echo "${bytes} bytes"; fi
+}
+
+get_file_size() {
+    local file="$1"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        stat -f %z "$file" 2>/dev/null || echo "0"
+    else
+        stat --format=%s "$file" 2>/dev/null || echo "0"
+    fi
 }
 
 print_logo() {
@@ -445,7 +457,7 @@ select_model() {
             model_names+=("$fname")
             local format; format=$(get_file_format "$f")
             model_formats+=("$format")
-            local fsize; fsize=$(stat --format="%s" "$f" 2>/dev/null || echo "0")
+            local fsize; fsize=$(get_file_size "$f")
             local status=""
             [[ "$format" != "GGUF" ]] && [[ ! -f "${f%.*}.gguf" ]] && status=" ${YELLOW}[needs conversion]${NC}"
             printf "  ${BOLD}%2d${NC}. %-35s ${GRAY}[${CYAN}${format}${GRAY}]${NC}${status}\n" "$model_count" "$fname"

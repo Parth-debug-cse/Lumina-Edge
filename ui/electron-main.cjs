@@ -52,9 +52,28 @@ function startAPIServer() {
 
         shouldManageAPIServer = true;
 
+        // Log API server output for debugging
+        if (apiServerProcess.stdout) {
+          apiServerProcess.stdout.on('data', (data) => {
+            console.log('[API Server stdout]', data.toString());
+          });
+        }
+        if (apiServerProcess.stderr) {
+          apiServerProcess.stderr.on('data', (data) => {
+            console.error('[API Server stderr]', data.toString());
+          });
+        }
+
         apiServerProcess.on('error', (err) => {
           console.error('API server spawn error:', err);
           reject(err);
+        });
+
+        apiServerProcess.on('exit', (code, signal) => {
+          console.warn(`API server exited with code ${code} and signal ${signal}`);
+          if (shouldManageAPIServer && code !== 0) {
+            reject(new Error(`API server exited with code ${code}`));
+          }
         });
 
         // Wait for server to be ready

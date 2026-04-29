@@ -108,14 +108,14 @@ export async function getModels() {
 /**
  * Download a model from HuggingFace to the models/ folder.
  */
-export async function downloadModel(url, filename) {
+export async function downloadModel(url, filename, autoConvert = false) {
   try {
-    console.log('[API] Download request:', { url, filename })
+    console.log('[API] Download request:', { url, filename, autoConvert })
     
     const res = await fetch('/api/download-model', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, filename }),
+      body: JSON.stringify({ url, filename, autoConvert }),
     })
     
     console.log('[API] Download response status:', res.status)
@@ -135,11 +135,51 @@ export async function downloadModel(url, filename) {
   }
 }
 
+export async function getConvertibleModels() {
+  try {
+    const res = await fetch('/api/models/convertible')
+    if (!res.ok) return { files: [] }
+    return await res.json()
+  } catch (err) {
+    console.error('[API] getConvertibleModels error:', err)
+    return { files: [] }
+  }
+}
+
+export async function fetchConfig() {
+  try {
+    const res = await fetch('/api/config')
+    if (!res.ok) return {}
+    return await res.json()
+  } catch (err) {
+    console.error('[API] fetchConfig error:', err)
+    return {}
+  }
+}
+
+export async function saveConfig(config) {
+  try {
+    const res = await fetch('/api/save-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    })
+    if (!res.ok) {
+      const errorText = await res.text()
+      throw new Error(errorText || `HTTP ${res.status}`)
+    }
+    return await res.json()
+  } catch (err) {
+    console.error('[API] saveConfig error:', err)
+    return { error: err.message }
+  }
+}
+
 /**
  * Convert a model from SafeTensor/FP16 to GGUF format.
  * Returns conversion status and output path.
  */
-export async function convertModel(inputFilename, quantization = 'Q4_K_M') {
+export async function convertModel(inputFilename, quantization = 'Q4_K_M', format = 'gguf') {
   try {
     const res = await fetch('/api/convert-model', {
       method: 'POST',
@@ -147,6 +187,7 @@ export async function convertModel(inputFilename, quantization = 'Q4_K_M') {
       body: JSON.stringify({
         input_file: inputFilename,
         quantization: quantization,
+        format: format,
       }),
     })
     if (!res.ok) {
@@ -174,6 +215,44 @@ export async function getConversionStatus(inputFilename) {
 }
 
 /**
+ * Quantize a safetensors model using mlx-lm (macOS only).
+ * Returns quantization status and output path.
+ */
+export async function quantizeModel(inputFilename, bits = 4) {
+  try {
+    const res = await fetch('/api/quantize-model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        input_file: inputFilename,
+        bits: bits,
+      }),
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Quantization error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to quantize model: ${err.message}`)
+  }
+}
+
+/**
+ * Get quantization status for a model.
+ * Returns status ('quantizing', 'complete', 'error') and progress info.
+ */
+export async function getQuantizationStatus(inputFilename, bits) {
+  try {
+    const res = await fetch(`/api/conversion-status?input=${encodeURIComponent(`quantize_${inputFilename}_${bits}`)}`)
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
+/**
  * Get list of supported input formats for conversion.
  */
 export async function getSupportedFormats() {
@@ -183,6 +262,48 @@ export async function getSupportedFormats() {
     return await res.json()
   } catch {
     return { formats: ['gguf', 'safetensors', 'bin', 'pt'], converter_available: false }
+  }
+}
+
+/**
+ * Get system info (platform, architecture, etc.)
+ */
+export async function getSystemInfo() {
+  try {
+    const res = await fetch('/api/system-info')
+    if (!res.ok) return { platform: 'unknown', arch: 'unknown', isMacAppleSilicon: false }
+    return await res.json()
+  } catch {
+    return { platform: 'unknown', arch: 'unknown', isMacAppleSilicon: false }
+  }
+}
+
+/**
+ * Fetch available model files from a HuggingFace repository.
+ * @param {string} repo - Repository ID (e.g., "mlx-community/TinyLlama-1.1B-Chat-v1.0-mlx" or full URL)
+ * @returns {Promise<Object>} - { repo, totalFiles, files: [{name, size, type}] }
+ */
+export async function fetchHFFiles(repo) {
+  try {
+    const encoded = encodeURIComponent(repo)
+    const res = await fetch(`/api/hf-files?repo=${encoded}`)
+    
+    if (!res.ok) {
+      let errorMsg = `HTTP ${res.status}`
+      try {
+        const errorData = await res.json()
+        errorMsg = errorData.error || errorMsg
+      } catch {
+        // Response wasn't JSON, use HTTP status as error
+      }
+      return { error: errorMsg }
+    }
+    
+    const data = await res.json()
+    return data
+  } catch (err) {
+    console.error('[API] fetchHFFiles error:', err)
+    return { error: err.message || 'Unknown error fetching files' }
   }
 }
 
@@ -239,20 +360,29 @@ export async function getModelRoutes() {
  */
 export async function loadModel(modelPath, portOffset = 0) {
   try {
+    // Ensure we're treating this as a local path, not a HuggingFace repo ID
+    // If the modelPath looks like a repo ID (contains /), but it's actually a local file,
+    // we need to make sure it's treated as a local path
+    const cleanModelPath = modelPath.trim()
+    
+    console.log('[API] Loading model:', cleanModelPath)
+    
     const res = await fetch('/api/router/load', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model_path: modelPath,
+        model_path: cleanModelPath,
         port_offset: portOffset,
       }),
     })
     if (!res.ok) {
       const err = await res.text()
+      console.error('[API] Load model error:', err)
       throw new Error(`Load error ${res.status}: ${err}`)
     }
     return await res.json()
   } catch (err) {
+    console.error('[API] Load model exception:', err)
     throw new Error(`Failed to load model: ${err.message}`)
   }
 }

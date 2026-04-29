@@ -47,8 +47,8 @@ if not "!MODE!"=="api" if not "!MODE!"=="core" if not "!MODE!"=="router" (
     echo ERROR: Invalid mode '!MODE!'. Must be api, core, or router
     exit /b 1
 )
-if not "!GPU!"=="vulkan" if not "!GPU!"=="nvidia" (
-    echo ERROR: Invalid GPU backend '!GPU!'. Must be vulkan or nvidia
+if not "!GPU!"=="vulkan" if not "!GPU!"=="nvidia" if not "!GPU!"=="mlx" (
+    echo ERROR: Invalid GPU backend '!GPU!'. Must be vulkan, nvidia, or mlx
     exit /b 1
 )
 
@@ -139,134 +139,6 @@ if not exist "%SCRIPTS%" (
 )
 
 REM ==================================================
-REM LAUNCH BASED ON MODE
-REM ==================================================
-if "!MODE!"=="api" goto launch_api
-if "!MODE!"=="core" goto launch_core
-if "!MODE!"=="router" goto launch_router
-echo Invalid mode: !MODE!
-exit /b 1
-
-:launch_api
-call :ui_banner "API SERVER"
-call :ui_section "Startup"
-echo   Info: Starting API server with !GPU! backend
-echo   Port: http://localhost:!API_PORT!
-echo.
-
-REM Select a model first
-call :select_model
-if !errorlevel! neq 0 exit /b 1
-
-call :ui_progress "Launching engine" 26 18
-
-if "!OPT_BENCHMARK!"=="true" (
-    if exist "%BIN%\llama-bench.exe" (
-        call :ui_section "Benchmark"
-        "%BIN%\llama-bench.exe" -m "!SELECTED_MODEL!" --n-gpu-layers !GPU_LAYERS! -o json 2>nul
-        echo.
-    )
-)
-
-REM Power optimizations
-powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c >nul 2>&1
-powercfg -setacvalueindex scheme_current sub_processor CPMINCORES 100 >nul 2>&1
-powercfg -setactive scheme_current >nul 2>&1
-
-REM Create cache directory
-if not exist "%ROOT%\cache" mkdir "%ROOT%\cache"
-
-REM Set CPU affinity based on thread count
-set "AFFINITY=0xF"
-if !THREADS! gtr 4 set "AFFINITY=0xFF"
-if !THREADS! gtr 8 set "AFFINITY=0xFFFF"
-
-REM Build server command with optimized flags
-set "SERVER_CMD=!SERVER_EXE! -m "!SELECTED_MODEL!" -t !THREADS! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! --n-gpu-layers !GPU_LAYERS! --temp !TEMPERATURE! --top-p 1.0 --repeat-penalty 1.0 --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p 0.05 --top-k 20 --threads-http !HTTP_THREADS! -p !API_PORT! --cache-type-k !KV_CACHE_QUANT! --cache-type-v !KV_CACHE_QUANT! --slot-save-path cache\ --prompt-cache cache\system_prompt.bin"
-
-if "!CONT_BATCHING!"=="true" (
-    set "SERVER_CMD=!SERVER_CMD! --cont-batching --parallel !PARALLEL_SLOTS!"
-)
-
-if "!MLOCK!"=="true" (
-    set "SERVER_CMD=!SERVER_CMD! --mlock"
-)
-
-if "!GPU!"=="nvidia" (
-    set "SERVER_CMD=!SERVER_CMD! --split-mode layer"
-) else if "!GPU!"=="vulkan" (
-    set "SERVER_CMD=!SERVER_CMD! --split-mode row --no-kv-offload"
-)
-
-start "" /HIGH /AFFINITY !AFFINITY! cmd /c !SERVER_CMD!
-goto end
-
-:launch_core
-call :ui_banner "CORE"
-call :ui_section "Interactive Chat"
-echo   Info: Starting interactive chat with !GPU! backend
-echo.
-
-REM Select a model first
-call :select_model
-if !errorlevel! neq 0 exit /b 1
-
-call :ui_progress "Booting prompt engine" 14 18
-
-if "!OPT_BENCHMARK!"=="true" (
-    if exist "%BIN%\llama-bench.exe" (
-        call :ui_section "Benchmark"
-        "%BIN%\llama-bench.exe" -m "!SELECTED_MODEL!" --n-gpu-layers !GPU_LAYERS! -o json 2>nul
-        echo.
-    )
-)
-
-REM Power optimizations
-powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c >nul 2>&1
-powercfg -setacvalueindex scheme_current sub_processor CPMINCORES 100 >nul 2>&1
-powercfg -setactive scheme_current >nul 2>&1
-
-REM Set CPU affinity based on thread count
-set "AFFINITY=0xF"
-if !THREADS! gtr 4 set "AFFINITY=0xFF"
-if !THREADS! gtr 8 set "AFFINITY=0xFFFF"
-
-REM Build CLI command with optimized flags
-set "CLI_CMD=!CLI_EXE! -m "!SELECTED_MODEL!" -t !THREADS! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! -n 128 --n-gpu-layers !GPU_LAYERS! --temp !TEMPERATURE! --top-p 1.0 --repeat-penalty 1.0 --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p 0.05 --top-k 20 --cache-type-k !KV_CACHE_QUANT! --cache-type-v !KV_CACHE_QUANT!"
-
-if "!MLOCK!"=="true" (
-    set "CLI_CMD=!CLI_CMD! --mlock"
-)
-
-if "!GPU!"=="nvidia" (
-    set "CLI_CMD=!CLI_CMD! --split-mode layer"
-) else if "!GPU!"=="vulkan" (
-    set "CLI_CMD=!CLI_CMD! --split-mode row --no-kv-offload"
-)
-
-if "!OPT_JSON_OUTPUT!"=="true" (
-    set "CLI_CMD=!CLI_CMD! --format json"
-)
-
-start "" /HIGH /AFFINITY !AFFINITY! cmd /c !CLI_CMD!
-goto end
-
-:launch_router
-if not exist "%SCRIPTS%\model-router.py" (
-    echo ERROR: model-router.py not found in %SCRIPTS%
-    exit /b 1
-)
-
-call :ui_banner "MULTI-MODEL ROUTER"
-call :ui_section "Startup"
-echo   Info: Starting multi-model router with !GPU! backend
-echo.
-
-call :ui_progress "Initializing router" 20 18
-python "%SCRIPTS%\model-router.py" --gpu !GPU!
-goto end
-
-REM ==================================================
 REM UI HELPERS (Banners / Sections / Progress)
 REM ==================================================
 :ui_logo
@@ -333,6 +205,140 @@ for /l %%i in (1,1,%UI_P_STEPS%) do (
 )
 echo.
 exit /b 0
+
+REM ==================================================
+REM LAUNCH BASED ON MODE
+REM ==================================================
+if "!MODE!"=="api" goto launch_api
+if "!MODE!"=="core" goto launch_core
+if "!MODE!"=="router" goto launch_router
+echo Invalid mode: !MODE!
+exit /b 1
+
+:launch_api
+call :ui_banner "API SERVER"
+call :ui_section "Startup"
+echo   Info: Starting API server with !GPU! backend
+echo   Port: http://localhost:!API_PORT!
+echo.
+
+REM Select a model first
+call :select_model
+if !errorlevel! neq 0 exit /b 1
+
+call :ui_progress "Launching engine" 26 18
+
+if "!OPT_BENCHMARK!"=="true" (
+    if exist "%BIN%\llama-bench.exe" (
+        call :ui_section "Benchmark"
+        "%BIN%\llama-bench.exe" -m "!SELECTED_MODEL!" --n-gpu-layers !GPU_LAYERS! -o json 2>nul
+        echo.
+    )
+)
+
+REM Power optimizations
+powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c >nul 2>&1
+powercfg -setacvalueindex scheme_current sub_processor CPMINCORES 100 >nul 2>&1
+powercfg -setactive scheme_current >nul 2>&1
+
+REM Create cache directory
+if not exist "%ROOT%\cache" mkdir "%ROOT%\cache"
+
+REM Set CPU affinity based on thread count
+set "AFFINITY=0xF"
+if !THREADS! gtr 4 set "AFFINITY=0xFF"
+if !THREADS! gtr 8 set "AFFINITY=0xFFFF"
+
+REM Build server command with optimized flags
+set "SERVER_CMD=!SERVER_EXE! -m "!SELECTED_MODEL!" -t !THREADS! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! --n-gpu-layers !GPU_LAYERS! --temp !TEMPERATURE! --top-p 1.0 --repeat-penalty 1.0 --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p 0.05 --top-k 20 --threads-http !HTTP_THREADS! -p !API_PORT! --cache-type-k !KV_CACHE_QUANT! --cache-type-v !KV_CACHE_QUANT! --slot-save-path cache\ --prompt-cache cache\system_prompt.bin"
+
+if "!CONT_BATCHING!"=="true" (
+    set "SERVER_CMD=!SERVER_CMD! --cont-batching --parallel !PARALLEL_SLOTS!"
+)
+
+if "!MLOCK!"=="true" (
+    set "SERVER_CMD=!SERVER_CMD! --mlock"
+)
+
+if "!GPU!"=="mlx" (
+    python "%SCRIPTS%\mlx_backend.py" --mode api --model "!SELECTED_MODEL!" --port !API_PORT!
+    goto end
+) else if "!GPU!"=="nvidia" (
+    set "SERVER_CMD=!SERVER_CMD! --split-mode layer"
+) else if "!GPU!"=="vulkan" (
+    set "SERVER_CMD=!SERVER_CMD! --split-mode row --no-kv-offload"
+)
+
+start "" /HIGH /AFFINITY !AFFINITY! cmd /c !SERVER_CMD!
+goto end
+
+:launch_core
+call :ui_banner "CORE"
+call :ui_section "Interactive Chat"
+echo   Info: Starting interactive chat with !GPU! backend
+echo.
+
+REM Select a model first
+call :select_model
+if !errorlevel! neq 0 exit /b 1
+
+call :ui_progress "Booting prompt engine" 14 18
+
+if "!OPT_BENCHMARK!"=="true" (
+    if exist "%BIN%\llama-bench.exe" (
+        call :ui_section "Benchmark"
+        "%BIN%\llama-bench.exe" -m "!SELECTED_MODEL!" --n-gpu-layers !GPU_LAYERS! -o json 2>nul
+        echo.
+    )
+)
+
+REM Power optimizations
+powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c >nul 2>&1
+powercfg -setacvalueindex scheme_current sub_processor CPMINCORES 100 >nul 2>&1
+powercfg -setactive scheme_current >nul 2>&1
+
+REM Set CPU affinity based on thread count
+set "AFFINITY=0xF"
+if !THREADS! gtr 4 set "AFFINITY=0xFF"
+if !THREADS! gtr 8 set "AFFINITY=0xFFFF"
+
+REM Build CLI command with optimized flags
+set "CLI_CMD=!CLI_EXE! -m "!SELECTED_MODEL!" -t !THREADS! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! -n 128 --n-gpu-layers !GPU_LAYERS! --temp !TEMPERATURE! --top-p 1.0 --repeat-penalty 1.0 --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p 0.05 --top-k 20 --cache-type-k !KV_CACHE_QUANT! --cache-type-v !KV_CACHE_QUANT!"
+
+if "!MLOCK!"=="true" (
+    set "CLI_CMD=!CLI_CMD! --mlock"
+)
+
+if "!GPU!"=="mlx" (
+    python "%SCRIPTS%\mlx_backend.py" --mode core --model "!SELECTED_MODEL!"
+    goto end
+) else if "!GPU!"=="nvidia" (
+    set "CLI_CMD=!CLI_CMD! --split-mode layer"
+) else if "!GPU!"=="vulkan" (
+    set "CLI_CMD=!CLI_CMD! --split-mode row --no-kv-offload"
+)
+
+if "!OPT_JSON_OUTPUT!"=="true" (
+    set "CLI_CMD=!CLI_CMD! --format json"
+)
+
+start "" /HIGH /AFFINITY !AFFINITY! cmd /c !CLI_CMD!
+goto end
+
+:launch_router
+if not exist "%SCRIPTS%\model-router.py" (
+    echo ERROR: model-router.py not found in %SCRIPTS%
+    exit /b 1
+)
+
+call :ui_banner "MULTI-MODEL ROUTER"
+call :ui_section "Startup"
+echo   Info: Starting multi-model router with !GPU! backend
+echo.
+
+call :ui_progress "Initializing router" 20 18
+python3 "%SCRIPTS%\model-router.py" --gpu !GPU!
+goto end
 
 REM ==================================================
 REM SELECT MODEL SUBROUTINE
@@ -417,7 +423,8 @@ if not defined model_!_CHOICE! (
     goto :select_model_menu
 )
 
-set "SELECTED_MODEL=!model_!_CHOICE!!"
+REM Use for /f to correctly dereference dynamic variable
+for /f "delims=" %%V in ("!model_%_CHOICE%!") do set "SELECTED_MODEL=%%V"
 endlocal & set "SELECTED_MODEL=%SELECTED_MODEL%"
 exit /b 0
 

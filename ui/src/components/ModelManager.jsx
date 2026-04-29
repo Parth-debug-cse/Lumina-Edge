@@ -4,14 +4,21 @@ import {
   getSessions, exportAsJSON, exportAsMarkdown,
   deleteSession,
 } from '../utils/storage.js'
-import { downloadModel, optimizeSystem, loadModel as apiLoadModel } from '../utils/api.js'
+import { downloadModel, optimizeSystem, loadModel as apiLoadModel, fetchHFFiles, getSystemInfo, fetchConfig, saveConfig } from '../utils/api.js'
+import ConverterTab from './ConverterTab.jsx'
 
 // Helper to detect model format
-function getModelFormat(filename) {
-  const ext = filename.split('.').pop().toLowerCase()
+function getModelFormat(modelName, isDirectory = false) {
+  if (isDirectory) {
+    // For MLX model directories, check if they contain model.safetensors
+    // This is a heuristic - the backend already validates these directories
+    return { type: 'MLX', label: 'MLX', color: 'var(--color-green)' }
+  }
+  
+  const ext = modelName.split('.').pop().toLowerCase()
   switch (ext) {
     case 'gguf': return { type: 'GGUF', label: 'GGUF', color: 'var(--color-green)' }
-    case 'safetensors': return { type: 'SafeTensor', label: 'SafeTensor', color: 'var(--color-purple)' }
+    case 'safetensors': return { type: 'SafeTensors', label: 'SafeTensors', color: 'var(--color-purple)' }
     case 'bin': return { type: 'FP16', label: 'FP16', color: 'var(--color-blue)' }
     case 'pt': return { type: 'FP16', label: 'FP16/.pt', color: 'var(--color-blue)' }
     default: return { type: 'unknown', label: 'Unknown', color: 'var(--text-muted)' }
@@ -88,12 +95,26 @@ const QUALITY_BADGE = {
 const ALL_TAG_FILTERS = ['all', 'tiny', 'fast', 'fastest', 'balanced', 'quality', 'popular', 'small']
 
 export default function ModelManager({ localModels = [], toast }) {
-  const [tab, setTab]           = useState('local')   // 'local' | 'download'
-  const [search, setSearch]     = useState('')
+  const [tab, setTab]           = useState('local')   // 'local' | 'download' | 'custom' | 'converter'
   const [tagFilter, setTagFilter] = useState('all')
   const [tagsMap, setTagsMap]   = useState(getModelTags)
   const [addingTag, setAddingTag] = useState({})      // { filename: true }
   const [tagInput, setTagInput] = useState({})
+  const [systemInfo, setSystemInfo] = useState({ isMacAppleSilicon: false })
+  const [hfLink, setHfLink] = useState('')
+  const [hfFiles, setHfFiles] = useState(null)
+  const [hfLoading, setHfLoading] = useState(false)
+  const [selectedFile, setSelectedFile] = useState(null)
+  const [autoConvertOnDownload, setAutoConvertOnDownload] = useState(true)
+
+  useEffect(() => {
+    getSystemInfo().then(setSystemInfo)
+    fetchConfig().then(config => {
+      if (config && typeof config.autoConvertOnDownload === 'boolean') {
+        setAutoConvertOnDownload(config.autoConvertOnDownload)
+      }
+    })
+  }, [])
 
   const refreshTags = () => setTagsMap(getModelTags())
 
@@ -120,23 +141,18 @@ export default function ModelManager({ localModels = [], toast }) {
   // ---- Filter local models ----
   const filteredLocal = useMemo(() => {
     return localModels.filter(m => {
-      const name = m.name.toLowerCase()
-      const tags = (tagsMap[m.name] || []).join(' ')
-      if (search && !name.includes(search.toLowerCase()) && !tags.includes(search.toLowerCase())) return false
       if (tagFilter !== 'all' && !(tagsMap[m.name] || []).includes(tagFilter)) return false
       return true
     })
-  }, [localModels, search, tagFilter, tagsMap])
+  }, [localModels, tagFilter, tagsMap])
 
   // ---- Filter catalog ----
   const filteredCatalog = useMemo(() => {
     return CATALOG.filter(m => {
-      if (search && !m.name.toLowerCase().includes(search.toLowerCase()) &&
-          !m.desc.toLowerCase().includes(search.toLowerCase())) return false
       if (tagFilter !== 'all' && !m.tags.includes(tagFilter)) return false
       return true
     })
-  }, [search, tagFilter])
+  }, [tagFilter])
 
   return (
     <div className="model-manager">
@@ -144,31 +160,25 @@ export default function ModelManager({ localModels = [], toast }) {
       <div className="model-toolbar">
         {/* Tabs */}
         <div style={{ display: 'flex', gap: 4, background: 'rgba(255,255,255,0.04)', padding: 3, borderRadius: 'var(--r-sm)', border: '1px solid var(--border)' }}>
-          {[['local', `Local (${localModels.length})`], ['download', 'Download']].map(([key, label]) => (
+          {[['local', `⚡ Load (${localModels.length})`], ['download', '⬇ Download'], ['custom', '🔗 Custom'], ['converter', '🔄 Convert']].map(([key, label]) => (
             <button
               key={key}
               className={`btn btn-sm ${tab === key ? 'btn-primary' : 'btn-ghost'}`}
               style={{ border: 'none' }}
-              onClick={() => setTab(key)}
+              onClick={() => {
+                setTab(key)
+                if (key === 'custom') {
+                  setHfLink('')
+                  setHfFiles(null)
+                  setSelectedFile(null)
+                }
+              }}
             >{label}</button>
           ))}
         </div>
 
-        {/* Search */}
-        <div className="search-box">
-          <span className="search-icon">⌕</span>
-          <input
-            placeholder="Search models or tags…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
-          {search && (
-            <button style={{ background:'none',border:'none',cursor:'pointer',color:'var(--text-muted)',fontSize:'0.8rem' }}
-              onClick={() => setSearch('')}>×</button>
-          )}
-        </div>
-
         {/* Tag filter pills */}
+        {(tab === 'local' || tab === 'download') && (
         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
           {ALL_TAG_FILTERS.map(t => (
             <button
@@ -179,11 +189,12 @@ export default function ModelManager({ localModels = [], toast }) {
             >{t}</button>
           ))}
         </div>
+        )}
 
         {/* System optimization button */}
-        <button 
-          className="btn btn-secondary btn-sm"
-          style={{ gap: 6, borderColor: 'var(--color-cyan)', color: 'var(--color-cyan)', marginLeft: 'auto' }}
+        <button
+          className="btn btn-ghost btn-sm"
+          style={{ gap: 6, marginLeft: 'auto', borderColor: 'var(--cyan)', color: 'var(--cyan)' }}
           onClick={async () => {
             const confirmed = window.confirm("This will free up system RAM and pause non-essential background services. Continue?")
             if (!confirmed) return
@@ -210,16 +221,21 @@ export default function ModelManager({ localModels = [], toast }) {
           {filteredLocal.length === 0 ? (
             <div className="empty-state" style={{ gridColumn: '1/-1' }}>
               <div className="empty-icon">📦</div>
-              <div className="empty-title">{localModels.length === 0 ? 'No models found' : 'No matches'}</div>
+              <div className="empty-title">{localModels.length === 0 ? 'No models in folder' : 'No matches'}</div>
               <div className="empty-body">
                 {localModels.length === 0
-                  ? 'Add GGUF files to the models/ folder, or use the Download tab.'
-                  : 'Try a different search or filter.'}
+                  ? 'Downloaded models appear here. Go to Download tab to get models, or add files directly to the models/ folder.'
+                  : 'Try a different filter.'}
               </div>
               {localModels.length === 0 && (
-                <button className="btn btn-primary btn-sm" style={{ marginTop: 8 }} onClick={() => setTab('download')}>
-                  Browse Catalog
-                </button>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                  <button className="btn btn-primary btn-sm" onClick={() => setTab('download')}>
+                    ⬇ Browse Catalog
+                  </button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => setTab('custom')}>
+                    🔗 Custom HF Link
+                  </button>
+                </div>
               )}
             </div>
           ) : filteredLocal.map(m => (
@@ -234,44 +250,88 @@ export default function ModelManager({ localModels = [], toast }) {
               onRemoveTag={tag => removeTag(m.name, tag)}
               onToggleAdding={() => setAddingTag(p => ({ ...p, [m.name]: !p[m.name] }))}
               toast={toast}
+              systemInfo={systemInfo}
             />
           ))}
         </div>
-      ) : (
+      ) : tab === 'download' ? (
         <div className="model-grid">
           {filteredCatalog.map(m => (
-            <DownloadCard key={m.filename} model={m} toast={toast} />
+            <DownloadCard key={m.filename} model={m} toast={toast} autoConvertOnDownload={autoConvertOnDownload} systemInfo={systemInfo} />
           ))}
         </div>
+      ) : tab === 'custom' ? (
+        <CustomHFLinkPanel
+          hfLink={hfLink}
+          setHfLink={setHfLink}
+          hfFiles={hfFiles}
+          setHfFiles={setHfFiles}
+          hfLoading={hfLoading}
+          setHfLoading={setHfLoading}
+          selectedFile={selectedFile}
+          setSelectedFile={setSelectedFile}
+          systemInfo={systemInfo}
+          autoConvertOnDownload={autoConvertOnDownload}
+          toast={toast}
+        />
+      ) : (
+        <ConverterTab
+          systemInfo={systemInfo}
+          apiLoadModel={apiLoadModel}
+          toast={toast}
+          autoConvertOnDownload={autoConvertOnDownload}
+          setAutoConvertOnDownload={setAutoConvertOnDownload}
+        />
       )}
     </div>
   )
 }
 
-function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, onAddTag, onRemoveTag, onToggleAdding, toast }) {
+function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, onAddTag, onRemoveTag, onToggleAdding, toast, systemInfo }) {
   const [loading, setLoading] = useState(false)
   const [converting, setConverting] = useState(false)
-  const format = getModelFormat(model.name)
-  const needsConversion = format.type !== 'GGUF'
+  const [hasConfig, setHasConfig] = useState(null)
+  const format = getModelFormat(model.name, model.isDirectory)
+  const isMac = systemInfo?.isMacAppleSilicon
+  // Mac supports safetensors directly via MLX backend and MLX directories
+  // Linux/Windows need GGUF format for llama.cpp
+  const isReadyToRun = isMac ? (format.type === 'SafeTensors' || format.type === 'MLX') : format.type === 'GGUF'
+  const needsConversion = !isReadyToRun
+
+  // Check for config.json on Mac (only needed for individual SafeTensors files, not MLX directories)
+  useEffect(() => {
+    if (isMac && format.type === 'SafeTensors' && !model.isDirectory) {
+      // Check if config.json exists in models directory
+      fetch(`/api/model-exists?path=models/config.json`).then(r => r.json()).then(data => {
+        setHasConfig(data.exists)
+      }).catch(() => setHasConfig(false))
+    } else {
+      // MLX directories already have config.json by definition
+      setHasConfig(true)
+    }
+  }, [isMac, format.type, model.name, model.isDirectory])
 
   const handleConvert = async () => {
     if (converting) return
     setConverting(true)
     try {
-      toast('Starting conversion... This may take several minutes.', 'info')
+      toast('Converting to GGUF... This may take several minutes.', 'info')
       const response = await fetch('/api/convert-model', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          input: model.name,
-          quantization: 'Q4_K_M'
+          input_file: model.name,
+          quantization: 'Q4_K_M',
+          format: 'gguf'
         })
       })
       const result = await response.json()
-      if (result.success) {
-        toast(`Conversion complete! Model saved.`, 'success')
+      if (result.status === 'started' || result.status === 'complete') {
+        toast(`Conversion started! Model will be saved as GGUF.`, 'success')
+      } else if (result.error) {
+        toast(`Conversion failed: ${result.error}`, 'error')
       } else {
-        toast(`Conversion failed: ${result.error || 'Unknown error'}`, 'error')
+        toast(`Conversion started!`, 'success')
       }
     } catch (err) {
       toast(`Conversion error: ${err.message}`, 'error')
@@ -289,7 +349,9 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
       if (result.status === 'success') {
         toast(`✓ Model loaded successfully on port ${result.port}!`, 'success')
       } else {
-        toast(`Failed to load: ${result.error}`, 'error')
+        // Show detailed error message if available
+        const errorMsg = result.message || result.error
+        toast(`Failed to load: ${errorMsg}`, 'error')
       }
     } catch (err) {
       toast(`Error loading model: ${err.message}`, 'error')
@@ -310,7 +372,7 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
           <span className="badge" style={{ background: format.color, color: '#fff', fontSize: '0.65rem', padding: '2px 6px' }}>
             {format.label}
           </span>
-          {needsConversion && (
+          {!isReadyToRun && !isMac && (
             <span className="badge" style={{ background: 'var(--color-orange)', color: '#fff', fontSize: '0.65rem', padding: '2px 6px' }}>
               ⚠ Convert
             </span>
@@ -359,9 +421,12 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
           <button className="btn btn-primary btn-sm" onClick={() => onAddTag(tagInputVal)}>Add</button>
         </div>
       )}
-      {needsConversion && (
-        <div style={{ marginTop: 8, padding: 8, background: 'rgba(255,165,0,0.1)', borderRadius: 'var(--r-sm)', border: '1px solid rgba(255,165,0,0.3)', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
-          <div style={{ marginBottom: 6 }}>This model is in {format.label} format. Convert to GGUF to use it.</div>
+
+      {!isReadyToRun && !isMac && (
+        <div style={{ marginTop: 8, padding: '8px', background: 'rgba(255,255,255,0.03)', borderRadius: 'var(--r-sm)' }}>
+          <div style={{ fontSize: '0.75rem', color: 'var(--color-orange)', marginBottom: 8 }}>
+            ⚠️ Needs GGUF format for Windows/Linux
+          </div>
           <button
             className="btn btn-primary btn-sm"
             style={{ width: '100%' }}
@@ -372,35 +437,68 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
           </button>
         </div>
       )}
+      
+      {isMac && !isReadyToRun && format.type === 'SafeTensors' && (
+        <div style={{ marginTop: 8, padding: '8px', background: 'rgba(255,100,100,0.05)', borderRadius: 'var(--r-sm)', fontSize: '0.75rem', color: 'var(--color-orange)' }}>
+          ⚠️ Mac requires .safetensors format<br/>
+          <span style={{ color: 'var(--text-muted)' }}
+            >Download a safetensors model or use the Converter tab</span>
+        </div>
+      )}
 
-      {!needsConversion && (
+      {isMac && isReadyToRun && hasConfig === false && format.type === 'SafeTensors' && !model.isDirectory && (
+        <div style={{ marginTop: 8, padding: '8px', background: 'rgba(255,100,100,0.05)', borderRadius: 'var(--r-sm)', fontSize: '0.75rem', color: 'var(--color-orange)' }}>
+          ⚠️ Missing config.json<br/>
+          <span style={{ color: 'var(--text-muted)' }}
+            >MLX needs config.json with model architecture. Download the full HuggingFace model directory.</span>
+        </div>
+      )}
+
+      {isReadyToRun && (
         <div style={{ marginTop: 8 }}>
           <button
-            className="btn btn-primary btn-sm"
-            style={{ width: '100%', background: 'var(--color-green)', borderColor: 'var(--color-green)' }}
+            className="btn btn-primary"
+            style={{ width: '100%', background: 'var(--color-green)', borderColor: 'var(--color-green)', fontSize: '0.9rem', padding: '8px 12px' }}
             onClick={handleLoad}
             disabled={loading}
           >
-            {loading ? '⏳ Loading...' : '▶ Load Model'}
+            {loading ? '⏳ Loading model into memory...' : '▶ LOAD MODEL'}
           </button>
+          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'center', marginTop: 4 }}>
+            Click to load and start using this model
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-function DownloadCard({ model, toast }) {
+function DownloadCard({ model, toast, autoConvertOnDownload, systemInfo }) {
   const [downloading, setDownloading] = useState(false)
   const q = QUALITY_BADGE[model.quality] || QUALITY_BADGE['medium']
+  const isMac = systemInfo?.isMacAppleSilicon
   
   const handleDownload = async () => {
     if (downloading) return
+    
+    // Check if Mac and file is not safetensors
+    if (isMac && !model.filename.endsWith('.safetensors')) {
+      const confirmed = window.confirm(
+        `⚠️ Mac Only Supports SafeTensors\n\n` +
+        `The file "${model.filename}" is not in .safetensors format.\n\n` +
+        `On Mac with MLX backend, only .safetensors files can be loaded directly. ` +
+        `Other formats like .gguf are not supported on Mac.\n\n` +
+        `Do you want to download it anyway? (It won't be usable on Mac)`
+      )
+      if (!confirmed) return
+    }
+    
     setDownloading(true)
 
     
     try {
       toast(`Starting download of ${model.name}...`, 'info')
-      const result = await downloadModel(model.url, model.filename)
+      const result = await downloadModel(model.url, model.filename, autoConvertOnDownload)
       
       console.log(`[Download] Response:`, result)
       
@@ -447,6 +545,290 @@ function DownloadCard({ model, toast }) {
       <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>
         Saves to <span className="font-mono">models/</span> folder automatically
       </div>
+    </div>
+  )
+}
+
+function CustomHFLinkPanel({ hfLink, setHfLink, hfFiles, setHfFiles, hfLoading, setHfLoading, selectedFile, setSelectedFile, systemInfo, autoConvertOnDownload, toast }) {
+  const [downloading, setDownloading] = useState(false)
+  const [downloadingRepo, setDownloadingRepo] = useState(false)
+
+  const handleFetchFiles = async () => {
+    if (!hfLink.trim()) {
+      toast('Please paste a HuggingFace link', 'info')
+      return
+    }
+
+    console.log('[CustomLink] Fetching files for:', hfLink)
+    setHfLoading(true)
+    try {
+      const result = await fetchHFFiles(hfLink)
+      console.log('[CustomLink] Response:', result)
+      if (result.error) {
+        toast(`Error: ${result.error}`, 'error')
+        setHfFiles(null)
+      } else {
+        setHfFiles(result)
+        setSelectedFile(null)
+        if (result.totalFiles === 0) {
+          toast('No model files found in this repository', 'info')
+        } else {
+          toast(`Found ${result.totalFiles} model file(s)`, 'success')
+        }
+      }
+    } catch (err) {
+      console.error('[CustomLink] Fetch error:', err)
+      toast(`Failed to fetch files: ${err.message}`, 'error')
+    } finally {
+      setHfLoading(false)
+    }
+  }
+
+  const handleDownloadFile = async () => {
+    if (!selectedFile) {
+      toast('Please select a file to download', 'info')
+      return
+    }
+
+    setDownloading(true)
+    try {
+      const filename = selectedFile.name.split('/').pop()
+      const fileExtension = filename.split('.').pop().toLowerCase()
+
+      // Check format on Mac - only safetensors supported
+      if (systemInfo?.isMacAppleSilicon && fileExtension !== 'safetensors') {
+        const shouldDownload = window.confirm(
+          `⚠️ Mac Only Supports SafeTensors\n\n` +
+          `The file "${filename}" is not in .safetensors format.\n\n` +
+          `On Mac with MLX backend, only .safetensors files can be loaded directly. ` +
+          `Other formats like .gguf are not supported on Mac.\n\n` +
+          `Do you want to download it anyway? (It won't be usable on Mac)`
+        )
+        if (!shouldDownload) {
+          setDownloading(false)
+          return
+        }
+      }
+
+      // Construct direct download URL using HF CDN
+      const repoId = hfFiles.repo
+      const filePath = selectedFile.name
+      const directUrl = `https://huggingface.co/${repoId}/resolve/main/${filePath}?download=true`
+
+      toast(`Starting download of ${filename}...`, 'info')
+      const result = await downloadModel(directUrl, filename, autoConvertOnDownload)
+
+      if (result.error) {
+        toast(`Download failed: ${result.error}`, 'error')
+      } else if (result.status === 'exists') {
+        toast(`Model already exists in models/ folder`, 'info')
+      } else if (result.status === 'started') {
+        toast(`✓ ${filename} is downloading. Check console for progress.`, 'success')
+      }
+    } catch (err) {
+      toast(`Error: ${err.message}`, 'error')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  const handleDownloadRepo = async () => {
+    if (!hfFiles) {
+      toast('Please search for a repository first', 'info')
+      return
+    }
+
+    setDownloadingRepo(true)
+    try {
+      const repoId = hfFiles.repo
+      const dirName = repoId.split('/').pop()
+
+      toast(`Downloading entire repository ${repoId}...`, 'info')
+      
+      const response = await fetch('/api/download-model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: hfLink,
+          filename: dirName,
+          downloadRepo: true
+        })
+      })
+
+      const result = await response.json()
+
+      if (result.error) {
+        toast(`Download failed: ${result.error}`, 'error')
+      } else if (result.status === 'exists') {
+        toast(`Repository already exists in models/ folder`, 'info')
+      } else if (result.status === 'started') {
+        toast(`✓ Repository is downloading. This may take several minutes. Check console for progress.`, 'success')
+      }
+    } catch (err) {
+      toast(`Error: ${err.message}`, 'error')
+    } finally {
+      setDownloadingRepo(false)
+    }
+  }
+
+  // Get format badge for a file
+  const getFileBadge = (filename) => {
+    const ext = filename.split('.').pop().toLowerCase()
+    switch (ext) {
+      case 'mlx': return { label: 'MLX', color: '#4ade80', recommended: true }
+      case 'gguf': return { label: 'GGUF', color: '#3b82f6', recommended: false }
+      case 'safetensors': return { label: 'SafeTensor', color: '#a855f7', recommended: false }
+      case 'bin':
+      case 'pt': return { label: 'PyTorch', color: '#f59e0b', recommended: false }
+      default: return { label: ext.toUpperCase(), color: '#6b7280', recommended: false }
+    }
+  }
+
+  return (
+    <div style={{ padding: '16px', background: 'rgba(255,255,255,0.03)', borderRadius: 'var(--r-md)', marginBottom: '16px' }}>
+      <div style={{ marginBottom: '16px' }}>
+        <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>
+          Paste HuggingFace Model Link:
+        </label>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <input
+            type="text"
+            placeholder="https://huggingface.co/mlx-community/TinyLlama-1.1B-Chat-v1.0-mlx"
+            value={hfLink}
+            onChange={e => setHfLink(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleFetchFiles() }}
+            style={{
+              flex: 1,
+              padding: '8px 12px',
+              background: 'rgba(255,255,255,0.05)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--r-sm)',
+              color: 'var(--text)',
+              fontSize: '0.85rem'
+            }}
+          />
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={handleFetchFiles}
+            disabled={hfLoading}
+          >
+            {hfLoading ? '⏳' : '🔍'} Search
+          </button>
+        </div>
+        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '6px' }}>
+          Supports HuggingFace links and any model format: MLX, GGUF, SafeTensors, etc.
+        </div>
+      </div>
+
+      {hfFiles && hfFiles.totalFiles > 0 && (
+        <div>
+          <div style={{ marginBottom: '12px' }}>
+            <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '8px' }}>
+              Available Files ({hfFiles.totalFiles}):
+            </label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '300px', overflow: 'auto' }}>
+              {hfFiles.files.map((file, idx) => {
+                const badge = getFileBadge(file.name)
+                const isSelected = selectedFile?.name === file.name
+                const sizeGB = (file.size / 1024 / 1024 / 1024).toFixed(2)
+                return (
+                  <div
+                    key={idx}
+                    style={{
+                      padding: '10px 12px',
+                      background: isSelected ? 'rgba(59,130,246,0.15)' : 'rgba(255,255,255,0.03)',
+                      border: isSelected ? '1px solid var(--color-blue)' : '1px solid var(--border)',
+                      borderRadius: 'var(--r-sm)',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s'
+                    }}
+                    onClick={() => setSelectedFile(file)}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '8px' }}>
+                      <div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text)', wordBreak: 'break-all' }}>
+                          {file.name.split('/').pop()}
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                          {sizeGB} GB
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                        {badge.recommended && (
+                          <span title="Optimized for this system" style={{ fontSize: '0.75rem', background: 'rgba(76,217,100,0.2)', color: '#4cd964', padding: '2px 6px', borderRadius: '3px' }}>
+                            ⭐ Best
+                          </span>
+                        )}
+                        <span style={{ background: badge.color, color: '#fff', fontSize: '0.65rem', padding: '2px 6px', borderRadius: '3px', minWidth: '40px', textAlign: 'center' }}>
+                          {badge.label}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {selectedFile && (
+            <div style={{ padding: '12px', background: 'rgba(59,130,246,0.1)', borderRadius: 'var(--r-sm)', marginBottom: '12px', borderLeft: '3px solid var(--color-blue)' }}>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>Selected:</div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text)', marginBottom: '8px', wordBreak: 'break-all' }}>
+                {selectedFile.name}
+              </div>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                Size: {(selectedFile.size / 1024 / 1024 / 1024).toFixed(2)} GB
+              </div>
+            </div>
+          )}
+
+          {/* Download entire repository button for MLX models */}
+          {systemInfo?.isMacAppleSilicon && (
+            <div style={{ marginBottom: '12px' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={handleDownloadRepo}
+                disabled={downloadingRepo}
+                style={{
+                  width: '100%',
+                  justifyContent: 'center',
+                  opacity: downloadingRepo ? 0.6 : 1,
+                  cursor: downloadingRepo ? 'not-allowed' : 'pointer',
+                  background: 'rgba(168,85,247,0.2)',
+                  borderColor: 'rgba(168,85,247,0.5)',
+                  color: '#a855f7'
+                }}
+              >
+                {downloadingRepo ? '⏳ Downloading Repository...' : '📦 Download Entire Repository (MLX)'}
+              </button>
+              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px', textAlign: 'center' }}>
+                Downloads all files including config.json, tokenizer.json (required for MLX)
+              </div>
+            </div>
+          )}
+
+          <button
+            className="btn btn-primary"
+            onClick={handleDownloadFile}
+            disabled={downloading || !selectedFile}
+            style={{
+              width: '100%',
+              justifyContent: 'center',
+              opacity: (downloading || !selectedFile) ? 0.6 : 1,
+              cursor: (downloading || !selectedFile) ? 'not-allowed' : 'pointer'
+            }}
+          >
+            {downloading ? '⏳ Downloading...' : '⬇ Download Selected File'}
+          </button>
+        </div>
+      )}
+
+      {!hfFiles && !hfLoading && (
+        <div style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--text-muted)' }}>
+          <div style={{ fontSize: '2.5rem', marginBottom: '8px' }}>🔗</div>
+          <div style={{ fontSize: '0.85rem' }}>Paste a HuggingFace model link above to browse available files</div>
+        </div>
+      )}
     </div>
   )
 }

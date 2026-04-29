@@ -5,8 +5,8 @@
   "ubatch_size": 512,
   "n_gpu_layers": "auto",
   "temperature": 0.7,
-  "top_p": 1.0,
-  "repeat_penalty": 1.0,
+  "top_p": 1,
+  "repeat_penalty": 1,
   "top_k": 20,
   "min_p": 0.05,
   "json_output": false,
@@ -29,5 +29,6 @@
     "default_max_tokens": 512,
     "default_temperature": 0.7,
     "pipeline_stop_on_error": true
-  }
+  },
+  "autoConvertOnDownload": true
 }

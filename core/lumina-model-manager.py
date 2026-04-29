@@ -110,10 +110,18 @@ class ModelManager:
         print(f"\n{Colors.BOLD}{Colors.CYAN}⚡ LUMINA EDGE{Colors.NC} {Colors.GRAY}|{Colors.NC} Model Manager\n")
     
     def get_models(self) -> List[Path]:
-        """Get list of existing models"""
+        """Get list of existing models (files + MLX directories)"""
         models = []
-        for ext in ['*.gguf', '*.safetensors', '*.bin', '*.pt', '*.mlx']:
+        for ext in ['*.gguf', '*.safetensors', '*.bin', '*.pt']:
             models.extend(self.models_dir.glob(ext))
+        # Also find MLX model directories (dir with safetensors+config, or 'mlx' in name)
+        for d in self.models_dir.iterdir():
+            if d.is_dir():
+                has_safetensors = bool(list(d.glob('*.safetensors')))
+                has_config = (d / 'config.json').exists()
+                has_tokenizer = (d / 'tokenizer.json').exists() or (d / 'tokenizer_config.json').exists()
+                if 'mlx' in d.name.lower() or (has_safetensors and (has_config or has_tokenizer)):
+                    models.append(d)
         return sorted(models)
     
     def get_human_size(self, size_bytes: int) -> str:
@@ -274,7 +282,12 @@ class ModelManager:
             return
         
         for i, model_path in enumerate(models, 1):
-            size = self.get_human_size(model_path.stat().st_size)
+            if model_path.is_dir():
+                # Get size of directory contents (same logic as list_models_menu)
+                size_b = sum(f.stat().st_size for f in model_path.rglob('*') if f.is_file())
+                size = self.get_human_size(size_b)
+            else:
+                size = self.get_human_size(model_path.stat().st_size)
             print(f"  {Colors.BOLD}{i}{Colors.NC}. {model_path.name} ({size})\n")
         
         print(f"  {Colors.BOLD}0{Colors.NC}. Cancel\n")
@@ -329,7 +342,7 @@ def main():
     """Main entry point"""
     # Clear screen (cross-platform)
     try:
-        subprocess.run(['cls' if os.name == 'nt' else 'clear'], shell=True, check=False)
+        subprocess.run('cls' if os.name == 'nt' else 'clear', shell=True, check=False)
     except Exception:
         pass
     
