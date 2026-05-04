@@ -53,7 +53,7 @@ Download the latest release from [ggml-org/llama.cpp](https://github.com/ggml-or
 Apple silicon chips use **Unified Memory**,Lumina Edge favors Apple's **MLX Framework**.
 
 ```bash
-pip install -r scripts/requirements-mac.txt
+pip install -r scripts/requirements-macos.txt
 ```
 
 ### Step 2 — Launch the Desktop UI
@@ -122,7 +122,7 @@ Think of quantization like image compression — a JPEG takes up less space than
 
 Lumina Edge's API mode solves a critical problem for developers: **you should not have to rewrite application code to switch between a cloud model and a local one.**
 
-When you launch an API server, Lumina Edge exposes a REST endpoint at `http://127.0.0.1:1234/v1` that speaks the exact same protocol as OpenAI's API. Any application already integrated with the OpenAI Python SDK, Node.js SDK, or any HTTP client can be redirected to a local model by changing a single line — the `base_url`.
+When you launch an API server, Lumina Edge exposes a REST endpoint at `http://127.0.0.1:8080/v1` that speaks the exact same protocol as OpenAI's API. A secondary management-only port is available at `http://127.0.0.1:8081`. Any application already integrated with the OpenAI Python SDK, Node.js SDK, or any HTTP client can be redirected to a local model by changing a single line — the `base_url`.
 
 Three immediate benefits:
 
@@ -138,7 +138,7 @@ No authentication required for local connections. The endpoint accepts standard 
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:1234/v1",
+    base_url="http://localhost:8080/v1",
     api_key="not-needed"  # Required by SDK but unused locally
 )
 
@@ -176,7 +176,7 @@ for chunk in stream:
 import OpenAI from "openai";
 
 const client = new OpenAI({
-  baseURL: "http://localhost:1234/v1",
+  baseURL: "http://localhost:8080/v1",
   apiKey: "not-needed"
 });
 
@@ -206,7 +206,7 @@ $body = @{
     max_tokens  = 500
 } | ConvertTo-Json -Depth 5
 
-$r = Invoke-RestMethod -Uri "http://localhost:1234/v1/chat/completions" `
+$r = Invoke-RestMethod -Uri "http://localhost:8080/v1/chat/completions" `
      -Method POST -ContentType "application/json" -Body $body
 
 $r.choices[0].message.content
@@ -215,7 +215,7 @@ $r.choices[0].message.content
 ### cURL
 
 ```bash
-curl http://localhost:1234/v1/chat/completions \
+curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
@@ -266,6 +266,41 @@ response2 = requests.post('http://127.0.0.1:8001/v1/chat/completions', json=...)
 
 ---
 
+## Management API Reference
+
+All endpoints available on **port 8080** (inference + management) and **port 8081** (management only).
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/health` | GET | Server health check |
+| `/api/system-info` | GET | Platform, arch, Apple Silicon detection |
+| `/api/system/resources` | GET | CPU, RAM, iGPU/GPU, VRAM, model processes |
+| `/api/system/optimize` | POST | Run system memory optimization |
+| `/api/config` | GET | Current configuration |
+| `/api/save-config` | POST | Update configuration |
+| `/api/models/list` | GET | List available models |
+| `/api/models/convertible` | GET | List convertible model files |
+| `/api/router/status` | GET | Router status + all loaded models |
+| `/api/router/models` | GET | Loaded model details |
+| `/api/router/routes` | GET | Ready model endpoints |
+| `/api/router/load` | POST | Load a model into the router |
+| `/api/router/unload/:id` | DELETE | Unload a model (SIGTERM→SIGKILL escalation) |
+| `/api/router/unload-all` | DELETE | Unload all models |
+| `/api/router/policy` | POST | Set routing policy |
+| `/api/inference/profile` | POST | Profile inference speed (tok/s, latency) |
+| `/api/inference/diagnose` | GET | System-level inference diagnostics |
+| `/api/inference/report` | GET | Full diagnostics + profiling report |
+| `/api/benchmark/gpu` | POST | Full CPU vs GPU benchmark |
+| `/api/benchmark/quick` | POST | Quick CPU vs GPU comparison |
+| `/api/memory/estimate` | POST | Estimate memory for model at given ctx_size |
+| `/api/memory/recommend-ctx` | POST | Auto-recommend optimal context size |
+| `/api/memory/compare-kv` | POST | Compare KV cache quantizations |
+| `/api/download-model` | POST | Download model from HuggingFace |
+| `/api/convert-model` | POST | Convert model format |
+| `/api/quantize-model` | POST | Quantize model (macOS MLX) |
+
+---
+
 ## Troubleshooting
 
 <details>
@@ -303,17 +338,17 @@ Run `nvidia-smi` to confirm your GPU is detected. If it is, update drivers to 53
 </details>
 
 <details>
-<summary><strong>Port 1234 already in use</strong></summary>
+<summary><strong>Port 8080 already in use</strong></summary>
 
-The API scripts detect this before launching and show a clear error. To resolve manually:
+The API server listens on port **8080** (primary, inference + management) and **8081** (secondary, management only). To resolve conflicts:
 
 ```bash
 # Windows
-netstat -ano | findstr ":1234"
+netstat -ano | findstr ":8080"
 taskkill /PID <PID> /F
 
 # Linux
-ss -tlnp | grep 1234
+ss -tlnp | grep 8080
 sudo kill -9 <PID>
 ```
 </details>
@@ -358,6 +393,15 @@ A full system reboot also restores all services automatically.
 
 ### v2.0 — Ecosystem *(In Progress)*
 - [x] Plugin architecture for custom backends (DirectML, OpenCL, ROCm)
+- [x] Dual-port API surface (8080 inference + 8081 management)
+- [x] Model unload with SIGTERM→SIGKILL escalation (no more hanging)
+- [x] Startup pipeline: system optimization + auto-load on launch
+- [x] Inference diagnostics & profiling (tokens/sec, latency breakdown)
+- [x] Resource monitoring (CPU, RAM, iGPU, VRAM, model processes)
+- [x] Context window auto-sizing based on available memory
+- [x] KV cache quantization comparison (f16, q8_0, q5_0, q4_0)
+- [x] CPU vs iGPU benchmark module
+- [x] PowerShell scripts for Windows (`.ps1` launchers)
 - [ ] Advanced scheduling for multi-GPU setups
 - [ ] Model ensemble routing (combine outputs from multiple models)
 - [ ] Python SDK wrapper for programmatic lifecycle control

@@ -2,30 +2,30 @@ import { useState, useEffect, useCallback } from 'react'
 import ChatPanel      from './components/ChatPanel.jsx'
 import ModelManager   from './components/ModelManager.jsx'
 import SettingsPanel  from './components/SettingsPanel.jsx'
-import BenchmarkPanel from './components/BenchmarkPanel.jsx'
 import SessionHistory from './components/SessionHistory.jsx'
 import MultiModelPanel from './components/MultiModelPanel.jsx'
+import DiagnosticsPanel from './components/DiagnosticsPanel.jsx'
 import { checkServerHealth } from './utils/api.js'
 
 // ============================================================
 // Navigation items
 // ============================================================
 const NAV = [
-  { id: 'chat',      icon: '💬', label: 'Chat' },
-  { id: 'models',    icon: '📦', label: 'Models' },
-  { id: 'benchmark', icon: '⚡', label: 'Benchmark' },
-  { id: 'router',    icon: '🔄', label: 'Router' },
-  { id: 'history',   icon: '📋', label: 'History' },
-  { id: 'settings',  icon: '⚙',  label: 'Settings' },
+  { id: 'chat',       icon: '💬', label: 'Chat' },
+  { id: 'models',     icon: '📦', label: 'Models' },
+  { id: 'diagnostics',icon: '📊', label: 'Diagnostics' },
+  { id: 'router',     icon: '🔄', label: 'Router' },
+  { id: 'history',    icon: '📋', label: 'History' },
+  { id: 'settings',   icon: '⚙',  label: 'Settings' },
 ]
 
 const PANEL_TITLES = {
-  chat:      { title: 'Chat',          sub: 'Local LLM conversation' },
-  models:    { title: 'Model Manager', sub: 'Browse, tag, and download GGUF models' },
-  benchmark: { title: 'Benchmark',     sub: 'Measure inference speed and memory usage' },
-  router:    { title: 'Multi-Model Router', sub: 'Load and route between multiple models' },
-  history:    { title: 'Session History', sub: 'Browse and export past conversations' },
-  settings:  { title: 'Settings',      sub: 'Configure hyperparameters and server options' },
+  chat:        { title: 'Chat',              sub: 'Local LLM conversation' },
+  models:      { title: 'Model Manager',     sub: 'Browse, tag, and download GGUF models' },
+  diagnostics: { title: 'Diagnostics',       sub: 'Resources, profiling, memory optimization, GPU benchmarks' },
+  router:      { title: 'Multi-Model Router',sub: 'Load and route between multiple models' },
+  history:     { title: 'Session History',   sub: 'Browse and export past conversations' },
+  settings:    { title: 'Settings',          sub: 'Configure hyperparameters and server options' },
 }
 
 // ============================================================
@@ -70,28 +70,29 @@ export default function App() {
     const result = await checkServerHealth()
     setServerStatus(result.status)
     if (result.model) setServerModel(result.model)
-    // Also refresh models list when checking health
-    fetchLocalModels()
-  }, [fetchLocalModels])
+    // Do NOT call fetchLocalModels here
+  }, [])
 
   useEffect(() => {
-    // Poll immediately on mount
-    pollHealth()
-    
-    // Then poll frequently for first 10 seconds, then back off
+    pollHealth(); // immediate check on mount
+    fetchLocalModels(); // fetch once on mount
+
     let rapidCount = 0;
+    let slowInterval = null;
     const rapidInterval = setInterval(() => {
-      pollHealth()
-      rapidCount++
+      rapidCount++;
+      pollHealth();
       if (rapidCount >= 10) {
-        clearInterval(rapidInterval)
-        // Switch to slower polling after initial startup
-        setInterval(pollHealth, 8000)
+        clearInterval(rapidInterval);
+        slowInterval = setInterval(pollHealth, 8000);
       }
-    }, 1000) // Check every second for first 10 seconds
-    
-    return () => clearInterval(rapidInterval)
-  }, [pollHealth])
+    }, 1000);
+
+    return () => {
+      clearInterval(rapidInterval);
+      if (slowInterval) clearInterval(slowInterval);
+    };
+  }, [pollHealth, fetchLocalModels]);
 
   // ---- Panel title ----
   const pt = PANEL_TITLES[activePanel] || PANEL_TITLES.chat
@@ -101,7 +102,7 @@ export default function App() {
     switch (activePanel) {
       case 'chat':      return <ChatPanel      serverStatus={serverStatus} serverModel={serverModel} toast={addToast} />
       case 'models':    return <ModelManager   localModels={localModels}   toast={addToast} />
-      case 'benchmark': return <BenchmarkPanel serverStatus={serverStatus} toast={addToast} />
+      case 'diagnostics': return <DiagnosticsPanel localModels={localModels} toast={addToast} />
       case 'router':    return <MultiModelPanel                            toast={addToast} />
       case 'history':   return <SessionHistory                             toast={addToast} />
       case 'settings':  return <SettingsPanel                              toast={addToast} />

@@ -2,14 +2,34 @@
 // Lumina Edge UI — utility: API / llama-server client
 // ============================================================
 
-const BASE_URL = '/v1'
+const BASE_URL = 'http://127.0.0.1:8080/v1'
+
+let _directPort = null;
+
+export async function getActivePort() {
+  try {
+    const res = await fetch('/api/router/active-port');
+    if (!res.ok) return null;
+    const data = await res.json();
+    _directPort = data.port;
+    return data.port;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Send a chat message to the llama-server OpenAI-compat API.
  * Calls onChunk(text) for each streamed token.
  */
 export async function streamChat({ messages, model, temperature = 0.7, topP = 0.9, onChunk, signal }) {
-  const res = await fetch(`${BASE_URL}/chat/completions`, {
+  // Use cached direct port, or fetch it, or fall back to proxy
+  const port = _directPort || await getActivePort();
+  const endpoint = port
+    ? `http://127.0.0.1:${port}/v1/chat/completions` 
+    : `${BASE_URL}/chat/completions`;
+
+  const res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal,
@@ -20,35 +40,39 @@ export async function streamChat({ messages, model, temperature = 0.7, topP = 0.
       top_p: topP,
       stream: true,
     }),
-  })
+  });
 
   if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Server error ${res.status}: ${err}`)
+    // If direct port failed, clear cache and throw so caller can retry via proxy
+    _directPort = null;
+    const err = await res.text();
+    throw new Error(`Server error ${res.status}: ${err}`);
   }
 
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
 
   while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() // keep incomplete line
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed === 'data: [DONE]') continue
-      if (!trimmed.startsWith('data: ')) continue
+    const { done, value } = await reader.read();
+    if (done) break;
+    
+    buffer += decoder.decode(value, { stream: true });
+    
+    // Process all complete lines
+    let newlineIdx;
+    while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newlineIdx).trim();
+      buffer = buffer.slice(newlineIdx + 1);
+      
+      if (!line || line === 'data: [DONE]') continue;
+      if (!line.startsWith('data: ')) continue;
+      
       try {
-        const json = JSON.parse(trimmed.slice(6))
-        const delta = json.choices?.[0]?.delta?.content
-        if (delta) onChunk(delta)
-      } catch {
-        // skip malformed
-      }
+        const json = JSON.parse(line.slice(6));
+        const delta = json.choices?.[0]?.delta?.content;
+        if (delta) onChunk(delta);
+      } catch {}
     }
   }
 }
@@ -68,22 +92,35 @@ export async function checkServerHealth() {
     if (!apiRes.ok) return { status: 'offline' }
     
     // API gateway is alive - check if a model is loaded
+    // Try direct port first (fastest)
     let modelName = 'none'
     try {
-      const llmController = new AbortController()
-      const llmTimeout = setTimeout(() => llmController.abort(), 1000)
-      const llmRes = await fetch(`${BASE_URL}/models`, { signal: llmController.signal })
-      clearTimeout(llmTimeout)
-      
-      if (llmRes.ok) {
-        const data = await llmRes.json()
-        modelName = data.data?.[0]?.id || 'unknown'
+      const port = _directPort
+      if (port) {
+        const directRes = await fetch(`http://127.0.0.1:${port}/v1/models`, {
+          signal: AbortSignal.timeout(1000)
+        })
+        if (directRes.ok) {
+          const data = await directRes.json()
+          modelName = data.data?.[0]?.id || 'unknown'
+          return { status: 'online', model: modelName }
+        }
+      }
+    } catch {}
+
+    // Fall back to router status
+    try {
+      const routerRes = await fetch('/api/router/active-port', {
+        signal: AbortSignal.timeout(1000)
+      })
+      if (routerRes.ok) {
+        const data = await routerRes.json()
+        _directPort = data.port
+        modelName = data.model || 'unknown'
         return { status: 'online', model: modelName }
       }
-    } catch {
-      // Model server not responding - that's fine, just means no model loaded
-    }
-    
+    } catch {}
+
     // API is alive, just no model loaded
     return { status: 'online', model: modelName }
   } catch (err) {
@@ -428,8 +465,14 @@ export async function setRoutingPolicy(policy) {
  */
 export async function streamChatWithRouting({ messages, routerSelection = 'auto', temperature = 0.7, topP = 0.9, onChunk, signal }) {
   try {
-    // If auto, let router decide. Otherwise, specify model endpoint
-    const endpoint = routerSelection === 'auto' ? `${BASE_URL}/chat/completions` : routerSelection
+    // If auto, use direct port or fallback to proxy. Otherwise, specify model endpoint
+    let endpoint;
+    if (routerSelection === 'auto') {
+      const port = _directPort || await getActivePort();
+      endpoint = port ? `http://127.0.0.1:${port}/v1/chat/completions` : `${BASE_URL}/chat/completions`;
+    } else {
+      endpoint = routerSelection;
+    }
     
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -456,16 +499,20 @@ export async function streamChatWithRouting({ messages, routerSelection = 'auto'
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
+      
       buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop()
-
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed || trimmed === 'data: [DONE]') continue
-        if (!trimmed.startsWith('data: ')) continue
+      
+      // Process all complete lines
+      let newlineIdx;
+      while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newlineIdx).trim()
+        buffer = buffer.slice(newlineIdx + 1)
+        
+        if (!line || line === 'data: [DONE]') continue
+        if (!line.startsWith('data: ')) continue
+        
         try {
-          const json = JSON.parse(trimmed.slice(6))
+          const json = JSON.parse(line.slice(6))
           const delta = json.choices?.[0]?.delta?.content
           if (delta) onChunk(delta)
         } catch {
@@ -553,5 +600,232 @@ export async function optimizeSystem() {
     return await res.json()
   } catch (err) {
     throw new Error(`Failed to optimize system: ${err.message}`)
+  }
+}
+
+// ============================================================
+// INFERENCE DIAGNOSTICS & PROFILING
+// ============================================================
+
+/**
+ * Profile inference speed for a loaded model
+ * @param {Object} opts - { model_id?, prompt?, max_tokens?, runs? }
+ * @returns {Promise<Object>} - { avg_tokens_per_sec, avg_ms_per_token, runs: [...] }
+ */
+export async function profileInference({ model_id, prompt, max_tokens, runs } = {}) {
+  try {
+    const res = await fetch('/api/inference/profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_id: model_id || null, prompt: prompt || 'Write a short poem about the sea.', max_tokens: max_tokens || 64, runs: runs || 3 }),
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Profile error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to profile inference: ${err.message}`)
+  }
+}
+
+/**
+ * Run system-level inference diagnostics
+ * @returns {Promise<Object>} - { success, output }
+ */
+export async function diagnoseInference() {
+  try {
+    const res = await fetch('/api/inference/diagnose')
+    if (!res.ok) throw new Error(`Diagnose error ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to run diagnostics: ${err.message}`)
+  }
+}
+
+/**
+ * Get full inference diagnostics + profiling report
+ * @param {number} port - Model server port
+ * @param {number} maxTokens - Max tokens for profiling
+ * @returns {Promise<Object>} - { success, output }
+ */
+export async function getInferenceReport(port, maxTokens) {
+  try {
+    const params = new URLSearchParams()
+    if (port) params.set('port', port)
+    if (maxTokens) params.set('max_tokens', maxTokens)
+    const res = await fetch(`/api/inference/report?${params}`)
+    if (!res.ok) throw new Error(`Report error ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to get inference report: ${err.message}`)
+  }
+}
+
+// ============================================================
+// RESOURCE MONITORING
+// ============================================================
+
+/**
+ * Get system resource snapshot (CPU, RAM, iGPU, GPU, model processes)
+ * @returns {Promise<Object>} - { cpu, memory, nvidia_gpu, igpu, model_processes }
+ */
+export async function getSystemResources() {
+  try {
+    const res = await fetch('/api/system/resources')
+    if (!res.ok) throw new Error(`Resources error ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to get system resources: ${err.message}`)
+  }
+}
+
+// ============================================================
+// CONTEXT & MEMORY OPTIMIZATION
+// ============================================================
+
+/**
+ * Estimate memory for a model at given context size
+ * @param {string} modelPath - Model file path
+ * @param {number} ctxSize - Context size
+ * @param {string} kvQuant - KV cache quantization (q8_0, q4_0, f16, q5_0)
+ * @returns {Promise<Object>} - { weight_memory_gb, kv_cache_memory_gb, total_estimated_gb, ... }
+ */
+export async function estimateMemory(modelPath, ctxSize = 4096, kvQuant = 'q8_0') {
+  try {
+    const res = await fetch('/api/memory/estimate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_path: modelPath, ctx_size: ctxSize, kv_quant: kvQuant }),
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Estimate error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to estimate memory: ${err.message}`)
+  }
+}
+
+/**
+ * Auto-recommend optimal context size based on available memory
+ * @param {string} modelPath - Model file path
+ * @param {number} availableMem - Available memory in GB (null = auto-detect)
+ * @param {string} kvQuant - KV cache quantization
+ * @param {number} headroom - Headroom percentage
+ * @returns {Promise<Object>} - { recommended_ctx_size, max_possible_ctx, ... }
+ */
+export async function recommendCtxSize(modelPath, availableMem = null, kvQuant = 'q8_0', headroom = 15) {
+  try {
+    const body = { model_path: modelPath, kv_quant: kvQuant, headroom }
+    if (availableMem) body.available_mem = availableMem
+    const res = await fetch('/api/memory/recommend-ctx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Recommend error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to recommend ctx size: ${err.message}`)
+  }
+}
+
+/**
+ * Compare KV cache quantizations for a model
+ * @param {string} modelPath - Model file path
+ * @param {number} ctxSize - Context size
+ * @returns {Promise<Object>} - { output: string with comparison table }
+ */
+export async function compareKvQuant(modelPath, ctxSize = 4096) {
+  try {
+    const res = await fetch('/api/memory/compare-kv', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_path: modelPath, ctx_size: ctxSize }),
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Compare error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to compare KV quantizations: ${err.message}`)
+  }
+}
+
+// ============================================================
+// GPU BENCHMARK
+// ============================================================
+
+/**
+ * Run full CPU vs GPU benchmark
+ * @param {string} modelPath - Model file path
+ * @param {number[]} gpuLayers - GPU layer configs to test (e.g. [0, 10, 20, 99])
+ * @param {number} ctxSize - Context size
+ * @param {number} threads - CPU threads
+ * @param {number} maxTokens - Max tokens per run
+ * @param {number} runs - Number of benchmark runs per config
+ * @returns {Promise<Object>} - { best_config, speedup_vs_cpu, results: [...] }
+ */
+export async function runGpuBenchmark(modelPath, gpuLayers = [0, 10, 20, 30, 50, 99], ctxSize = 2048, threads = 4, maxTokens = 64, runs = 3) {
+  try {
+    const res = await fetch('/api/benchmark/gpu', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_path: modelPath, gpu_layers: gpuLayers, ctx_size: ctxSize, threads, max_tokens: maxTokens, runs }),
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Benchmark error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to run GPU benchmark: ${err.message}`)
+  }
+}
+
+/**
+ * Quick CPU vs GPU comparison (only 2 configs: CPU-only vs all-GPU)
+ * @param {string} modelPath - Model file path
+ * @param {number} ctxSize - Context size
+ * @param {number} threads - CPU threads
+ * @returns {Promise<Object>} - { best_config, speedup_vs_cpu, results: [...] }
+ */
+export async function quickGpuBenchmark(modelPath, ctxSize = 2048, threads = 4) {
+  try {
+    const res = await fetch('/api/benchmark/quick', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_path: modelPath, ctx_size: ctxSize, threads }),
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Quick benchmark error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to run quick benchmark: ${err.message}`)
+  }
+}
+
+/**
+ * Unload all models from the router
+ * @returns {Promise<Object>} - { status, unloaded }
+ */
+export async function unloadAllModels() {
+  try {
+    const res = await fetch('/api/router/unload-all', { method: 'DELETE' })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Unload-all error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    throw new Error(`Failed to unload all models: ${err.message}`)
   }
 }

@@ -16,11 +16,14 @@ export default function MultiModelPanel({ toast }) {
   // Load router status
   useEffect(() => {
     refreshRouterStatus()
-    const interval = setInterval(refreshRouterStatus, 3000)
+    const interval = setInterval(refreshRouterStatus, 5000)
     return () => clearInterval(interval)
   }, [])
 
   const refreshRouterStatus = async () => {
+    // Don't poll while loading to avoid hammering the endpoint during critical time
+    if (isLoading) return;
+    
     try {
       const status = await api.getRouterStatus()
       if (status) {
@@ -33,7 +36,7 @@ export default function MultiModelPanel({ toast }) {
 
   const handleLoadModel = async () => {
     if (!modelPath.trim()) {
-      toast?.('error', 'Please enter model path')
+      toast?.('Please enter model path', 'error')
       return
     }
 
@@ -41,14 +44,16 @@ export default function MultiModelPanel({ toast }) {
     try {
       const result = await api.loadModel(modelPath)
       if (result.status === 'success') {
-        toast?.('✓', `Model loaded on port ${result.port}`)
+        toast?.(`Model loaded on port ${result.port}`, 'success')
         setModelPath('')
         refreshRouterStatus()
+        // Prime the direct port cache for streaming
+        await api.getActivePort()
       } else {
-        toast?.('error', result.error || 'Failed to load model')
+        toast?.(result.error || 'Failed to load model', 'error')
       }
     } catch (err) {
-      toast?.('error', `Error: ${err.message}`)
+      toast?.(`Error: ${err.message}`, 'error')
     } finally {
       setIsLoading(false)
     }
@@ -56,7 +61,7 @@ export default function MultiModelPanel({ toast }) {
 
   const handleDetectShards = async () => {
     if (!modelPath.trim()) {
-      toast?.('error', 'Please enter model path')
+      toast?.('Please enter model path', 'error')
       return
     }
 
@@ -66,13 +71,13 @@ export default function MultiModelPanel({ toast }) {
         setShardInfo(info)
         setShowShardDetails(true)
         if (info.is_sharded) {
-          toast?.('✓', `Detected ${info.total_shards} shards (${info.format})`)
+          toast?.(`Detected ${info.total_shards} shards (${info.format})`, 'success')
         } else {
-          toast?.('ℹ', 'Model is not sharded')
+          toast?.('Model is not sharded', 'info')
         }
       }
     } catch (err) {
-      toast?.('error', `Error: ${err.message}`)
+      toast?.(`Error: ${err.message}`, 'error')
     }
   }
 
@@ -80,20 +85,20 @@ export default function MultiModelPanel({ toast }) {
     try {
       await api.setRoutingPolicy(policy)
       setRoutingPolicy(policy)
-      toast?.('✓', `Routing policy set to: ${policy}`)
+      toast?.(`Routing policy set to: ${policy}`, 'success')
       refreshRouterStatus()
     } catch (err) {
-      toast?.('error', `Error: ${err.message}`)
+      toast?.(`Error: ${err.message}`, 'error')
     }
   }
 
   const handleUnloadModel = async (modelId) => {
     try {
       await api.unloadModel(modelId)
-      toast?.('✓', 'Model unloaded')
+      toast?.('Model unloaded', 'success')
       refreshRouterStatus()
     } catch (err) {
-      toast?.('error', `Error: ${err.message}`)
+      toast?.(`Error: ${err.message}`, 'error')
     }
   }
 

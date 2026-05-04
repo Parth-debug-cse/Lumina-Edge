@@ -18,11 +18,13 @@
     "date-fns": "^3.6.0",
     "express": "^5.2.1",
     "lucide-react": "^0.446.0",
+    "npm": "^11.13.0",
     "react": "^18.3.1",
     "react-chartjs-2": "^5.2.0",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",
-    "remark-gfm": "^4.0.0"
+    "remark-gfm": "^4.0.0",
+    "run": "^1.5.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",

@@ -5,7 +5,7 @@ import { streamChat, checkServerHealth } from '../utils/api.js'
 import {
   getSessions, saveSession, deleteSession, createSession,
   getActiveSessionId, setActiveSessionId, generateTitle,
-  getConfig,
+  getLocalConfig,
 } from '../utils/storage.js'
 
 const ICON = {
@@ -23,22 +23,28 @@ function formatTime(iso) {
 }
 
 export default function ChatPanel({ serverStatus, serverModel, toast }) {
-  const cfg = getConfig()
+  const cfg = getLocalConfig()
   const [sessions, setSessions]       = useState(getSessions)
   const [activeId, setActiveId]       = useState(getActiveSessionId)
   const [input, setInput]             = useState('')
   const [streaming, setStreaming]     = useState(false)
   const [streamAbort, setStreamAbort] = useState(null)
+  const [streamingContent, setStreamingContent] = useState('')
   const messagesEndRef = useRef(null)
   const textareaRef    = useRef(null)
+  const accumulatedRef = useRef('')
+  const flushTimerRef = useRef(null)
+  const streamingSessionIdRef = useRef(null)
 
   const activeSession = sessions.find(s => s.id === activeId) || null
   const messages = activeSession?.messages || []
 
   // ---- Auto-scroll ----
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    messagesEndRef.current?.scrollIntoView({ 
+      behavior: streaming ? 'instant' : 'smooth' 
+    })
+  }, [messages, streamingContent, streaming])
 
   // ---- Session helpers ----
   const refreshSessions = useCallback(() => setSessions(getSessions()), [])
@@ -135,6 +141,8 @@ export default function ChatPanel({ serverStatus, serverModel, toast }) {
 
     const controller = new AbortController()
     setStreamAbort(controller)
+    streamingSessionIdRef.current = session.id
+    accumulatedRef.current = ''
 
     try {
       const apiMsgs = updatedMsgs.map(({ role, content }) => ({ role, content }))
@@ -144,13 +152,27 @@ export default function ChatPanel({ serverStatus, serverModel, toast }) {
         temperature: cfg.temperature,
         topP: cfg.top_p,
         onChunk: (text) => {
-          accumulated += text
-          const latestSession = getSessions().find(s => s.id === (activeId || session.id))
-          if (latestSession) {
-            const msgs = [...latestSession.messages]
-            msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: accumulated }
-            saveSession({ ...latestSession, messages: msgs, updatedAt: new Date().toISOString() })
-            setSessions(getSessions())
+          accumulatedRef.current += text
+          
+          // Update display immediately via a separate streaming state
+          // but only flush to localStorage + setSessions every 150ms
+          setStreamingContent(accumulatedRef.current)
+          
+          if (!flushTimerRef.current) {
+            flushTimerRef.current = setTimeout(() => {
+              flushTimerRef.current = null
+              const sid = streamingSessionIdRef.current
+              const latestSession = getSessions().find(s => s.id === sid)
+              if (latestSession) {
+                const msgs = [...latestSession.messages]
+                msgs[msgs.length - 1] = { 
+                  ...msgs[msgs.length - 1], 
+                  content: accumulatedRef.current 
+                }
+                saveSession({ ...latestSession, messages: msgs, updatedAt: new Date().toISOString() })
+                setSessions(getSessions())
+              }
+            }, 150)
           }
         },
         signal: controller.signal,
@@ -167,6 +189,25 @@ export default function ChatPanel({ serverStatus, serverModel, toast }) {
         }
       }
     } finally {
+      // Final flush to localStorage with complete content
+      if (flushTimerRef.current) {
+        clearTimeout(flushTimerRef.current)
+        flushTimerRef.current = null
+      }
+      const sid = streamingSessionIdRef.current
+      const latestSession = getSessions().find(s => s.id === sid)
+      if (latestSession) {
+        const msgs = [...latestSession.messages]
+        msgs[msgs.length - 1] = { 
+          ...msgs[msgs.length - 1], 
+          content: accumulatedRef.current 
+        }
+        saveSession({ ...latestSession, messages: msgs, updatedAt: new Date().toISOString() })
+        setSessions(getSessions())
+      }
+      accumulatedRef.current = ''
+      streamingSessionIdRef.current = null
+      setStreamingContent('')
       setStreaming(false)
       setStreamAbort(null)
     }
@@ -253,40 +294,49 @@ export default function ChatPanel({ serverStatus, serverModel, toast }) {
                   <div className="empty-body">Your local LLM is ready. Everything runs on your hardware — private and fast.</div>
                 </div>
               )}
-              {messages.map((msg, i) => (
-                <div key={i} className={`chat-message${msg.role === 'user' ? ' user' : ''}`}>
-                  <div className={`msg-avatar ${msg.role === 'user' ? 'user' : 'ai'}`}>
-                    {msg.role === 'user' ? ICON.user : ICON.ai}
-                  </div>
-                  <div className="msg-body">
-                    <div className="msg-meta">
-                      <span className={`msg-role ${msg.role === 'user' ? 'user' : 'ai'}`}>
-                        {msg.role === 'user' ? 'You' : 'Lumina'}
-                      </span>
-                      <span className="msg-time">{formatTime(msg.timestamp)}</span>
-                      <div className="msg-actions">
-                        <button className="btn btn-ghost btn-sm btn-icon" style={{ fontSize: '0.7rem' }}
-                          onClick={() => copyMessage(msg.content)} title="Copy">
-                          {ICON.copy}
-                        </button>
+              {messages.map((msg, i) => {
+                const isStreamingMsg = streaming && i === messages.length - 1 && msg.role === 'assistant'
+                const displayContent = isStreamingMsg ? streamingContent : msg.content
+                
+                return (
+                  <div key={i} className={`chat-message${msg.role === 'user' ? ' user' : ''}`}>
+                    <div className={`msg-avatar ${msg.role === 'user' ? 'user' : 'ai'}`}>
+                      {msg.role === 'user' ? ICON.user : ICON.ai}
+                    </div>
+                    <div className="msg-body">
+                      <div className="msg-meta">
+                        <span className={`msg-role ${msg.role === 'user' ? 'user' : 'ai'}`}>
+                          {msg.role === 'user' ? 'You' : 'Lumina'}
+                        </span>
+                        <span className="msg-time">{formatTime(msg.timestamp)}</span>
+                        <div className="msg-actions">
+                          <button className="btn btn-ghost btn-sm btn-icon" style={{ fontSize: '0.7rem' }}
+                            onClick={() => copyMessage(displayContent)} title="Copy">
+                            {ICON.copy}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="msg-content">
+                        {displayContent === '' && streaming && isStreamingMsg ? (
+                          <div className="typing-indicator">
+                            <div className="typing-dot" />
+                            <div className="typing-dot" />
+                            <div className="typing-dot" />
+                          </div>
+                        ) : isStreamingMsg ? (
+                          // Plain text during streaming — fast, no parsing overhead
+                          <span style={{ whiteSpace: 'pre-wrap' }}>{displayContent}</span>
+                        ) : (
+                          // Full markdown only for completed messages
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {msg.content}
+                          </ReactMarkdown>
+                        )}
                       </div>
                     </div>
-                    <div className="msg-content">
-                      {msg.content === '' && streaming && i === messages.length - 1 ? (
-                        <div className="typing-indicator">
-                          <div className="typing-dot" />
-                          <div className="typing-dot" />
-                          <div className="typing-dot" />
-                        </div>
-                      ) : (
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {msg.content}
-                        </ReactMarkdown>
-                      )}
-                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
               <div ref={messagesEndRef} />
             </div>
 

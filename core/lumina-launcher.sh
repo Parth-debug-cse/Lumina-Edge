@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-# ===== ENHANCED COLOR PALETTE =====
+# ===== COLOR PALETTE =====
 PRIMARY='\033[38;5;33m'      # Bright blue
 SUCCESS='\033[38;5;46m'      # Bright green
 WARNING='\033[38;5;226m'     # Bright yellow
@@ -20,7 +20,7 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
-# Legacy compatibility
+# Old compatibility
 GREEN="$SUCCESS"
 YELLOW="$WARNING"
 
@@ -36,6 +36,7 @@ warn_msg() {
 # ==================================================
 MODE=""
 GPU=""
+PRESELECTED_MODEL=""
 OPT_BENCHMARK=false
 OPT_JSON_OUTPUT=false
 
@@ -46,6 +47,9 @@ while [[ $# -gt 0 ]]; do
             ;;
         --gpu)
             GPU="$2"; shift 2
+            ;;
+        --model)
+            PRESELECTED_MODEL="$2"; shift 2
             ;;
         --benchmark)
             OPT_BENCHMARK=true; shift
@@ -69,6 +73,7 @@ while [[ $# -gt 0 ]]; do
             echo "  mlx       - Apple Silicon MLX (macOS only)"
             echo ""
             echo "Options:"
+            echo "  --model <path>  - Non-interactive model selection (path to .gguf)"
             echo "  --benchmark     - Run inline benchmark after startup"
             echo "  --json-output   - Output results as JSON"
             echo "  --help, -h      - Show this message"
@@ -178,19 +183,7 @@ get_file_size() {
 }
 
 print_logo() {
-    # Pure ASCII logo for consistent rendering
-    echo -e "${PRIMARY}"
-    cat <<'EOF'
-   _     _             _____  _           _ 
-  | |   (_)           |  _  || |         | |
-  | |__  _   _  __ _ | | | || |__   ___ | |
-  | '_ \| | | |/ _` || | | || '_ \ / _ \| |
-  | |_) | | | | (_| || |/ / | | | | (_) | |
-  |_.__/|_| |_| \__, ||___/  |_| |_|\___/|_|
-                  __/ |                        
-                 |___/                         
-EOF
-    echo -e "${NC}"
+    echo -e "${PRIMARY}Lumina Edge${NC}"
 }
 
 progress_bar() {
@@ -382,13 +375,248 @@ select_executable() {
 }
 
 # ==================================================
+# SYSTEM OPTIMIZER INTEGRATION
+# ==================================================
+run_system_optimizer() {
+    local optimizer_script="$SCRIPTS/system_optimizer.py"
+    
+    if [[ -f "$optimizer_script" ]] && command -v python3 &>/dev/null; then
+        status "Running system optimizer for dynamic configuration..."
+        if python3 "$optimizer_script" >/dev/null 2>&1; then
+            success_msg "System optimization completed"
+        else
+            warn_msg "System optimizer failed, using fallback detection"
+        fi
+    fi
+}
+
+# ==================================================
 # LOAD CONFIG
 # ==================================================
 load_config() {
-    THREADS="$(get_config threads 4)"
-    CTX_SIZE="$(get_config ctx_size 4096)"
-    BATCH_SIZE="$(get_config batch_size 512)"
-    UBATCH_SIZE="$(get_config ubatch_size 512)"
+    # Run system optimizer first
+    run_system_optimizer
+    # Detect physical vs logical cores for optimal thread tuning - fully dynamic
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        # macOS - use sysctl for accurate detection
+        PHYSICAL_CORES=$(sysctl -n hw.physicalcpu 2>/dev/null)
+        LOGICAL_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null)
+        
+        # Fallback: try alternative detection methods
+        if [[ -z "$PHYSICAL_CORES" ]] || [[ "$PHYSICAL_CORES" -lt 1 ]]; then
+            PHYSICAL_CORES=$(sysctl -n hw.ncpu 2>/dev/null)
+        fi
+        if [[ -z "$LOGICAL_CORES" ]] || [[ "$LOGICAL_CORES" -lt 1 ]]; then
+            LOGICAL_CORES=$PHYSICAL_CORES
+        fi
+    else
+        # Linux - comprehensive detection
+        # Try multiple methods for physical cores
+        PHYSICAL_CORES=$(lscpu 2>/dev/null | grep "^Core(s) per socket:" | awk '{print $4}')
+        if [[ -z "$PHYSICAL_CORES" ]] || [[ "$PHYSICAL_CORES" -lt 1 ]]; then
+            PHYSICAL_CORES=$(lscpu 2>/dev/null | grep "^CPU(s):" | awk '{print $2}')
+        fi
+        if [[ -z "$PHYSICAL_CORES" ]] || [[ "$PHYSICAL_CORES" -lt 1 ]]; then
+            PHYSICAL_CORES=$(grep "^processor" /proc/cpuinfo | wc -l)
+        fi
+        
+        # Logical cores detection
+        LOGICAL_CORES=$(nproc --all 2>/dev/null)
+        if [[ -z "$LOGICAL_CORES" ]] || [[ "$LOGICAL_CORES" -lt 1 ]]; then
+            LOGICAL_CORES=$(lscpu 2>/dev/null | grep "^CPU(s):" | awk '{print $2}')
+        fi
+        if [[ -z "$LOGICAL_CORES" ]] || [[ "$LOGICAL_CORES" -lt 1 ]]; then
+            LOGICAL_CORES=$(grep "^processor" /proc/cpuinfo | wc -l)
+        fi
+        
+        # Detect if hyperthreading is enabled to calculate physical cores
+        SIBLINGS=$(lscpu 2>/dev/null | grep "^Thread(s) per core:" | awk '{print $4}')
+        if [[ -n "$SIBLINGS" ]] && [[ "$SIBLINGS" -gt 1 ]] && [[ -n "$LOGICAL_CORES" ]]; then
+            PHYSICAL_CORES=$((LOGICAL_CORES / SIBLINGS))
+        fi
+    fi
+    
+    # Final validation - use minimum safe values only as last resort
+    if [[ ! "$PHYSICAL_CORES" =~ ^[0-9]+$ ]] || [[ "$PHYSICAL_CORES" -lt 1 ]]; then
+        PHYSICAL_CORES=1
+    fi
+    if [[ ! "$LOGICAL_CORES" =~ ^[0-9]+$ ]] || [[ "$LOGICAL_CORES" -lt 1 ]]; then
+        LOGICAL_CORES=$PHYSICAL_CORES
+    fi
+    
+    # Ensure logical cores >= physical cores
+    if [[ $LOGICAL_CORES -lt $PHYSICAL_CORES ]]; then
+        LOGICAL_CORES=$PHYSICAL_CORES
+    fi
+    
+    # Use physical cores for main threads, logical for batch processing
+    THREADS="$PHYSICAL_CORES"
+    THREADS_BATCH="$LOGICAL_CORES"
+
+    # Calculate CPU affinity mask for physical cores only (avoid SMT/hyperthreading)
+    # This pins threads to physical cores for better cache locality and less context switching
+    calculate_cpu_affinity() {
+        local physical_cores=$1
+        local mask=0
+
+        # On Linux, we can detect which cores are physical vs SMT
+        if [[ -f /sys/devices/system/cpu/cpu0/topology/thread_siblings_list ]]; then
+            local used_cores=""
+            for ((i=0; i<$(nproc); i++)); do
+                # Check if this is a "master" core (first in sibling list)
+                local siblings_file="/sys/devices/system/cpu/cpu${i}/topology/thread_siblings_list"
+                if [[ -f "$siblings_file" ]]; then
+                    local siblings=$(cat "$siblings_file" 2>/dev/null | cut -d',' -f1 | cut -d'-' -f1)
+                    # Only use if this core is the first in its sibling group (physical core)
+                    if [[ "$siblings" == "$i" ]] && [[ ! "$used_cores" =~ "$i" ]]; then
+                        mask=$((mask | (1 << i)))
+                        used_cores="$used_cores $i"
+                        # Stop when we have enough physical cores
+                        if [[ $(echo "$used_cores" | wc -w) -ge $physical_cores ]]; then
+                            break
+                        fi
+                    fi
+                fi
+            done
+        else
+            # Fallback: just use first N cores
+            for ((i=0; i<physical_cores; i++)); do
+                mask=$((mask | (1 << i)))
+            done
+        fi
+
+        # Convert to hexadecimal
+        printf "%x" "$mask"
+    }
+
+    # Store CPU affinity mask for later use
+    CPU_AFFINITY_MASK=$(calculate_cpu_affinity "$PHYSICAL_CORES")
+
+    # Dynamic batch size based on available memory and cores - AUTO-TUNING
+    # Formula: accounts for GPU layers, available RAM, and CPU cores
+    calculate_dynamic_batch_size() {
+        local total_mem_gb=$1
+        local gpu_layers=$2
+        local physical_cores=$3
+        local gpu_type="$4"
+
+        # Base batch size from memory
+        local base_batch=128
+        if [[ $total_mem_gb -ge 32 ]]; then
+            base_batch=2048
+        elif [[ $total_mem_gb -ge 16 ]]; then
+            base_batch=1024
+        elif [[ $total_mem_gb -ge 8 ]]; then
+            base_batch=512
+        elif [[ $total_mem_gb -ge 4 ]]; then
+            base_batch=256
+        fi
+
+        # Adjust for GPU offloading - more GPU layers = can use larger batches
+        # because GPU memory is faster and more efficient
+        local gpu_multiplier=100
+        if [[ $gpu_layers -ge 99 ]]; then
+            gpu_multiplier=150  # 1.5x for full GPU offloading
+        elif [[ $gpu_layers -ge 50 ]]; then
+            gpu_multiplier=130  # 1.3x for partial offloading
+        elif [[ $gpu_layers -gt 0 ]]; then
+            gpu_multiplier=115  # 1.15x for minimal offloading
+        fi
+
+        # Adjust for CPU cores (more cores can handle larger batches)
+        local core_multiplier=100
+        if [[ $physical_cores -ge 16 ]]; then
+            core_multiplier=150
+        elif [[ $physical_cores -ge 8 ]]; then
+            core_multiplier=125
+        elif [[ $physical_cores -ge 4 ]]; then
+            core_multiplier=110
+        fi
+
+        # Calculate final batch size
+        local final_batch=$((base_batch * gpu_multiplier * core_multiplier / 10000))
+
+        # Cap at reasonable limits
+        if [[ $final_batch -gt 4096 ]]; then
+            final_batch=4096
+        elif [[ $final_batch -lt 64 ]]; then
+            final_batch=64
+        fi
+
+        echo "$final_batch"
+    }
+
+    # Calculate available system memory
+    TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "1048576")  # 1GB fallback
+    TOTAL_MEM_GB=$((TOTAL_MEM_KB / 1024 / 1024))
+    AVAILABLE_MEM_KB=$(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "$TOTAL_MEM_KB")
+    AVAILABLE_MEM_GB=$((AVAILABLE_MEM_KB / 1024 / 1024))
+
+    # Use available memory (not total) for safer batch sizing
+    EFFECTIVE_MEM_GB=$(( (TOTAL_MEM_GB + AVAILABLE_MEM_GB) / 2 ))
+
+    # Detect GPU type and layers for batch calculation
+    DETECTED_GPU_TYPE="cpu"
+    ESTIMATED_GPU_LAYERS=0
+    if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+        DETECTED_GPU_TYPE="nvidia"
+        ESTIMATED_GPU_LAYERS=99
+    elif [[ -d /sys/class/kfd/kfd ]] || lspci 2>/dev/null | grep -qi "amd.*vga"; then
+        DETECTED_GPU_TYPE="amd"
+        ESTIMATED_GPU_LAYERS=99
+    elif lspci 2>/dev/null | grep -qi "intel.*vga\|intel.*graphics"; then
+        DETECTED_GPU_TYPE="intel"
+        ESTIMATED_GPU_LAYERS=99
+    fi
+
+    # Calculate dynamic batch size
+    DEFAULT_BATCH_SIZE=$(calculate_dynamic_batch_size "$EFFECTIVE_MEM_GB" "$ESTIMATED_GPU_LAYERS" "$PHYSICAL_CORES" "$DETECTED_GPU_TYPE")
+    status "Auto-tuned batch size: $DEFAULT_BATCH_SIZE (mem:${EFFECTIVE_MEM_GB}GB, gpu:$DETECTED_GPU_TYPE, cores:$PHYSICAL_CORES)"
+
+    # Dynamic context size with MINIMUM 4096 tokens and resizable logic
+    # Formula: base on memory but never go below 4096 (good balance for most use cases)
+    calculate_dynamic_ctx_size() {
+        local total_mem_gb=$1
+        local available_mem_gb=$2
+        local gpu_layers=$3
+
+        # Base context size from available memory (conservative)
+        local ctx_size=4096  # MINIMUM 4096 tokens
+
+        if [[ $available_mem_gb -ge 24 ]]; then
+            ctx_size=32768
+        elif [[ $available_mem_gb -ge 16 ]]; then
+            ctx_size=16384
+        elif [[ $available_mem_gb -ge 10 ]]; then
+            ctx_size=8192
+        elif [[ $available_mem_gb -ge 6 ]]; then
+            ctx_size=4096
+        fi
+
+        # If GPU offloading is high, we can use larger contexts
+        # because GPU memory is faster for KV cache
+        if [[ $gpu_layers -ge 99 ]] && [[ $total_mem_gb -ge 8 ]]; then
+            # Boost context size for full GPU offloading
+            if [[ $ctx_size -lt 8192 ]]; then
+                ctx_size=8192
+            fi
+        fi
+
+        # Ensure minimum 4096
+        if [[ $ctx_size -lt 4096 ]]; then
+            ctx_size=4096
+        fi
+
+        echo "$ctx_size"
+    }
+
+    # Calculate dynamic context size
+    DEFAULT_CTX_SIZE=$(calculate_dynamic_ctx_size "$TOTAL_MEM_GB" "$AVAILABLE_MEM_GB" "$ESTIMATED_GPU_LAYERS")
+    status "Dynamic context size: $DEFAULT_CTX_SIZE tokens (min:4096, resizable)"
+    
+    CTX_SIZE="$(get_config ctx_size $DEFAULT_CTX_SIZE)"
+    BATCH_SIZE="$(get_config batch_size $DEFAULT_BATCH_SIZE)"
+    UBATCH_SIZE="$(get_config ubatch_size $DEFAULT_BATCH_SIZE)"
     TEMPERATURE="$(get_config temperature 0.7)"
     N_GPU_LAYERS="$(get_config n_gpu_layers '"auto"')"
     FLASH_ATTN="$(get_config flash_attn 'true')"
@@ -399,9 +627,21 @@ load_config() {
     NUMA_MODE="$(get_config numa_mode '"distribute"')"
     MIN_P="$(get_config min_p 0.05)"
     TOP_K="$(get_config top_k 20)"
-    HTTP_THREADS="$(get_config http_threads 4)"
+    # Dynamic thread counts based on physical cores
+    if [[ $PHYSICAL_CORES -ge 16 ]]; then
+        DEFAULT_HTTP_THREADS=8
+        DEFAULT_PARALLEL_SLOTS=4
+    elif [[ $PHYSICAL_CORES -ge 8 ]]; then
+        DEFAULT_HTTP_THREADS=4
+        DEFAULT_PARALLEL_SLOTS=2
+    else
+        DEFAULT_HTTP_THREADS=2
+        DEFAULT_PARALLEL_SLOTS=1
+    fi
+    
+    HTTP_THREADS="$(get_config http_threads $DEFAULT_HTTP_THREADS)"
     CONT_BATCHING="$(get_config cont_batching 'true')"
-    PARALLEL_SLOTS="$(get_config parallel_slots 2)"
+    PARALLEL_SLOTS="$(get_config parallel_slots $DEFAULT_PARALLEL_SLOTS)"
     
     if [[ "$MODE" == "api" ]]; then
         PORT="$(get_config api_port 1235)"
@@ -409,24 +649,64 @@ load_config() {
         PORT="$(get_config cli_port 1235)"
     fi
 
-    GPU_LAYERS=20; VRAM_MB=""; PRINT_VRAM=0
+    GPU_LAYERS=0; VRAM_MB=""; PRINT_VRAM=0
     if [[ "$N_GPU_LAYERS" == "auto" ]]; then
+        # MAXIMUM GPU OFFLOADING - always use all layers when GPU is available
+        # Modern drivers handle memory management efficiently
         if [[ "$GPU" == "nvidia" ]]; then
-            VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n1 | awk '{print $1}') || VRAM_MB=""
-        elif command -v glxinfo &>/dev/null; then
-            VRAM_MB=$(glxinfo 2>/dev/null | grep -i "Video memory" | awk '{print $3}' | tr -dc '0-9')
-        fi
-        
-        if [[ -n "$VRAM_MB" ]] && [[ "$VRAM_MB" =~ ^[0-9]+$ ]]; then
-            if   (( VRAM_MB < 1024 )); then GPU_LAYERS=0
-            elif (( VRAM_MB < 2048 )); then GPU_LAYERS=10
-            elif (( VRAM_MB < 4096 )); then GPU_LAYERS=20
-            elif (( VRAM_MB < 6144 )); then GPU_LAYERS=33
-            elif (( VRAM_MB < 8192 )); then GPU_LAYERS=40
-            else GPU_LAYERS=99; fi
+            # NVIDIA GPU detection
+            VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n1 | awk '{print $1}')
+            if [[ -z "$VRAM_MB" ]]; then
+                VRAM_MB=$(nvidia-smi -q -d MEMORY | grep -i "total" | grep -E "[0-9]+" | awk '{print $3}' | head -1)
+            fi
+            GPU_LAYERS=99  # Maximum CUDA offloading
             PRINT_VRAM=1
+            status "NVIDIA GPU detected: Maximum offloading enabled (99 layers)"
+        elif [[ "$GPU" == "vulkan" ]]; then
+            # Vulkan GPU detection - iGPU or dedicated
+            if command -v vulkaninfo &>/dev/null; then
+                VRAM_MB=$(vulkaninfo 2>/dev/null | grep -i "deviceSize" | head -1 | grep -E "[0-9]+" | awk '{print $3}' | tr -dc '0-9')
+            fi
+            if [[ -z "$VRAM_MB" ]] && command -v glxinfo &>/dev/null; then
+                VRAM_MB=$(glxinfo 2>/dev/null | grep -i "Video memory" | awk '{print $3}' | tr -dc '0-9')
+            fi
+            if [[ -z "$VRAM_MB" ]]; then
+                # iGPU - use system memory
+                TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+                if [[ -n "$TOTAL_MEM_KB" ]]; then
+                    VRAM_MB=$((TOTAL_MEM_KB / 1024 / 4))
+                fi
+            fi
+            
+            # Conservative GPU layer calculation for Vulkan stability
+            if [[ -n "$VRAM_MB" ]] && [[ $VRAM_MB -gt 0 ]]; then
+                # Reserve 256MB for Vulkan driver overhead and reduce layers for stability
+                AVAILABLE_VRAM_MB=$((VRAM_MB - 256))
+                if [[ $AVAILABLE_VRAM_MB -ge 4096 ]]; then
+                    GPU_LAYERS=99  # High-end GPU
+                elif [[ $AVAILABLE_VRAM_MB -ge 2048 ]]; then
+                    GPU_LAYERS=50  # Mid-range GPU
+                elif [[ $AVAILABLE_VRAM_MB -ge 1024 ]]; then
+                    GPU_LAYERS=25  # Low-end GPU
+                else
+                    GPU_LAYERS=10  # Very low VRAM
+                fi
+            else
+                GPU_LAYERS=25  # Conservative fallback for iGPU
+            fi
+            PRINT_VRAM=1
+            status "Vulkan GPU detected: ${GPU_LAYERS} layers (VRAM: ${VRAM_MB}MB, reserved: 256MB)"
+        elif [[ "$GPU" == "mlx" ]]; then
+            # Apple Silicon - always full Metal offloading
+            GPU_LAYERS=99
+            status "Apple Silicon detected: Full Metal offloading enabled (99 layers)"
+        else
+            # Unknown GPU backend - try maximum anyway
+            GPU_LAYERS=99
+            status "GPU backend detected: Maximum offloading enabled (99 layers)"
         fi
     else
+        # Use user-specified value
         GPU_LAYERS="$N_GPU_LAYERS"
     fi
 }
@@ -435,6 +715,27 @@ load_config() {
 # SELECT MODEL
 # ==================================================
 select_model() {
+    # Check if a model was pre-selected via --model flag
+    if [[ -n "$PRESELECTED_MODEL" ]]; then
+        if [[ ! -f "$PRESELECTED_MODEL" ]]; then
+            error_msg "Model file not found: $PRESELECTED_MODEL"
+            exit 1
+        fi
+        SELECTED_MODEL="$PRESELECTED_MODEL"
+        SELECTED_NAME="$(basename "$PRESELECTED_MODEL")"
+        
+        # Skip conversion check if already .gguf
+        if [[ "${PRESELECTED_MODEL##*.}" != "gguf" ]] && [[ "$GPU" != "mlx" ]]; then
+            check_and_convert_model "$SELECTED_MODEL" || exit 1
+            # Update SELECTED_MODEL to point to converted version if it exists
+            if [[ -f "${PRESELECTED_MODEL%.*}.gguf" ]]; then
+                SELECTED_MODEL="${PRESELECTED_MODEL%.*}.gguf"
+            fi
+        fi
+        status "Model pre-selected: $SELECTED_NAME"
+        return
+    fi
+    
     while true; do
         clear 2>/dev/null || true
         print_logo
@@ -453,12 +754,12 @@ select_model() {
             [[ -e "$f" ]] || continue
             ((model_count++)) || true
             model_paths+=("$f")
-            local fname; fname="$(basename "$f")"
+            fname="$(basename "$f")"
             model_names+=("$fname")
-            local format; format=$(get_file_format "$f")
+            format=$(get_file_format "$f")
             model_formats+=("$format")
-            local fsize; fsize=$(get_file_size "$f")
-            local status=""
+            fsize=$(get_file_size "$f")
+            status=""
             [[ "$format" != "GGUF" ]] && [[ ! -f "${f%.*}.gguf" ]] && status=" ${YELLOW}[needs conversion]${NC}"
             printf "  ${BOLD}%2d${NC}. %-35s ${GRAY}[${CYAN}${format}${GRAY}]${NC}${status}\n" "$model_count" "$fname"
             printf "      ${GRAY}•${NC} $(human_size "$fsize")\n"
@@ -478,12 +779,13 @@ select_model() {
         echo -e "  ${PURPLE}D${NC}  Download a new model"
         echo -e "  ${PURPLE}0${NC}  Exit"
         echo -e "\n  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
-        read -r -p "$(echo -e "${CYAN}lumina@edge>${NC} ")" model_choice || true
+        echo -e "${CYAN}lumina@edge>${NC} " >&2
+read -r model_choice || true
         [[ "${model_choice^^}" == "D" ]] && [[ -f "$ROOT/core/lumina-model-manager.py" ]] && python3 "$ROOT/core/lumina-model-manager.py" || true && continue
         [[ "$model_choice" == "0" ]] && exit 0
         
         if [[ "$model_choice" =~ ^[0-9]+$ ]] && (( model_choice >= 1 && model_choice <= model_count )); then
-            local selected_file="${model_paths[$((model_choice - 1))]}"
+            selected_file="${model_paths[$((model_choice - 1))]}"
             if [[ "$GPU" != "mlx" ]]; then
                 check_and_convert_model "$selected_file" || { sleep 2; continue; }
             fi
@@ -501,107 +803,80 @@ select_model() {
 }
 
 # ==================================================
+# CPU OPTIMIZATION (extracted, reusable)
+# ==================================================
+apply_cpu_optimizations() {
+    # Pre-launch optimizations (Linux only)
+    if [[ "$(uname -s)" != "Linux" ]]; then
+        return
+    fi
+    
+    # CPU Frequency Governor Integration
+    if command -v cpupower &>/dev/null; then
+        if sudo cpupower frequency-set -g performance 2>/dev/null; then
+            success_msg "CPU governor set to performance mode"
+        else
+            warn_msg "Could not set CPU governor (requires sudo or cpupower not available)"
+        fi
+    else
+        warn_msg "cpupower not available for CPU governor control"
+    fi
+    
+    # Additional CPU optimizations
+    if [[ -w /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]]; then
+        echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1 || true
+    fi
+    
+    # Disable CPU idle states for maximum performance
+    if [[ -w /sys/devices/system/cpu/cpuidle/low_power_idle_cpu_residency_us ]]; then
+        echo 0 | sudo tee /sys/devices/system/cpu/cpuidle/low_power_idle_cpu_residency_us > /dev/null 2>&1 || true
+    fi
+    
+    echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/enabled > /dev/null 2>&1 || true
+}
+
+# ==================================================
 # LAUNCH HANDLERS
 # ==================================================
 launch_api() {
-    SERVER_EXE=$(select_executable "server")
+    # Load configuration first
+    load_config
     
-    clear 2>/dev/null || true
+    # Direct API launcher - bypass interactive selection
     print_logo
     print_banner "⚡ LUMINA EDGE :: API SERVER ($GPU)"
     divider
     
-    progress_bar "Booting API UI" 18 0.02
-    load_config
-    select_model
+    echo -e "${WARNING}⚠${NC} Interactive API mode disabled for stability"
+    echo -e "${CYAN}ℹ${NC} Use: ./start_api.sh --model <path> --port <port> --gpu <backend>"
+    echo ""
+    echo -e "${GRAY}Available models:${NC}"
     
-    clear 2>/dev/null || true
-    print_banner "⚡ LUMINA EDGE :: API SERVER ($GPU)"
-    divider
-    echo -e "${SUCCESS}✓${NC} Model      : $SELECTED_NAME"
-    echo -e "${CYAN}ℹ${NC} Threads    : $THREADS"
-    echo -e "${CYAN}ℹ${NC} Context    : $CTX_SIZE tokens"
-    echo -e "${CYAN}ℹ${NC} Thread Batch : $THREADS"
-    echo -e "${CYAN}ℹ${NC} GPU Layers : $GPU_LAYERS"
-    if [[ $PRINT_VRAM -eq 1 ]]; then
-        echo -e "${CYAN}ℹ${NC} VRAM       : ${VRAM_MB} MB"
-    fi
-    if [[ "$GPU" == "nvidia" ]]; then
-        echo -e "${CYAN}ℹ${NC} Backend    : NVIDIA CUDA"
-    elif [[ "$GPU" == "mlx" ]]; then
-        echo -e "${CYAN}ℹ${NC} Backend    : Apple MLX"
-    else
-        echo -e "${CYAN}ℹ${NC} Backend    : Vulkan"
-    fi
-    echo -e "${CYAN}ℹ${NC} API Port   : http://localhost:$PORT"
+    # Show available models
+    model_count=0
+    for f in "$MODELS"/*.{gguf,safetensors,bin,pt}; do
+        [[ -e "$f" ]] || continue
+        ((model_count++)) || true
+        fname="$(basename "$f")"
+        echo -e "  ${model_count}. ${CYAN}$fname${NC}"
+    done
+    
+    echo ""
+    echo -e "${CYAN}Quick start examples:${NC}"
+    echo -e "  ./start_api.sh --model models/LFM2.5-1.2B-Thinking-Q4_K_M.gguf"
+    echo -e "  ./start_api.sh --model models/phi-4-mini-iq4_xs.gguf --port 8081"
+    echo -e "  ./start_api.sh --model models/Qwen3.5-Coder-4b-Instruct-IQ4_XS.gguf"
     
     divider
     echo ""
     
-    if [[ "$GPU" == "mlx" ]]; then
-        status "Starting MLX backend..."
-        echo ""
-        local mlx_cmd=("python3" "$SCRIPTS/mlx_backend.py" "--mode" "api" "--model" "$SELECTED_MODEL" "--port" "$PORT")
-        if [[ "$OPT_BENCHMARK" == true ]]; then
-            mlx_cmd+=("--benchmark")
-        fi
-        "${mlx_cmd[@]}"
-        return
+    # Auto-start with default model if requested
+    if [[ -n "$PRESELECTED_MODEL" ]]; then
+        echo -e "${SUCCESS}✓${NC} Starting API with pre-selected model: $PRESELECTED_MODEL"
+        exec ./start_api.sh --model "$PRESELECTED_MODEL" --port "$PORT" --gpu "$GPU"
     fi
     
-    status "Starting llama-server..."
-    echo ""
-    progress_bar "Preflight checks" 14 0.02
-    
-    if [[ "$OPT_BENCHMARK" == true ]]; then
-        BENCH_EXE=$(select_executable "bench")
-        if [[ -n "$BENCH_EXE" ]]; then
-            status "Running benchmark before server..."
-            echo ""
-            "$BENCH_EXE" -m "$SELECTED_MODEL" --n-gpu-layers "$GPU_LAYERS" -o json 2>/dev/null || true
-            echo ""
-            divider
-            echo ""
-        fi
-    fi
-    
-    # Pre-launch optimizations (Linux only)
-    if [[ "$(uname -s)" == "Linux" ]]; then
-        sudo cpupower frequency-set -g performance 2>/dev/null || true
-        echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/enabled > /dev/null 2>&1 || true
-    fi
-    
-    # Create cache directory
-    mkdir -p "$ROOT/cache"
-    
-    # Build command with optimized flags
-    local cmd=("$SERVER_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -c "$CTX_SIZE" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE" --n-gpu-layers "$GPU_LAYERS" --temp "$TEMPERATURE" --top-p 1.0 --repeat-penalty 1.0 --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p "$MIN_P" --top-k "$TOP_K" --threads-http "$HTTP_THREADS" -p "$PORT")
-    
-    # Add continuous batching if enabled
-    if [[ "$CONT_BATCHING" == "true" ]]; then
-        cmd+=(--cont-batching --parallel "$PARALLEL_SLOTS")
-    fi
-    
-    # Add mlock if enabled
-    if [[ "$USE_MLOCK" == "true" ]]; then
-        cmd+=(--mlock)
-    fi
-    
-    # Add KV cache quantization
-    cmd+=(--cache-type-k "$KV_CACHE_QUANT" --cache-type-v "$KV_CACHE_QUANT")
-    
-    # GPU-specific split-mode flags
-    if [[ "$GPU" == "nvidia" ]]; then
-        cmd+=(--split-mode layer)
-    elif [[ "$GPU" == "vulkan" ]]; then
-        # Vulkan: row-split faster for iGPU/shared VRAM; no-kv-offload avoids PCIe overhead
-        cmd+=(--split-mode row --no-kv-offload)
-    fi
-    
-    # Slot saving and prompt cache
-    cmd+=(--slot-save-path "$ROOT/cache/" --prompt-cache "$ROOT/cache/system_prompt.bin")
-    
-    "${cmd[@]}"
+    return 0
 }
 
 launch_core() {
@@ -620,7 +895,8 @@ launch_core() {
     print_banner "⚡ LUMINA EDGE :: CORE ($GPU)"
     divider
     echo -e "${SUCCESS}✓${NC} Model      : $SELECTED_NAME"
-    echo -e "${CYAN}ℹ${NC} Threads    : $THREADS"
+    echo -e "${CYAN}ℹ${NC} Physical Cores : $PHYSICAL_CORES (threads: $THREADS)"
+    echo -e "${CYAN}ℹ${NC} Logical Cores  : $LOGICAL_CORES (batch threads: $THREADS_BATCH)"
     echo -e "${CYAN}ℹ${NC} Context    : $CTX_SIZE tokens"
     echo -e "${CYAN}ℹ${NC} GPU Layers : $GPU_LAYERS"
     if [[ $PRINT_VRAM -eq 1 ]]; then
@@ -667,14 +943,24 @@ launch_core() {
         fi
     fi
     
-    # Pre-launch optimizations (Linux only)
-    if [[ "$(uname -s)" == "Linux" ]]; then
-        sudo cpupower frequency-set -g performance 2>/dev/null || true
-        echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/enabled > /dev/null 2>&1 || true
+    # Apply CPU optimizations
+    apply_cpu_optimizations
+    
+    # Initialize performance monitoring
+    MONITOR_SCRIPT="$SCRIPTS/performance_monitor.py"
+    MONITOR_LOG="$ROOT/cache/performance_$(date +%Y%m%d_%H%M%S).log"
+    MONITOR_PID=""
+    
+    if [[ -f "$MONITOR_SCRIPT" ]] && command -v python3 &>/dev/null; then
+        status "Starting performance monitor..."
+        python3 "$MONITOR_SCRIPT" --log-file "$MONITOR_LOG" --update-interval 2.0 &
+        MONITOR_PID=$!
+        echo -e "${CYAN}ℹ${NC} Performance monitor PID: $MONITOR_PID"
+        echo -e "${CYAN}ℹ${NC} Log file: $MONITOR_LOG"
     fi
     
     # Build command
-    local cmd=("$CLI_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -c "$CTX_SIZE" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE" -n 128 --n-gpu-layers "$GPU_LAYERS" --temp "$TEMPERATURE" --top-p 1.0 --repeat-penalty 1.0 --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p "$MIN_P" --top-k "$TOP_K")
+    local cmd=("$CLI_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -tb "$THREADS_BATCH" -c "$CTX_SIZE" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE" -n 128 --n-gpu-layers "$GPU_LAYERS" --temp "$TEMPERATURE" --top-p 1.0 --repeat-penalty 1.0 --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p "$MIN_P" --top-k "$TOP_K")
     
     # Add mlock if enabled
     if [[ "$USE_MLOCK" == "true" ]]; then
@@ -689,6 +975,8 @@ launch_core() {
         cmd+=(--split-mode layer)
     elif [[ "$GPU" == "vulkan" ]]; then
         cmd+=(--split-mode row --no-kv-offload)
+        # Add device selection for Vulkan
+        cmd+=(--device vulkan0)
     fi
     
     # NUMA for Linux (skip MLX)
@@ -699,6 +987,18 @@ launch_core() {
     if [[ "$OPT_JSON_OUTPUT" == true ]]; then
         cmd+=("--format" "json")
     fi
+    
+    # Cleanup function for performance monitor
+    cleanup_monitor() {
+        if [[ -n "$MONITOR_PID" ]] && kill -0 "$MONITOR_PID" 2>/dev/null; then
+            kill "$MONITOR_PID" 2>/dev/null || true
+            wait "$MONITOR_PID" 2>/dev/null || true
+            echo -e "\n${SUCCESS}✓${NC} Performance monitor stopped"
+        fi
+    }
+    
+    # Set up cleanup trap
+    trap cleanup_monitor EXIT INT TERM
     
     "${cmd[@]}"
 }

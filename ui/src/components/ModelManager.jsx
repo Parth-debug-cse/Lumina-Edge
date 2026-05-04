@@ -4,7 +4,7 @@ import {
   getSessions, exportAsJSON, exportAsMarkdown,
   deleteSession,
 } from '../utils/storage.js'
-import { downloadModel, optimizeSystem, loadModel as apiLoadModel, fetchHFFiles, getSystemInfo, fetchConfig, saveConfig } from '../utils/api.js'
+import { downloadModel, optimizeSystem, loadModel as apiLoadModel, fetchHFFiles, getSystemInfo, fetchConfig, saveConfig, getRouterStatus, unloadAllModels } from '../utils/api.js'
 import ConverterTab from './ConverterTab.jsx'
 
 // Helper to detect model format
@@ -106,6 +106,8 @@ export default function ModelManager({ localModels = [], toast }) {
   const [hfLoading, setHfLoading] = useState(false)
   const [selectedFile, setSelectedFile] = useState(null)
   const [autoConvertOnDownload, setAutoConvertOnDownload] = useState(true)
+  const [routerStatus, setRouterStatus] = useState(null)
+  const [unloading, setUnloading] = useState(false)
 
   useEffect(() => {
     getSystemInfo().then(setSystemInfo)
@@ -116,7 +118,53 @@ export default function ModelManager({ localModels = [], toast }) {
     })
   }, [])
 
+  // Poll router status to show currently loaded model
+  useEffect(() => {
+    const refreshRouterStatus = async () => {
+      try {
+        const status = await getRouterStatus()
+        console.log('[ModelManager] Router status:', status)
+        setRouterStatus(status)
+      } catch (err) {
+        console.log('[ModelManager] Router status check failed:', err)
+        // Router may not be running, that's ok
+        setRouterStatus(null)
+      }
+    }
+    refreshRouterStatus()
+    const interval = setInterval(refreshRouterStatus, 2000) // Poll more frequently
+    return () => clearInterval(interval)
+  }, [])
+
   const refreshTags = () => setTagsMap(getModelTags())
+
+  const handleUnloadAll = async () => {
+    const loadedModels = routerStatus?.models?.filter(m => m.status === 'ready') || []
+    if (loadedModels.length === 0) {
+      toast('No models are currently loaded', 'info')
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Unload ${loadedModels.length} model(s)? This will stop all inference processes.`
+    )
+    if (!confirmed) return
+
+    setUnloading(true)
+    try {
+      const result = await unloadAllModels()
+      if (result.status === 'success') {
+        toast(`✓ Unloaded ${result.unloaded} model(s)`, 'success')
+        setRouterStatus(null)
+      } else {
+        toast(`Failed to unload: ${result.error}`, 'error')
+      }
+    } catch (err) {
+      toast(`Error: ${err.message}`, 'error')
+    } finally {
+      setUnloading(false)
+    }
+  }
 
   // ---- Tag management ----
   const addTag = (filename, tag) => {
@@ -215,6 +263,64 @@ export default function ModelManager({ localModels = [], toast }) {
         </button>
       </div>
 
+      {/* Currently Loaded Model Indicator */}
+      {routerStatus?.models?.some(m => m.status === 'ready') && (
+        <div style={{
+          background: 'rgba(76,217,100,0.1)',
+          border: '1px solid rgba(76,217,100,0.3)',
+          borderRadius: 8,
+          padding: '12px 16px',
+          marginBottom: 16,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}>
+          <div>
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 2 }}>
+              Currently Loaded ({routerStatus.models.filter(m => m.status === 'ready').length})
+            </div>
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 500 }}>
+              {routerStatus.models.filter(m => m.status === 'ready').map(m => m.name || m.model_name).join(', ')}
+            </div>
+            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 2 }}>
+              Ports: {routerStatus.models.filter(m => m.status === 'ready').map(m => m.port).join(', ')}
+            </div>
+          </div>
+          <button
+            className="btn btn-sm"
+            style={{
+              background: 'rgba(255,59,48,0.15)',
+              borderColor: 'rgba(255,59,48,0.4)',
+              color: '#ff3b30',
+              padding: '6px 12px',
+              fontSize: '0.75rem',
+            }}
+            onClick={handleUnloadAll}
+            disabled={unloading}
+          >
+            {unloading ? '⏳ Unloading...' : '🗑 Unload All'}
+          </button>
+        </div>
+      )}
+
+      {/* Loading Models Indicator */}
+      {routerStatus?.models?.some(m => m.status === 'loading') && (
+        <div style={{
+          background: 'rgba(255,149,0,0.1)',
+          border: '1px solid rgba(255,149,0,0.3)',
+          borderRadius: 8,
+          padding: '12px 16px',
+          marginBottom: 16,
+        }}>
+          <div style={{ fontSize: '0.7rem', color: 'var(--color-orange)', marginBottom: 2 }}>
+            Loading Models
+          </div>
+          <div style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 500 }}>
+            {routerStatus.models.filter(m => m.status === 'loading').map(m => m.name || m.model_name).join(', ')}
+          </div>
+        </div>
+      )}
+
       {/* Content */}
       {tab === 'local' ? (
         <div className="model-grid">
@@ -249,8 +355,13 @@ export default function ModelManager({ localModels = [], toast }) {
               onAddTag={tag => addTag(m.name, tag)}
               onRemoveTag={tag => removeTag(m.name, tag)}
               onToggleAdding={() => setAddingTag(p => ({ ...p, [m.name]: !p[m.name] }))}
+              onLoaded={() => {
+                // Refresh router status to update the loaded model indicator
+                getRouterStatus().then(setRouterStatus).catch(() => {})
+              }}
               toast={toast}
               systemInfo={systemInfo}
+              routerStatus={routerStatus}
             />
           ))}
         </div>
@@ -287,7 +398,7 @@ export default function ModelManager({ localModels = [], toast }) {
   )
 }
 
-function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, onAddTag, onRemoveTag, onToggleAdding, toast, systemInfo }) {
+function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, onAddTag, onRemoveTag, onToggleAdding, onLoaded, toast, systemInfo, routerStatus }) {
   const [loading, setLoading] = useState(false)
   const [converting, setConverting] = useState(false)
   const [hasConfig, setHasConfig] = useState(null)
@@ -297,6 +408,16 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
   // Linux/Windows need GGUF format for llama.cpp
   const isReadyToRun = isMac ? (format.type === 'SafeTensors' || format.type === 'MLX') : format.type === 'GGUF'
   const needsConversion = !isReadyToRun
+
+  // Check if this model is currently loaded
+  const isLoaded = routerStatus?.models?.some(m => 
+    (m.status === 'ready' || m.status === 'loading') && 
+    (m.name === model.name || m.model_name === model.name)
+  )
+  const loadedModel = routerStatus?.models?.find(m => 
+    (m.status === 'ready' || m.status === 'loading') && 
+    (m.name === model.name || m.model_name === model.name)
+  )
 
   // Check for config.json on Mac (only needed for individual SafeTensors files, not MLX directories)
   useEffect(() => {
@@ -346,14 +467,24 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
     try {
       toast(`Loading ${model.name}...`, 'info')
       const result = await apiLoadModel(model.name)
+      console.log('[ModelManager] Load result:', result)
+      
       if (result.status === 'success') {
         toast(`✓ Model loaded successfully on port ${result.port}!`, 'success')
+        onLoaded?.()
+        
+        // Wait a moment then refresh status to ensure UI updates
+        setTimeout(() => {
+          getRouterStatus().then(setRouterStatus).catch(() => {})
+        }, 1000)
       } else {
         // Show detailed error message if available
-        const errorMsg = result.message || result.error
+        const errorMsg = result.message || result.error || 'Unknown error'
+        console.error('[ModelManager] Load failed:', result)
         toast(`Failed to load: ${errorMsg}`, 'error')
       }
     } catch (err) {
+      console.error('[ModelManager] Load exception:', err)
       toast(`Error loading model: ${err.message}`, 'error')
     } finally {
       setLoading(false)
@@ -361,11 +492,29 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
   }
 
   return (
-    <div className="model-card">
+    <div className={`model-card ${isLoaded ? 'model-card-loaded' : ''}`} style={{
+      border: isLoaded ? '2px solid rgba(76,217,100,0.5)' : undefined,
+      background: isLoaded ? 'rgba(76,217,100,0.05)' : undefined
+    }}>
       <div className="model-card-header">
-        <div className="model-icon">🧠</div>
+        <div className="model-icon">
+          {isLoaded ? (loadedModel?.status === 'loading' ? '⏳' : '✅') : '🧠'}
+        </div>
         <div className="model-info">
-          <div className="model-name" title={model.name}>{model.name}</div>
+          <div className="model-name" title={model.name}>
+            {model.name}
+            {isLoaded && (
+              <span className="badge" style={{ 
+                background: loadedModel?.status === 'loading' ? 'var(--color-orange)' : 'var(--color-green)', 
+                color: '#fff', 
+                fontSize: '0.6rem', 
+                padding: '2px 6px',
+                marginLeft: '8px'
+              }}>
+                {loadedModel?.status === 'loading' ? 'Loading...' : `Loaded (Port ${loadedModel?.port})`}
+              </span>
+            )}
+          </div>
           <div className="model-size">{model.size}</div>
         </div>
         <div className="model-card-format">

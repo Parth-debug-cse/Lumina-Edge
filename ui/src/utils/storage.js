@@ -15,11 +15,20 @@ export function getSessions() {
 }
 
 export function saveSession(session) {
-  const sessions = getSessions()
-  const idx = sessions.findIndex(s => s.id === session.id)
-  if (idx >= 0) sessions[idx] = session
-  else sessions.unshift(session)
-  localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions))
+  try {
+    const raw = localStorage.getItem(SESSIONS_KEY);
+    const sessions = raw ? JSON.parse(raw) : [];
+    const idx = sessions.findIndex(s => s.id === session.id);
+    if (idx >= 0) {
+      sessions[idx] = session;
+    } else {
+      sessions.unshift(session);
+    }
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+  } catch {
+    // If parse fails, just store this session alone
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify([session]));
+  }
 }
 
 export function deleteSession(id) {
@@ -110,19 +119,19 @@ export function setModelTags(tags) {
 const CONFIG_KEY = 'lumina_config'
 
 export const DEFAULT_CONFIG = {
-  threads: 4,
-  ctx_size: 4096,
-  batch_size: 512,
-  ubatch_size: 256,
+  threads: 'auto',  // Will be dynamically detected
+  ctx_size: 'auto',  // Will be dynamically detected based on memory
+  batch_size: 'auto',  // Will be dynamically detected based on memory
+  ubatch_size: 'auto',  // Will be dynamically detected based on memory
   n_gpu_layers: 'auto',
   temperature: 0.7,
   top_p: 0.9,
   repeat_penalty: 1.1,
   json_output: false,
-  api_port: 1234,
+  api_port: 8080,
 }
 
-export function getConfig() {
+export function getLocalConfig() {
   try {
     const stored = JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}')
     return { ...DEFAULT_CONFIG, ...stored }
@@ -131,26 +140,8 @@ export function getConfig() {
   }
 }
 
-export function saveConfig(cfg) {
+export function saveLocalConfig(cfg) {
   localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg))
 }
 
 // ============================================================
-// Benchmark results
-// ============================================================
-
-const BENCH_KEY = 'lumina_benchmark_results'
-
-export function getBenchmarkResults() {
-  try {
-    return JSON.parse(localStorage.getItem(BENCH_KEY) || '[]')
-  } catch {
-    return []
-  }
-}
-
-export function saveBenchmarkResult(result) {
-  const results = getBenchmarkResults()
-  results.unshift(result)
-  localStorage.setItem(BENCH_KEY, JSON.stringify(results.slice(0, 50)))
-}

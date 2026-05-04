@@ -6,11 +6,12 @@ between them based on configuration.
 """
 
 import os
+import sys
 import json
 import logging
 import subprocess
-import threading
 import tempfile
+import platform
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
@@ -29,6 +30,7 @@ class ModelStatus(Enum):
     IDLE = "idle"
     LOADING = "loading"
     READY = "ready"
+    UNLOADING = "unloading"
     ERROR = "error"
     STOPPED = "stopped"
 
@@ -78,9 +80,46 @@ class ModelRouter:
                 with open(self.config_path, 'r') as f:
                     config = json.load(f)
                     self.routing_policy = config.get('routing_policy', 'round-robin')
+                    self.n_gpu_layers = config.get('n_gpu_layers', 'auto')
+                    self.split_mode = config.get('split_mode', 'row')
+                    self.numa_mode = config.get('numa_mode', 'distribute')
+                    self.cont_batching = config.get('cont_batching', True)
+                    self.parallel_slots = config.get('parallel_slots', 2)
+                    self.batch_size = config.get('batch_size', 512)
+                    self.ubatch_size = config.get('ubatch_size', 512)
+                    self.defrag_thold = config.get('defrag_thold', 0.1)
+                    self.use_mlock = config.get('use_mlock', True)
+                    self.flash_attn = config.get('flash_attn', True)
+                    self.kv_cache_quant = config.get('kv_cache_quant', 'q8_0')
                     logger.info(f"✓ Loaded routing policy: {self.routing_policy}")
+                    logger.info(f"✓ Loaded GPU layers: {self.n_gpu_layers}")
             except Exception as e:
                 logger.warning(f"Could not load config: {e}")
+                # Set defaults if config loading fails
+                self.n_gpu_layers = 'auto'
+                self.split_mode = 'row'
+                self.numa_mode = 'distribute'
+                self.cont_batching = True
+                self.parallel_slots = 2
+                self.batch_size = 512
+                self.ubatch_size = 512
+                self.defrag_thold = 0.1
+                self.use_mlock = True
+                self.flash_attn = True
+                self.kv_cache_quant = 'q8_0'
+        else:
+            # Set defaults if no config file
+            self.n_gpu_layers = 'auto'
+            self.split_mode = 'row'
+            self.numa_mode = 'distribute'
+            self.cont_batching = True
+            self.parallel_slots = 2
+            self.batch_size = 512
+            self.ubatch_size = 512
+            self.defrag_thold = 0.1
+            self.use_mlock = True
+            self.flash_attn = True
+            self.kv_cache_quant = 'q8_0'
     
     def register_model(self, model_path: str, port: int, quantization: str = "Q4_K_M") -> ModelInstance:
         """Register a new model instance"""
@@ -197,16 +236,34 @@ class ModelRouter:
             if model_id in self.models:
                 self.models[model_id].inference_count += 1
     
-    def stop_model(self, model_id: str) -> bool:
-        """Stop a running model"""
+    def stop_model(self, model_id: str, timeout: float = 5.0) -> bool:
+        """Stop a running model with SIGTERM -> SIGKILL escalation"""
         with self.model_lock:
             instance = self.models.get(model_id)
             if not instance:
                 return False
-            
+
             if instance.process_id:
                 try:
                     os.kill(instance.process_id, 15)  # SIGTERM
+                    # Wait for process to exit
+                    waited = 0.0
+                    interval = 0.2
+                    while waited < timeout:
+                        try:
+                            os.kill(instance.process_id, 0)
+                            time.sleep(interval)
+                            waited += interval
+                        except ProcessLookupError:
+                            break
+                    else:
+                        # Process still alive after timeout -> SIGKILL
+                        try:
+                            os.kill(instance.process_id, 9)  # SIGKILL
+                            logger.warning(f"⚠ SIGKILL sent to PID {instance.process_id} after {timeout}s timeout")
+                        except ProcessLookupError:
+                            pass
+
                     instance.status = ModelStatus.STOPPED
                     logger.info(f"✓ Stopped model {model_id} (PID: {instance.process_id})")
                     return True
@@ -217,7 +274,7 @@ class ModelRouter:
                 except Exception as e:
                     logger.error(f"Failed to stop model {model_id}: {e}")
                     return False
-        
+
         return False
     
     def unregister_model(self, model_id: str) -> bool:
@@ -262,9 +319,33 @@ class ModelRouter:
         return filepath
 
 
+def is_mlx_model(model_path: Path) -> bool:
+    """Check if model is an MLX model (directory with safetensors or .mlx extension)."""
+    if not model_path.exists():
+        return False
+
+    # MLX models are directories with .mlx in name or containing safetensors
+    if model_path.is_dir():
+        if '.mlx' in model_path.name.lower():
+            return True
+        # Check for safetensors files (common MLX format)
+        if any(model_path.glob('*.safetensors')):
+            return True
+        # Check for config.json indicating MLX structure
+        if (model_path / 'config.json').exists() and not (model_path / '*.gguf').exists():
+            return True
+
+    return False
+
+
+def is_apple_silicon() -> bool:
+    """Check if running on Apple Silicon."""
+    return platform.system() == 'Darwin' and 'arm' in platform.machine().lower()
+
+
 class MultiModelServer:
-    """Manages multiple parallel llama-server instances"""
-    
+    """Manages multiple parallel llama-server or MLX backend instances"""
+
     def __init__(self, bin_path: str, scripts_path: str, models_dir: str):
         self.bin_path = Path(bin_path)
         self.scripts_path = Path(scripts_path)
@@ -272,9 +353,14 @@ class MultiModelServer:
         self.router = ModelRouter()
         self.start_port = 8000  # Base port for models
         self.server_processes = {}
-        
-        if not self.bin_path.exists():
-            raise FileNotFoundError(f"Binary path not found: {bin_path}")
+        self.is_macos = is_apple_silicon()
+
+        # On macOS with MLX, we don't need llama-server binaries
+        if not self.is_macos:
+            if not self.bin_path.exists():
+                raise FileNotFoundError(f"Binary path not found: {bin_path}")
+        else:
+            logger.info("🍎 Running on Apple Silicon - MLX backend enabled")
     
     def load_model(self, model_path: str, model_index: int = 0) -> Optional[ModelInstance]:
         """
@@ -301,19 +387,88 @@ class MultiModelServer:
         try:
             # Prepare command
             llama_server = self.bin_path / "llama-server"
-            cmd = [
-                str(llama_server),
-                "-m", str(model_path),
-                "--host", "127.0.0.1",
-                "--port", str(port),
-                "--ctx-size", str(instance.context_size),
-                "--n-gpu-layers", str(instance.gpu_layers or 99),
-                "--flash-attn",
-                "--mlock"
-            ]
             
-            logger.info(f"🚀 Starting model server: {' '.join(cmd)}")
+            # Determine GPU layers (handle auto detection)
+            gpu_layers = instance.gpu_layers
+            if gpu_layers is None:
+                if self.router.n_gpu_layers == "auto":
+                    gpu_layers = 99  # Default to max for auto
+                else:
+                    gpu_layers = self.router.n_gpu_layers
             
+            # Check if this is an MLX model on Apple Silicon
+            use_mlx = self.is_macos and is_mlx_model(model_path)
+
+            if use_mlx:
+                # Use MLX backend
+                mlx_backend = self.scripts_path / "mlx_backend.py"
+                if not mlx_backend.exists():
+                    logger.error(f"MLX backend not found: {mlx_backend}")
+                    self.router.mark_error(instance.id, "MLX backend not found")
+                    return None
+
+                cmd = [
+                    sys.executable, str(mlx_backend),
+                    "--model", str(model_path),
+                    "--port", str(port),
+                    "--host", "127.0.0.1"
+                ]
+
+                logger.info(f"🚀 Starting MLX backend on port {port}: {model_path.name}")
+
+            else:
+                # Use llama-server
+                llama_server = self.bin_path / "llama-server"
+                if sys.platform == 'win32':
+                    llama_server = self.bin_path / "llama-server.exe"
+
+                cmd = [
+                    str(llama_server),
+                    "-m", str(model_path),
+                    "--host", "127.0.0.1",
+                    "--port", str(port),
+                    "--ctx-size", str(instance.context_size),
+                    "--n-gpu-layers", str(gpu_layers),
+                    "--batch-size", str(self.router.batch_size),
+                    "--ubatch-size", str(self.router.ubatch_size),
+                    "--cache-type-k", self.router.kv_cache_quant,
+                    "--cache-type-v", self.router.kv_cache_quant,
+                    "--jinja"
+                ]
+
+                # Add flash attention if enabled
+                if self.router.flash_attn:
+                    cmd.append("--flash-attn")
+
+                # Add memory lock if enabled (not on macOS with unified memory)
+                if self.router.use_mlock and not self.is_macos:
+                    cmd.append("--mlock")
+
+                # Add performance optimization flags
+                cmd.extend([
+                    "--defrag-thold", str(self.router.defrag_thold),
+                    "--warmup",
+                    "--ctx-shift"
+                ])
+
+                # Add continuous batching if enabled
+                if self.router.cont_batching:
+                    cmd.extend(["--cont-batching", "--parallel", str(self.router.parallel_slots)])
+
+                # Add GPU-specific split mode (not for MLX)
+                cmd.extend(["--split-mode", self.router.split_mode])
+
+                # Add NUMA configuration (skip on macOS)
+                if platform.system() != 'Darwin':
+                    if self.router.numa_mode != "none":
+                        cmd.extend(["--numa", self.router.numa_mode])
+
+                # Add Vulkan-specific optimizations
+                if self.router.split_mode == "row":
+                    cmd.append("--no-kv-offload")
+
+                logger.info(f"🚀 Starting llama-server: {' '.join(cmd)}")
+
             # Redirect stdout/stderr to log file
             log_file = os.path.join(tempfile.gettempdir(), f"lumina_model_{port}.log")
             with open(log_file, 'w') as log_f:
@@ -359,18 +514,28 @@ class MultiModelServer:
             return None
     
     def unload_model(self, model_id: str) -> bool:
-        """Unload a model"""
+        """Unload a model with SIGTERM -> SIGKILL escalation"""
         if model_id in self.server_processes:
             process = self.server_processes[model_id]
             try:
-                process.terminate()
-                process.wait(timeout=5)
+                process.terminate()  # SIGTERM
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"⚠ Process for {model_id} did not exit in 5s, sending SIGKILL")
+                    process.kill()  # SIGKILL
+                    process.wait(timeout=3)
                 del self.server_processes[model_id]
                 return self.router.unregister_model(model_id)
             except Exception as e:
                 logger.error(f"Error unloading model: {e}")
+                # Force kill as last resort
+                try:
+                    process.kill()
+                except Exception:
+                    pass
                 return False
-        
+
         return False
     
     def get_model_routes(self) -> List[Dict]:
@@ -387,14 +552,26 @@ class MultiModelServer:
         return routes
     
     def shutdown_all(self):
-        """Shutdown all model servers"""
+        """Shutdown all model servers with SIGTERM -> SIGKILL escalation"""
         logger.info("Shutting down all models...")
-        for process in self.server_processes.values():
+        for model_id, process in list(self.server_processes.items()):
             try:
-                process.terminate()
-            except:
+                process.terminate()  # SIGTERM
+            except Exception:
                 pass
-        
+
+        # Wait up to 5s for each, then SIGKILL stragglers
+        for model_id, process in list(self.server_processes.items()):
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning(f"⚠ Process {model_id} did not exit in 5s, sending SIGKILL")
+                try:
+                    process.kill()
+                    process.wait(timeout=3)
+                except Exception:
+                    pass
+
         self.server_processes.clear()
         logger.info("✓ All models shut down")
 
@@ -435,7 +612,7 @@ class AgentDispatcher:
         )
         
         try:
-            with urllib.request.urlopen(req, timeout=30) as response:
+            with urllib.request.urlopen(req, timeout=300) as response:
                 result = json.loads(response.read().decode('utf-8'))
                 content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
                 self.server.router.record_inference(model.id)

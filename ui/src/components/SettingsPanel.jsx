@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { getConfig, saveConfig, DEFAULT_CONFIG } from '../utils/storage.js'
+import { getLocalConfig, saveLocalConfig, DEFAULT_CONFIG } from '../utils/storage.js'
 
 const SECTIONS = [
   {
@@ -16,7 +16,7 @@ const SECTIONS = [
     title: 'Compute',
     fields: [
       { key: 'threads',       label: 'CPU Threads',    type: 'number', min: 1, max: 64, hint: 'Number of CPU threads for inference.' },
-      { key: 'ctx_size',      label: 'Context Size',   type: 'select', options: [512,1024,2048,4096,8192,16384,32768], hint: 'Token context window length.' },
+      { key: 'ctx_size',      label: 'Context Size',   type: 'select', options: [4096,8192,16384,32768], hint: 'Token context window length. Minimum 4096 tokens enforced.' },
       { key: 'batch_size',    label: 'Batch Size',     type: 'number', min: 1, max: 4096, hint: 'Prompt processing batch size.' },
       { key: 'ubatch_size',   label: 'Micro-Batch',    type: 'number', min: 1, max: 4096, hint: 'Physical micro-batch for memory efficiency.' },
       { key: 'n_gpu_layers',  label: 'GPU Layers',     type: 'text',   hint: '"auto" or an integer (e.g. 20). auto = VRAM-based detection.' },
@@ -39,7 +39,7 @@ const SECTIONS = [
 ]
 
 export default function SettingsPanel({ toast }) {
-  const [cfg, setCfg] = useState(getConfig)
+  const [cfg, setCfg] = useState(getLocalConfig)
   const [saved, setSaved] = useState(false)
 
   const update = (key, value) => {
@@ -48,7 +48,7 @@ export default function SettingsPanel({ toast }) {
   }
 
   const save = async () => {
-    saveConfig(cfg)
+    saveLocalConfig(cfg)
     try {
       const res = await fetch('/api/save-config', {
         method: 'POST',
