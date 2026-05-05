@@ -111,7 +111,7 @@ export default function SettingsPanel({ toast }) {
       <div style={{
         padding: '14px 24px', borderTop: '1px solid var(--border)',
         display: 'flex', gap: 10, alignItems: 'center',
-        background: 'rgba(8,8,16,0.8)', backdropFilter: 'blur(12px)',
+        background: 'rgba(28,25,23,0.8)', backdropFilter: 'blur(12px)',
         flexShrink: 0,
       }}>
         <button className="btn btn-primary btn-lg" onClick={save}>

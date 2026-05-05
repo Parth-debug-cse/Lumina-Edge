@@ -371,7 +371,7 @@ export default function ChatPanel({ serverStatus, serverModel, toast }) {
               </div>
               <div className="chat-input-hints">
                 <span>Enter to send · Shift+Enter for newline</span>
-                {streaming && <span style={{ color: 'var(--cyan)' }}>● Generating…</span>}
+                {streaming && <span style={{ color: 'var(--accent)' }}>● Generating…</span>}
               </div>
             </div>
           </div>

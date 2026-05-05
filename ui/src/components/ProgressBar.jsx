@@ -7,7 +7,7 @@ export default function ProgressBar({ percent = 0, status = '' }) {
         <span>{value}%</span>
       </div>
       <div style={{ width: '100%', height: 12, background: 'rgba(255,255,255,0.1)', borderRadius: 999, overflow: 'hidden' }}>
-        <div style={{ width: `${value}%`, height: '100%', background: 'var(--color-cyan)', transition: 'width 0.2s ease' }} />
+        <div style={{ width: `${value}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.2s ease' }} />
       </div>
       {status && <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{status}</div>}
     </div>

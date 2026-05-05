@@ -67,9 +67,9 @@ function ActionButton({ label, icon, onClick, loading, disabled, variant = 'prim
     transition: 'all 0.15s',
   }
   const variants = {
-    primary: { ...base, background: 'var(--accent)', color: '#fff' },
+    primary: { ...base, background: 'var(--accent)', color: '#1C1917' },
     secondary: { ...base, background: 'var(--surface-2)', color: 'var(--text-primary)', border: '1px solid var(--border)' },
-    danger: { ...base, background: '#dc2626', color: '#fff' },
+    danger: { ...base, background: 'var(--red)', color: '#1C1917' },
   }
   return (
     <button style={variants[variant]} onClick={onClick} disabled={disabled || loading}>
@@ -269,7 +269,7 @@ export default function DiagnosticsPanel({ localModels = [], toast }) {
                   iGPU ({resources.igpu.type})
                 </div>
                 <div style={STAT_GRID}>
-                  <StatCard label="iGPU Util" value={resources.igpu.util_pct?.toFixed(1) || '—'} unit="%" pct={resources.igpu.util_pct} color="#8b5cf6" />
+                  <StatCard label="iGPU Util" value={resources.igpu.util_pct?.toFixed(1) || '—'} unit="%" pct={resources.igpu.util_pct} color="#D97757" />
                   <StatCard label="iGPU Freq" value={resources.igpu.freq_mhz || '—'} unit="MHz" />
                   <StatCard label="VRAM Used" value={resources.igpu.vram_used_mb || '—'} unit={`/ ${resources.igpu.vram_total_mb || '?'} MB`} />
                 </div>

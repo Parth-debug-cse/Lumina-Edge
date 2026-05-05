@@ -116,13 +116,13 @@ export default function SessionHistory({ toast }) {
               <div style={{
                 padding: '20px 24px', borderBottom: '1px solid var(--border)',
                 display: 'flex', alignItems: 'flex-start', gap: 16,
-                background: 'rgba(8,8,16,0.6)', position: 'sticky', top: 0,
+                background: 'rgba(28,25,23,0.6)', position: 'sticky', top: 0,
                 backdropFilter: 'blur(12px)',
               }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--text-primary)', marginBottom: 4 }}>{selected.title}</div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <span className="badge badge-purple">{selected.model}</span>
+                    <span className="badge badge-accent">{selected.model}</span>
                     <span className="badge badge-muted">{selected.messages.length} messages</span>
                     <span className="badge badge-muted">{formatDate(selected.createdAt)}</span>
                   </div>
@@ -149,7 +149,7 @@ export default function SessionHistory({ toast }) {
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                       <span style={{
                         fontSize: '0.68rem', fontWeight: 700,
-                        color: msg.role === 'user' ? 'var(--text-accent)' : 'var(--cyan)',
+                        color: msg.role === 'user' ? 'var(--text-accent)' : 'var(--accent)',
                         textTransform: 'uppercase', letterSpacing: '0.06em',
                       }}>
                         {msg.role === 'user' ? 'You' : 'Lumina'}

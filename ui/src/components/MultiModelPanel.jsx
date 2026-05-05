@@ -330,8 +330,8 @@ export default function MultiModelPanel({ toast }) {
 
         .input:focus {
           outline: none;
-          border-color: var(--color-cyan);
-          background: rgba(0, 150, 200, 0.1);
+          border-color: var(--accent);
+          background: rgba(217, 119, 87, 0.1);
         }
 
         .button-group {
@@ -346,8 +346,8 @@ export default function MultiModelPanel({ toast }) {
         }
 
         .shard-info {
-          background: rgba(100, 200, 255, 0.05);
-          border-color: var(--color-cyan);
+          background: rgba(217, 119, 87, 0.05);
+          border-color: var(--accent);
         }
 
         .info-box {
@@ -368,7 +368,7 @@ export default function MultiModelPanel({ toast }) {
 
         .info-box summary {
           cursor: pointer;
-          color: var(--color-cyan);
+          color: var(--accent);
           font-weight: 500;
         }
 
@@ -396,7 +396,7 @@ export default function MultiModelPanel({ toast }) {
           align-items: center;
           padding: 0.75rem;
           background: rgba(0, 0, 0, 0.3);
-          border-left: 3px solid var(--color-cyan);
+          border-left: 3px solid var(--text-muted);
           border-radius: 4px;
         }
 
@@ -463,7 +463,7 @@ export default function MultiModelPanel({ toast }) {
         }
 
         .stats {
-          background: linear-gradient(135deg, rgba(100, 200, 255, 0.05), rgba(100, 100, 255, 0.05));
+          background: linear-gradient(135deg, rgba(232, 196, 160, 0.05), rgba(217, 119, 87, 0.05));
           border-color: var(--color-purple);
         }
 
@@ -493,7 +493,7 @@ export default function MultiModelPanel({ toast }) {
         .stat-value {
           font-size: 1.4rem;
           font-weight: 700;
-          color: var(--color-cyan);
+          color: var(--accent);
           margin-top: 0.3rem;
         }
 

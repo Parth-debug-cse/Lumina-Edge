@@ -88,7 +88,7 @@ const CATALOG = [
 const QUALITY_BADGE = {
   'low':      { label: 'Low', cls: 'badge-muted' },
   'medium':   { label: 'Medium', cls: 'badge-cyan' },
-  'high':     { label: 'High', cls: 'badge-purple' },
+  'high':     { label: 'High', cls: 'badge-accent' },
   'very-high':{ label: 'Very High', cls: 'badge-green' },
 }
 
@@ -231,7 +231,7 @@ export default function ModelManager({ localModels = [], toast }) {
           {ALL_TAG_FILTERS.map(t => (
             <button
               key={t}
-              className={`badge ${tagFilter === t ? 'badge-purple' : 'badge-muted'}`}
+              className={`badge ${tagFilter === t ? 'badge-accent' : 'badge-muted'}`}
               style={{ cursor: 'pointer', fontSize: '0.62rem', border: '1px solid' }}
               onClick={() => setTagFilter(t)}
             >{t}</button>
@@ -242,7 +242,7 @@ export default function ModelManager({ localModels = [], toast }) {
         {/* System optimization button */}
         <button
           className="btn btn-ghost btn-sm"
-          style={{ gap: 6, marginLeft: 'auto', borderColor: 'var(--cyan)', color: 'var(--cyan)' }}
+          style={{ gap: 6, marginLeft: 'auto', borderColor: 'var(--accent)', color: 'var(--accent)' }}
           onClick={async () => {
             const confirmed = window.confirm("This will free up system RAM and pause non-essential background services. Continue?")
             if (!confirmed) return
@@ -266,8 +266,8 @@ export default function ModelManager({ localModels = [], toast }) {
       {/* Currently Loaded Model Indicator */}
       {routerStatus?.models?.some(m => m.status === 'ready') && (
         <div style={{
-          background: 'rgba(76,217,100,0.1)',
-          border: '1px solid rgba(76,217,100,0.3)',
+          background: 'var(--green-dim)',
+          border: '1px solid rgba(74,222,128,0.3)',
           borderRadius: 8,
           padding: '12px 16px',
           marginBottom: 16,
@@ -289,9 +289,9 @@ export default function ModelManager({ localModels = [], toast }) {
           <button
             className="btn btn-sm"
             style={{
-              background: 'rgba(255,59,48,0.15)',
-              borderColor: 'rgba(255,59,48,0.4)',
-              color: '#ff3b30',
+              background: 'var(--red-dim)',
+              borderColor: 'rgba(239,68,68,0.4)',
+              color: 'var(--red)',
               padding: '6px 12px',
               fontSize: '0.75rem',
             }}
@@ -306,8 +306,8 @@ export default function ModelManager({ localModels = [], toast }) {
       {/* Loading Models Indicator */}
       {routerStatus?.models?.some(m => m.status === 'loading') && (
         <div style={{
-          background: 'rgba(255,149,0,0.1)',
-          border: '1px solid rgba(255,149,0,0.3)',
+          background: 'rgba(245,158,11,0.1)',
+          border: '1px solid rgba(245,158,11,0.3)',
           borderRadius: 8,
           padding: '12px 16px',
           marginBottom: 16,
@@ -497,8 +497,8 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
 
   return (
     <div className={`model-card ${isLoaded ? 'model-card-loaded' : ''}`} style={{
-      border: isLoaded ? '2px solid rgba(76,217,100,0.5)' : undefined,
-      background: isLoaded ? 'rgba(76,217,100,0.05)' : undefined
+      border: isLoaded ? '2px solid rgba(74,222,128,0.5)' : undefined,
+      background: isLoaded ? 'rgba(74,222,128,0.05)' : undefined
     }}>
       <div className="model-card-header">
         <div className="model-icon">
@@ -510,7 +510,7 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
             {isLoaded && (
               <span className="badge" style={{ 
                 background: loadedModel?.status === 'loading' ? 'var(--color-orange)' : 'var(--color-green)', 
-                color: '#fff', 
+                color: '#1C1917', 
                 fontSize: '0.6rem', 
                 padding: '2px 6px',
                 marginLeft: '8px'
@@ -522,11 +522,11 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
           <div className="model-size">{model.size}</div>
         </div>
         <div className="model-card-format">
-          <span className="badge" style={{ background: format.color, color: '#fff', fontSize: '0.65rem', padding: '2px 6px' }}>
+          <span className="badge" style={{ background: format.color, color: '#1C1917', fontSize: '0.65rem', padding: '2px 6px' }}>
             {format.label}
           </span>
           {!isReadyToRun && !isMac && (
-            <span className="badge" style={{ background: 'var(--color-orange)', color: '#fff', fontSize: '0.65rem', padding: '2px 6px' }}>
+            <span className="badge" style={{ background: 'var(--color-orange)', color: '#1C1917', fontSize: '0.65rem', padding: '2px 6px' }}>
               ⚠ Convert
             </span>
           )}
@@ -545,7 +545,7 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
         {tags.map(t => (
           <span
             key={t}
-            className="badge badge-purple"
+            className="badge badge-accent"
             style={{ cursor: 'pointer', gap: 4 }}
           >
             {t}
@@ -830,7 +830,7 @@ function CustomHFLinkPanel({ hfLink, setHfLink, hfFiles, setHfFiles, hfLoading, 
     switch (ext) {
       case 'mlx': return { label: 'MLX', color: '#4ade80', recommended: true }
       case 'gguf': return { label: 'GGUF', color: '#3b82f6', recommended: false }
-      case 'safetensors': return { label: 'SafeTensor', color: '#a855f7', recommended: false }
+      case 'safetensors': return { label: 'SafeTensor', color: '#D97757', recommended: false }
       case 'bin':
       case 'pt': return { label: 'PyTorch', color: '#f59e0b', recommended: false }
       default: return { label: ext.toUpperCase(), color: '#6b7280', recommended: false }
@@ -908,11 +908,11 @@ function CustomHFLinkPanel({ hfLink, setHfLink, hfFiles, setHfFiles, hfLoading, 
                       </div>
                       <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                         {badge.recommended && (
-                          <span title="Optimized for this system" style={{ fontSize: '0.75rem', background: 'rgba(76,217,100,0.2)', color: '#4cd964', padding: '2px 6px', borderRadius: '3px' }}>
+                          <span title="Optimized for this system" style={{ fontSize: '0.75rem', background: 'rgba(74,222,128,0.2)', color: 'var(--green)', padding: '2px 6px', borderRadius: '3px' }}>
                             ⭐ Best
                           </span>
                         )}
-                        <span style={{ background: badge.color, color: '#fff', fontSize: '0.65rem', padding: '2px 6px', borderRadius: '3px', minWidth: '40px', textAlign: 'center' }}>
+                        <span style={{ background: badge.color, color: '#1C1917', fontSize: '0.65rem', padding: '2px 6px', borderRadius: '3px', minWidth: '40px', textAlign: 'center' }}>
                           {badge.label}
                         </span>
                       </div>
@@ -946,9 +946,9 @@ function CustomHFLinkPanel({ hfLink, setHfLink, hfFiles, setHfFiles, hfLoading, 
                 justifyContent: 'center',
                 opacity: downloadingRepo ? 0.6 : 1,
                 cursor: downloadingRepo ? 'not-allowed' : 'pointer',
-                background: 'rgba(168,85,247,0.2)',
-                borderColor: 'rgba(168,85,247,0.5)',
-                color: '#a855f7'
+                background: 'rgba(217,119,87,0.2)',
+                borderColor: 'rgba(217,119,87,0.5)',
+                color: '#D97757'
               }}
             >
               {downloadingRepo ? '⏳ Downloading Repository...' : '📦 Download Entire Repository'}

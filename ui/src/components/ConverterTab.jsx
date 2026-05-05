@@ -237,7 +237,7 @@ export default function ConverterTab({ systemInfo, apiLoadModel, toast, autoConv
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontSize: '0.8rem', marginBottom: 8 }}>
               Quantization bits {selectedBits === 4 && <span style={{ color: 'var(--color-green)' }}>(recommended)</span>}
-              {selectedBits === 8 && <span style={{ color: 'var(--color-cyan)' }}>(recommended for quality)</span>}
+              {selectedBits === 8 && <span style={{ color: 'var(--accent)' }}>(recommended for quality)</span>}
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {[2, 3, 4, 6, 8].map((bits) => (
