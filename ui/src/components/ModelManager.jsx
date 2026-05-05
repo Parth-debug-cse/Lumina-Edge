@@ -372,27 +372,31 @@ export default function ModelManager({ localModels = [], toast }) {
           ))}
         </div>
       ) : tab === 'custom' ? (
-        <CustomHFLinkPanel
-          hfLink={hfLink}
-          setHfLink={setHfLink}
-          hfFiles={hfFiles}
-          setHfFiles={setHfFiles}
-          hfLoading={hfLoading}
-          setHfLoading={setHfLoading}
-          selectedFile={selectedFile}
-          setSelectedFile={setSelectedFile}
-          systemInfo={systemInfo}
-          autoConvertOnDownload={autoConvertOnDownload}
-          toast={toast}
-        />
+        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
+          <CustomHFLinkPanel
+            hfLink={hfLink}
+            setHfLink={setHfLink}
+            hfFiles={hfFiles}
+            setHfFiles={setHfFiles}
+            hfLoading={hfLoading}
+            setHfLoading={setHfLoading}
+            selectedFile={selectedFile}
+            setSelectedFile={setSelectedFile}
+            systemInfo={systemInfo}
+            autoConvertOnDownload={autoConvertOnDownload}
+            toast={toast}
+          />
+        </div>
       ) : (
-        <ConverterTab
-          systemInfo={systemInfo}
-          apiLoadModel={apiLoadModel}
-          toast={toast}
-          autoConvertOnDownload={autoConvertOnDownload}
-          setAutoConvertOnDownload={setAutoConvertOnDownload}
-        />
+        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
+          <ConverterTab
+            systemInfo={systemInfo}
+            apiLoadModel={apiLoadModel}
+            toast={toast}
+            autoConvertOnDownload={autoConvertOnDownload}
+            setAutoConvertOnDownload={setAutoConvertOnDownload}
+          />
+        </div>
       )}
     </div>
   )
@@ -931,30 +935,28 @@ function CustomHFLinkPanel({ hfLink, setHfLink, hfFiles, setHfFiles, hfLoading, 
             </div>
           )}
 
-          {/* Download entire repository button for MLX models */}
-          {systemInfo?.isMacAppleSilicon && (
-            <div style={{ marginBottom: '12px' }}>
-              <button
-                className="btn btn-secondary"
-                onClick={handleDownloadRepo}
-                disabled={downloadingRepo}
-                style={{
-                  width: '100%',
-                  justifyContent: 'center',
-                  opacity: downloadingRepo ? 0.6 : 1,
-                  cursor: downloadingRepo ? 'not-allowed' : 'pointer',
-                  background: 'rgba(168,85,247,0.2)',
-                  borderColor: 'rgba(168,85,247,0.5)',
-                  color: '#a855f7'
-                }}
-              >
-                {downloadingRepo ? '⏳ Downloading Repository...' : '📦 Download Entire Repository (MLX)'}
-              </button>
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px', textAlign: 'center' }}>
-                Downloads all files including config.json, tokenizer.json (required for MLX)
-              </div>
+          {/* Download entire repository button */}
+          <div style={{ marginBottom: '12px' }}>
+            <button
+              className="btn btn-secondary"
+              onClick={handleDownloadRepo}
+              disabled={downloadingRepo}
+              style={{
+                width: '100%',
+                justifyContent: 'center',
+                opacity: downloadingRepo ? 0.6 : 1,
+                cursor: downloadingRepo ? 'not-allowed' : 'pointer',
+                background: 'rgba(168,85,247,0.2)',
+                borderColor: 'rgba(168,85,247,0.5)',
+                color: '#a855f7'
+              }}
+            >
+              {downloadingRepo ? '⏳ Downloading Repository...' : '📦 Download Entire Repository'}
+            </button>
+            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px', textAlign: 'center' }}>
+              Downloads all files including config.json, tokenizer.json, and model weights
             </div>
-          )}
+          </div>
 
           <button
             className="btn btn-primary"

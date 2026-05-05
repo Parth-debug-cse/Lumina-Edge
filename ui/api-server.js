@@ -1664,11 +1664,36 @@ async function downloadRepoInBackground(repoId, outputDir, dirName) {
   const pythonCmd = getPythonCmd();
   const escapedRepoId = repoId.replace(/"/g, '\\"');
   const escapedOutputDir = outputDir.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  
+
   console.log(`[Download Repo] Starting: ${repoId} -> ${dirName}`);
-  
+
+  // Step 1: Ensure huggingface_hub is installed before attempting import
+  console.log(`[Download Repo] Ensuring huggingface_hub is installed...`);
+  const pipProc = spawn(pythonCmd, ['-m', 'pip', 'install', '-q', 'huggingface_hub']);
+
+  let pipOk = false;
+  await new Promise((resolve) => {
+    pipProc.on('close', (code) => {
+      pipOk = (code === 0);
+      if (!pipOk) {
+        console.warn(`[Download Repo] pip install huggingface_hub exited with code ${code}, will attempt anyway`);
+      }
+      resolve();
+    });
+    pipProc.on('error', (err) => {
+      console.error(`[Download Repo] pip install failed: ${err.message}`);
+      resolve();
+    });
+  });
+
+  // Convert JS boolean to Python boolean (True/False)
+  const pyPipOk = pipOk ? 'True' : 'False';
+
   const script = `
 import sys
+import importlib
+if ${pyPipOk}:
+    importlib.invalidate_caches()
 try:
     from huggingface_hub import snapshot_download
     snapshot_download(repo_id="${escapedRepoId}", local_dir="${escapedOutputDir}", local_dir_use_symlinks=False)
