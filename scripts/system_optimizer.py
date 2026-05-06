@@ -555,7 +555,7 @@ class SystemOptimizer:
         config['numa_nodes'] = numa_node_count
         
         # API configuration
-        config['api_port'] = 8080
+        config['api_port'] = 1234
         config['api_port_secondary'] = 8081
         
         self.optimized_config = config

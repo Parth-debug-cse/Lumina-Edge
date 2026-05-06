@@ -129,13 +129,16 @@ set "CTX_SIZE=!DEFAULT_CTX_SIZE!"
 set "BATCH_SIZE=!DEFAULT_BATCH_SIZE!"
 set "UBATCH_SIZE=!DEFAULT_BATCH_SIZE!"
 set "TEMPERATURE=0.7"
+set "TOP_P=0.9"
+set "REPEAT_PENALTY=1.1"
 set "GPU_LAYERS=0"
-set "API_PORT=8080"
+set "API_PORT=1234"
 set "FLASH_ATTN=true"
 set "KV_CACHE_QUANT=q8_0"
 set "SPLIT_MODE_NVIDIA=layer"
 set "SPLIT_MODE_VULKAN=row"
 set "MLOCK=true"
+set "NUMA_MODE=false"
 set "HTTP_THREADS=!DEFAULT_HTTP_THREADS!"
 set "CONT_BATCHING=true"
 set "PARALLEL_SLOTS=!DEFAULT_PARALLEL_SLOTS!"
@@ -158,10 +161,13 @@ if exist "%ROOT%\config.json" (
     for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('batch_size', !DEFAULT_BATCH_SIZE!))" 2^>nul') do set "BATCH_SIZE=%%A"
     for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('ubatch_size', !DEFAULT_BATCH_SIZE!))" 2^>nul') do set "UBATCH_SIZE=%%A"
     for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('temperature', 0.7))" 2^>nul') do set "TEMPERATURE=%%A"
-    for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('api_port', 8080))" 2^>nul') do set "API_PORT=%%A"
+    for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('top_p', 0.9))" 2^>nul') do set "TOP_P=%%A"
+    for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('repeat_penalty', 1.1))" 2^>nul') do set "REPEAT_PENALTY=%%A"
+    for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('api_port', 1234))" 2^>nul') do set "API_PORT=%%A"
     for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('kv_cache_quant', 'q8_0'))" 2^>nul') do set "KV_CACHE_QUANT=%%A"
     for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('http_threads', 4))" 2^>nul') do set "HTTP_THREADS=%%A"
     for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(c.get('n_gpu_layers', 'auto'))" 2^>nul') do set "CONFIG_GPU_LAYERS=%%A"
+    for /f "delims=" %%A in ('python -c "import json; c=json.load(open('%ROOT%\config.json')); print(str(c.get('numa_mode', False)).lower())" 2^>nul') do set "NUMA_MODE=%%A"
 )
 
 REM Override GPU layers with config if not auto
@@ -349,7 +355,7 @@ if !THREADS! gtr 4 set "AFFINITY=0xFF"
 if !THREADS! gtr 8 set "AFFINITY=0xFFFF"
 
 REM Build server command with optimized flags
-set "SERVER_CMD=!SERVER_EXE! -m "!SELECTED_MODEL!" -t !THREADS! -tb !THREADS_BATCH! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! --n-gpu-layers !GPU_LAYERS! --temp !TEMPERATURE! --top-p 1.0 --repeat-penalty 1.0 --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p 0.05 --top-k 20 --threads-http !HTTP_THREADS! -p !API_PORT! --cache-type-k !KV_CACHE_QUANT! --cache-type-v !KV_CACHE_QUANT! --slot-save-path cache\ --prompt-cache cache\system_prompt.bin"
+set "SERVER_CMD=!SERVER_EXE! -m "!SELECTED_MODEL!" -t !THREADS! -tb !THREADS_BATCH! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! --n-gpu-layers !GPU_LAYERS! --temp !TEMPERATURE! --top-p !TOP_P! --repeat-penalty !REPEAT_PENALTY! --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p 0.05 --top-k 20 --threads-http !HTTP_THREADS! -p !API_PORT! --cache-type-k !KV_CACHE_QUANT! --cache-type-v !KV_CACHE_QUANT! --slot-save-path cache\ --prompt-cache cache\system_prompt.bin"
 
 if "!CONT_BATCHING!"=="true" (
     set "SERVER_CMD=!SERVER_CMD! --cont-batching --parallel !PARALLEL_SLOTS!"
@@ -357,6 +363,10 @@ if "!CONT_BATCHING!"=="true" (
 
 if "!MLOCK!"=="true" (
     set "SERVER_CMD=!SERVER_CMD! --mlock"
+)
+
+if "!NUMA_MODE!"=="true" (
+    set "SERVER_CMD=!SERVER_CMD! --numa distribute"
 )
 
 if "!GPU!"=="mlx" (
@@ -404,10 +414,14 @@ if !THREADS! gtr 4 set "AFFINITY=0xFF"
 if !THREADS! gtr 8 set "AFFINITY=0xFFFF"
 
 REM Build CLI command with optimized flags
-set "CLI_CMD=!CLI_EXE! -m "!SELECTED_MODEL!" -t !THREADS! -tb !THREADS_BATCH! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! -n 128 --n-gpu-layers !GPU_LAYERS! --temp !TEMPERATURE! --top-p 1.0 --repeat-penalty 1.0 --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p 0.05 --top-k 20 --cache-type-k !KV_CACHE_QUANT! --cache-type-v !KV_CACHE_QUANT!"
+set "CLI_CMD=!CLI_EXE! -m "!SELECTED_MODEL!" -t !THREADS! -tb !THREADS_BATCH! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! -n 128 --n-gpu-layers !GPU_LAYERS! --temp !TEMPERATURE! --top-p !TOP_P! --repeat-penalty !REPEAT_PENALTY! --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p 0.05 --top-k 20 --cache-type-k !KV_CACHE_QUANT! --cache-type-v !KV_CACHE_QUANT!"
 
 if "!MLOCK!"=="true" (
     set "CLI_CMD=!CLI_CMD! --mlock"
+)
+
+if "!NUMA_MODE!"=="true" (
+    set "CLI_CMD=!CLI_CMD! --numa distribute"
 )
 
 if "!GPU!"=="mlx" (

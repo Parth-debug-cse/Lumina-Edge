@@ -309,7 +309,7 @@ apiRouter.get('/health', (req, res) => {
 
 apiRouter.get('/supported-formats', (req, res) => {
   res.json({
-    formats: isMac() ? ['safetensors', 'mlx', 'gguf', 'pt', 'bin'] : ['gguf', 'safetensors', 'bin', 'pt'],
+    formats: isMac() ? ['safetensors', 'mlx'] : ['gguf', 'safetensors', 'bin', 'pt'],
     converter_available: fs.existsSync(getScriptPath('model-converter.py'))
   });
 });
@@ -322,7 +322,8 @@ apiRouter.get('/system-info', (req, res) => {
     platform: os.platform(),
     arch: os.arch(),
     is_mac: mac,
-    is_apple_silicon: mac
+    is_apple_silicon: mac,
+    backend: mac ? 'mlx' : 'llama.cpp'
   });
 });
 
@@ -1561,6 +1562,18 @@ apiRouter.post('/download-model', async (req, res) => {
     return res.status(400).json({ error: 'url required' });
   }
   
+  // macOS/MLX format validation: reject GGUF files
+  const isMac = os.platform() === 'darwin' && os.arch() === 'arm64';
+  if (isMac && filename) {
+    const lowerFilename = filename.toLowerCase();
+    if (lowerFilename.endsWith('.gguf')) {
+      return res.status(400).json({
+        error: 'GGUF format not supported on macOS/MLX',
+        message: 'This model is in GGUF format, which is not compatible with macOS/MLX. Use models in safetensors or MLX format. Convert GGUF to MLX using the Converter tab, or choose an MLX-native model from HuggingFace (e.g., mlx-community models).'
+      });
+    }
+  }
+  
   // For repo downloads, extract repo ID and use directory name
   if (downloadRepo) {
     let repoId = url;
@@ -1790,6 +1803,20 @@ async function runStartupPipeline() {
     } else {
       console.log('[Startup] MLX optimizer not found, skipping');
     }
+    
+    // Check mlx_optimized flag from config
+    const configPath = path.join(rootDir, 'config.json');
+    let mlxOptimized = false;
+    try {
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      mlxOptimized = cfg.mlx_optimized === true;
+    } catch (e) {
+      // Config not readable
+    }
+    if (!mlxOptimized) {
+      console.warn('[Startup] ⚠ Warning: system_optimizer.py has not been run (mlx_optimized=false in config).');
+      console.warn('[Startup] ⚠ Run "python3 scripts/system_optimizer.py" for best macOS performance.');
+    }
   }
 
   // Step 2: Auto-load model
@@ -1815,7 +1842,9 @@ async function runStartupPipeline() {
           }
         } else {
           const ext = path.extname(f).toLowerCase();
-          if (isMac ? ext === '.mlx' : ext === '.gguf') {
+          // On macOS, MLX models are directories (handled above), not files
+          // On other platforms, look for GGUF files
+          if (!isMac && ext === '.gguf') {
             candidates.push({ name: f, path: fullPath, isDirectory: false });
           }
         }

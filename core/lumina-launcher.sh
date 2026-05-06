@@ -618,15 +618,17 @@ load_config() {
     BATCH_SIZE="$(get_config batch_size $DEFAULT_BATCH_SIZE)"
     UBATCH_SIZE="$(get_config ubatch_size $DEFAULT_BATCH_SIZE)"
     TEMPERATURE="$(get_config temperature 0.7)"
+    TOP_P="$(get_config top_p 0.9)"
+    REPEAT_PENALTY="$(get_config repeat_penalty 1.1)"
     N_GPU_LAYERS="$(get_config n_gpu_layers '"auto"')"
     FLASH_ATTN="$(get_config flash_attn 'true')"
-    KV_CACHE_QUANT="$(get_config kv_cache_quant '"q8_0"')"
+    KV_CACHE_QUANT="$(get_config kv_cache_quant '"f16"')"
     SPLIT_MODE="$(get_config split_mode '"row"')"
     DEFRAG_THOLD="$(get_config defrag_thold 0.1)"
     USE_MLOCK="$(get_config use_mlock 'true')"
-    NUMA_MODE="$(get_config numa_mode '"distribute"')"
+    NUMA_MODE="$(get_config numa_mode 'false')"
     MIN_P="$(get_config min_p 0.05)"
-    TOP_K="$(get_config top_k 20)"
+    TOP_K="$(get_config top_k 40)"
     # Dynamic thread counts based on physical cores
     if [[ $PHYSICAL_CORES -ge 16 ]]; then
         DEFAULT_HTTP_THREADS=8
@@ -916,7 +918,10 @@ launch_core() {
     if [[ "$GPU" == "mlx" ]]; then
         status "Starting MLX interactive mode..."
         echo ""
-        local mlx_cmd=("python3" "$SCRIPTS/mlx_backend.py" "--mode" "core" "--model" "$SELECTED_MODEL")
+        # Load API port from config
+        local mlx_port
+        mlx_port=$(python3 -c "import json; c=json.load(open('config.json')); print(c.get('api_port', 1234))" 2>/dev/null || echo "1234")
+        local mlx_cmd=("python3" "$SCRIPTS/mlx_backend.py" "--mode" "core" "--model" "$SELECTED_MODEL" "--port" "$mlx_port")
         if [[ "$OPT_BENCHMARK" == true ]]; then
             mlx_cmd+=("--benchmark")
         fi
@@ -960,7 +965,7 @@ launch_core() {
     fi
     
     # Build command
-    local cmd=("$CLI_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -tb "$THREADS_BATCH" -c "$CTX_SIZE" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE" -n 128 --n-gpu-layers "$GPU_LAYERS" --temp "$TEMPERATURE" --top-p 1.0 --repeat-penalty 1.0 --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p "$MIN_P" --top-k "$TOP_K")
+    local cmd=("$CLI_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -tb "$THREADS_BATCH" -c "$CTX_SIZE" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE" -n 128 --n-gpu-layers "$GPU_LAYERS" --temp "$TEMPERATURE" --top-p "$TOP_P" --repeat-penalty "$REPEAT_PENALTY" --flash-attn --defrag-thold "$DEFRAG_THOLD" --warmup --ctx-shift --min-p "$MIN_P" --top-k "$TOP_K")
     
     # Add mlock if enabled
     if [[ "$USE_MLOCK" == "true" ]]; then

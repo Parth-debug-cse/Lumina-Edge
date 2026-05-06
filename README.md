@@ -50,11 +50,24 @@ Download the latest release from [ggml-org/llama.cpp](https://github.com/ggml-or
 
 ### Step 1B — Mac (Apple Silicon) Setup
 
-Apple silicon chips use **Unified Memory**,Lumina Edge favors Apple's **MLX Framework**.
+Apple silicon chips use **Unified Memory**, Lumina Edge favors Apple's **MLX Framework**.
+
+**⚠️ Requirements:**
+- **Apple Silicon (M1/M2/M3/M4)** — Intel Macs are not supported
+- **macOS 12.3 (Monterey)** or later
 
 ```bash
 pip install -r scripts/requirements-macos.txt
 ```
+
+MLX models use **safetensors** format, not GGUF. Use MLX-native models from HuggingFace:
+
+```bash
+# Download an MLX-native model (example: Llama 3.2 3B)
+python3 scripts/mlx_backend.py --mode api --model mlx-community/Llama-3.2-3B-Instruct-4bit --port 1234
+```
+
+**Note:** Downloaded a GGUF model? Use the **Converter** tab to convert to MLX format before loading.
 
 ### Step 2 — Launch the Desktop UI
 

@@ -163,6 +163,8 @@ $BatchSize = if ($Config.batch_size) { $Config.batch_size } else { $DefaultBatch
 $UbatchSize = if ($Config.ubatch_size) { $Config.ubatch_size } else { $DefaultBatchSize }
 $GpuLayers = if ($Config.n_gpu_layers) { $Config.n_gpu_layers } else { "auto" }
 $Temperature = if ($Config.temperature) { $Config.temperature } else { 0.7 }
+$TopP = if ($Config.top_p -ne $null) { $Config.top_p } else { 0.9 }
+$RepeatPenalty = if ($Config.repeat_penalty -ne $null) { $Config.repeat_penalty } else { 1.1 }
 $FlashAttn = if ($Config.flash_attn) { "on" } else { "off" }
 $UseMlock = if ($Config.use_mlock) { $true } else { $false }
 $KvCacheQuant = if ($Config.kv_cache_quant) { $Config.kv_cache_quant } else { "q8_0" }
@@ -409,7 +411,7 @@ Write-Host "  Starting Lumina Edge..." -ForegroundColor Cyan
 Write-Host "  Mode: $Mode | GPU: $Gpu | Model: $($SelectedModel.Name)" -ForegroundColor Gray
 Write-Host ""
 
-$ApiPort = if ($Config.api_port) { $Config.api_port } else { 8080 }
+$ApiPort = if ($Config.api_port) { $Config.api_port } else { 1234 }
 
 switch ($Mode) {
     "api" {
@@ -429,6 +431,8 @@ switch ($Mode) {
             "--ctx-shift",
             "--min-p", $MinP.ToString(),
             "--top-k", $TopK.ToString(),
+            "--top-p", $TopP.ToString(),
+            "--repeat-penalty", $RepeatPenalty.ToString(),
             "--threads-http", $HttpThreads.ToString()
         )
         if ($UseMlock) { $args += "--mlock" }
@@ -477,6 +481,8 @@ switch ($Mode) {
             "--batch-size", $BatchSize.ToString(),
             "--ubatch-size", $UbatchSize.ToString(),
             "--temp", $Temperature.ToString(),
+            "--top-p", $TopP.ToString(),
+            "--repeat-penalty", $RepeatPenalty.ToString(),
             "--flash-attn",
             "--defrag-thold", $DefragThold.ToString(),
             "--warmup",

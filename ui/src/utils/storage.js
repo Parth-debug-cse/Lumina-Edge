@@ -119,16 +119,48 @@ export function setModelTags(tags) {
 const CONFIG_KEY = 'lumina_config'
 
 export const DEFAULT_CONFIG = {
-  threads: 'auto',  // Will be dynamically detected
-  ctx_size: 'auto',  // Will be dynamically detected based on memory
-  batch_size: 'auto',  // Will be dynamically detected based on memory
-  ubatch_size: 'auto',  // Will be dynamically detected based on memory
+  // Auto-detected (read-only in UI)
+  threads: 'auto',  // Dynamically detected from physical cores (Windows/Linux)
+  threads_batch: 'auto',  // Dynamically detected from logical cores (Windows/Linux)
+
+  // Core inference parameters (all platforms)
+  ctx_size: 16384,
+  batch_size: 256,
+  ubatch_size: 256,
   n_gpu_layers: 'auto',
   temperature: 0.7,
   top_p: 0.9,
   repeat_penalty: 1.1,
+
+  // Sampling parameters (llama.cpp only)
+  top_k: 40,
+  min_p: 0.05,
+
+  // llama.cpp advanced parameters (Windows/Linux only)
+  flash_attn: true,
+  kv_cache_quant: 'f16',
+  split_mode: 'auto',
+  defrag_thold: 0.1,
+  use_mlock: true,
+  numa_mode: false,
+  cont_batching: true,
+  parallel_slots: 1,
+  http_threads: 2,
+
+  // MLX-specific parameters (macOS only)
+  mlx_max_tokens: 2048,
+  mlx_seed: '',  // Empty = random seed
+  mlx_stop_tokens: '',  // Comma-separated list
+  mlx_model_cache: '~/.cache/lumina-mlx/',
+  mlx_adapter_path: '',  // Optional LoRA adapter path
+  trust_remote_code: false,
+
+  // Routing
+  routing_policy: 'round_robin',
+
+  // UI/output
   json_output: false,
-  api_port: 8080,
+  api_port: 1234,
 }
 
 export function getLocalConfig() {
