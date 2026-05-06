@@ -517,6 +517,13 @@ function SettingField({ field, value, onChange }) {
   }
 
   // number / text
+  const isStopTokens = field.key === 'mlx_stop_tokens'
+  const parseStopTokens = (str) => {
+    if (!str) return []
+    return str.split(',').map(t => t.trim()).filter(t => t.length > 0)
+  }
+  const parsedTokens = isStopTokens ? parseStopTokens(value) : []
+
   return (
     <div className="settings-card">
       <div className="form-group">
@@ -529,6 +536,13 @@ function SettingField({ field, value, onChange }) {
           onChange={e => onChange(field.type === 'number' ? Number(e.target.value) : e.target.value)}
         />
         {field.hint && <div className="form-hint">{field.hint}</div>}
+        {isStopTokens && (
+          <div style={{ fontSize: '0.8em', color: '#888', marginTop: 4 }}>
+            {parsedTokens.length > 0
+              ? `Parsed stop tokens: [${parsedTokens.join('], [')}]`
+              : 'No stop tokens set'}
+          </div>
+        )}
       </div>
     </div>
   )

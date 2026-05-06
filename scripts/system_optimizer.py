@@ -477,9 +477,6 @@ class SystemOptimizer:
             config['gpu_type'] = 'apple_silicon'
             config['use_mlock'] = False  # unified memory doesn't need mlock
             config['split_mode'] = 'row'
-            config['mlx_optimized'] = True
-            config['mlx_backend'] = True
-            config['llama_backend'] = False  # MLX replaces llama.cpp on Apple Silicon
             
             # MLX-specific: scale batch size more aggressively on Apple Silicon
             # Metal can handle larger batches than the generic memory tiers above
@@ -525,9 +522,6 @@ class SystemOptimizer:
         else:
             config['use_mlock'] = True
             config['split_mode'] = 'layer' if config['gpu_type'] == 'nvidia' else 'row'
-            config['mlx_optimized'] = False
-            config['mlx_backend'] = False
-            config['llama_backend'] = True
             
         # Safety: don't mlock if available RAM < 1.5x model headroom estimate
         available_gb = self.system_info.get('memory', {}).get('available_gb', 0)

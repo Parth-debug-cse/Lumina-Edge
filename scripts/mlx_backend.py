@@ -303,13 +303,6 @@ def launch_api_direct(model_path, port):
     
     # Load config
     config = load_config()
-    
-    # Check if system_optimizer.py has been run (mlx_optimized flag)
-    mlx_optimized = config.get('mlx_optimized', False)
-    if mlx_optimized:
-        print('[MLX] System optimization flag detected (mlx_optimized=True)', flush=True)
-    else:
-        print('[MLX] Warning: system_optimizer.py has not been run. Run it for best performance.', flush=True)
 
     # Set model cache directory
     cache_dir = config.get("mlx_model_cache", "~/.cache/lumina-mlx/")
@@ -642,16 +635,22 @@ def launch_api_direct(model_path, port):
     
     # Start the server
     socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(('127.0.0.1', port), MLXHandler) as httpd:
-        print(f'[MLX Direct] Server ready on port {port}', flush=True)
-        print(f'[MLX Direct] Model: {os.path.basename(abs_model_path)}', flush=True)
-        print(f'Application startup complete.', flush=True)  # Node watches for this line
-        sys.stdout.flush()
-        
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            print('[MLX Direct] Shutting down...', flush=True)
+    try:
+        with socketserver.TCPServer(('127.0.0.1', port), MLXHandler) as httpd:
+            print(f'[MLX Direct] Server ready on port {port}', flush=True)
+            print(f'[MLX Direct] Model: {os.path.basename(abs_model_path)}', flush=True)
+            print(f'Application startup complete.', flush=True)  # Node watches for this line
+            sys.stdout.flush()
+
+            try:
+                httpd.serve_forever()
+            except KeyboardInterrupt:
+                print('[MLX Direct] Shutting down...', flush=True)
+    except OSError as e:
+        if e.errno == 98 or 'Address already in use' in str(e):  # errno 98 = EADDRINUSE on Linux
+            print(f'Error: Port {port} is already in use. Change api_port in config.json or stop the process using that port.', file=sys.stderr)
+            sys.exit(1)
+        raise
 
 def launch_api(model_path, port=None):
     abs_model_path = os.path.abspath(model_path)

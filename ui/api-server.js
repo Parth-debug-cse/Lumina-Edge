@@ -321,8 +321,7 @@ apiRouter.get('/system-info', (req, res) => {
   res.json({
     platform: os.platform(),
     arch: os.arch(),
-    is_mac: mac,
-    is_apple_silicon: mac,
+    isMacAppleSilicon: mac,
     backend: mac ? 'mlx' : 'llama.cpp'
   });
 });
@@ -1802,20 +1801,6 @@ async function runStartupPipeline() {
       }
     } else {
       console.log('[Startup] MLX optimizer not found, skipping');
-    }
-    
-    // Check mlx_optimized flag from config
-    const configPath = path.join(rootDir, 'config.json');
-    let mlxOptimized = false;
-    try {
-      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      mlxOptimized = cfg.mlx_optimized === true;
-    } catch (e) {
-      // Config not readable
-    }
-    if (!mlxOptimized) {
-      console.warn('[Startup] ⚠ Warning: system_optimizer.py has not been run (mlx_optimized=false in config).');
-      console.warn('[Startup] ⚠ Run "python3 scripts/system_optimizer.py" for best macOS performance.');
     }
   }
 
