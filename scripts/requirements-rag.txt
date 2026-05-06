@@ -1,0 +1,7 @@
+chromadb
+sentence-transformers
+pymupdf
+pdfplumber
+python-docx
+tiktoken
+requests

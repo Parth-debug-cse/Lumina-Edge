@@ -17,14 +17,39 @@ set "OPT_BENCHMARK=false"
 set "OPT_JSON_OUTPUT=false"
 
 :parse_args
-if "%1"=="" goto parse_done
-if "%1"=="--mode" (set "MODE=%2" & shift & shift & goto parse_args)
-if "%1"=="--gpu" (set "GPU=%2" & shift & shift & goto parse_args)
-if "%1"=="--benchmark" (set "OPT_BENCHMARK=true" & shift & goto parse_args)
-if "%1"=="--json-output" (set "OPT_JSON_OUTPUT=true" & shift & goto parse_args)
-if "%1"=="--help" goto show_help
-if "%1"=="-h" goto show_help
-echo Unknown option: %1
+
+if "%~1"=="" goto parse_done
+
+if /I "%~1"=="--mode" (
+    set "MODE=%~2"
+    shift
+    shift
+    goto parse_args
+)
+
+if /I "%~1"=="--gpu" (
+    set "GPU=%~2"
+    shift
+    shift
+    goto parse_args
+)
+
+if /I "%~1"=="--benchmark" (
+    set "OPT_BENCHMARK=true"
+    shift
+    goto parse_args
+)
+
+if /I "%~1"=="--json-output" (
+    set "OPT_JSON_OUTPUT=true"
+    shift
+    goto parse_args
+)
+
+if /I "%~1"=="--help" goto show_help
+if /I "%~1"=="-h" goto show_help
+
+echo Unknown option: %~1
 echo Use --help for usage information
 exit /b 1
 
