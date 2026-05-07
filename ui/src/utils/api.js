@@ -52,10 +52,24 @@ export async function streamChat({ messages, model, temperature = 0.7, topP = 0.
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let totalBytes = 0;
+
+  // Timeout after 2 minutes to prevent hanging
+  const timeoutMs = 120000;
+  const startTime = Date.now();
 
   while (true) {
+    if (Date.now() - startTime > timeoutMs) {
+      console.warn('[streamChat] Timeout reached, forcing stream end');
+      break;
+    }
+    
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      console.log('[streamChat] Stream done, total bytes:', totalBytes);
+      break;
+    }
+    totalBytes += value?.length || 0;
     
     buffer += decoder.decode(value, { stream: true });
     
@@ -65,8 +79,11 @@ export async function streamChat({ messages, model, temperature = 0.7, topP = 0.
       const line = buffer.slice(0, newlineIdx).trim();
       buffer = buffer.slice(newlineIdx + 1);
       
-      if (!line || line === 'data: [DONE]') continue;
-      if (!line.startsWith('data: ')) continue;
+      if (line === 'data: [DONE]') {
+        console.log('[streamChat] Received [DONE], exiting stream');
+        return;
+      }
+      if (!line || !line.startsWith('data: ')) continue;
       
       try {
         const json = JSON.parse(line.slice(6));
@@ -397,13 +414,12 @@ export async function getModelRoutes() {
  */
 export async function loadModel(modelPath, portOffset = 0) {
   try {
-    // Ensure we're treating this as a local path, not a HuggingFace repo ID
-    // If the modelPath looks like a repo ID (contains /), but it's actually a local file,
-    // we need to make sure it's treated as a local path
     const cleanModelPath = modelPath.trim()
-    
     console.log('[API] Loading model:', cleanModelPath)
-    
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
     const res = await fetch('/api/router/load', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -411,7 +427,11 @@ export async function loadModel(modelPath, portOffset = 0) {
         model_path: cleanModelPath,
         port_offset: portOffset,
       }),
-    })
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
     if (!res.ok) {
       const err = await res.text()
       console.error('[API] Load model error:', err)
@@ -420,6 +440,9 @@ export async function loadModel(modelPath, portOffset = 0) {
     return await res.json()
   } catch (err) {
     console.error('[API] Load model exception:', err)
+    if (err.name === 'AbortError') {
+      throw new Error('Model loading timed out after 30 seconds')
+    }
     throw new Error(`Failed to load model: ${err.message}`)
   }
 }

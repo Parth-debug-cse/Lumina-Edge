@@ -12,6 +12,7 @@ import logging
 import subprocess
 import tempfile
 import platform
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
@@ -80,21 +81,21 @@ class ModelRouter:
                 with open(self.config_path, 'r') as f:
                     config = json.load(f)
                     self.routing_policy = config.get('routing_policy', 'round-robin')
-            self.n_gpu_layers = config.get('n_gpu_layers', 'auto')
-            self.split_mode = config.get('split_mode', 'row')
-            self.numa_mode = config.get('numa_mode', 'distribute')
-            self.cont_batching = config.get('cont_batching', True)
-            self.parallel_slots = config.get('parallel_slots', 2)
-            self.batch_size = config.get('batch_size', 512)
-            self.ubatch_size = config.get('ubatch_size', 512)
-            self.defrag_thold = config.get('defrag_thold', 0.1)
-            self.use_mlock = config.get('use_mlock', True)
-            self.flash_attn = config.get('flash_attn', True)
-            self.kv_cache_quant = config.get('kv_cache_quant', 'q8_0')
-            self.ctx_size = config.get('ctx_size', 4096)  # Read from config, fallback to 4096
-            logger.info(f"✓ Loaded routing policy: {self.routing_policy}")
-            logger.info(f"✓ Loaded GPU layers: {self.n_gpu_layers}")
-            logger.info(f"✓ Loaded context size: {self.ctx_size}")
+                    self.n_gpu_layers = config.get('n_gpu_layers', 'auto')
+                    self.split_mode = config.get('split_mode', 'row')
+                    self.numa_mode = config.get('numa_mode', 'distribute')
+                    self.cont_batching = config.get('cont_batching', True)
+                    self.parallel_slots = config.get('parallel_slots', 2)
+                    self.batch_size = config.get('batch_size', 512)
+                    self.ubatch_size = config.get('ubatch_size', 512)
+                    self.defrag_thold = config.get('defrag_thold', 0.1)
+                    self.use_mlock = config.get('use_mlock', True)
+                    self.flash_attn = config.get('flash_attn', True)
+                    self.kv_cache_quant = config.get('kv_cache_quant', 'q8_0')
+                    self.ctx_size = config.get('ctx_size', 4096)  # Read from config, fallback to 4096
+                    logger.info(f"✓ Loaded routing policy: {self.routing_policy}")
+                    logger.info(f"✓ Loaded GPU layers: {self.n_gpu_layers}")
+                    logger.info(f"✓ Loaded context size: {self.ctx_size}")
             except Exception as e:
                 logger.warning(f"Could not load config: {e}")
                 # Set defaults if config loading fails
@@ -452,7 +453,6 @@ class MultiModelServer:
                 # Add performance optimization flags
                 cmd.extend([
                     "--defrag-thold", str(self.router.defrag_thold),
-                    "--warmup",
                     "--ctx-shift"
                 ])
 

@@ -20,6 +20,38 @@ export default function MultiModelPanel({ toast }) {
     return () => clearInterval(interval)
   }, [])
 
+  // SSE listener for real-time model status updates
+  useEffect(() => {
+    const eventSource = new EventSource('/api/router/events')
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        console.log('[SSE] Model status update:', data)
+
+        if (data.status === 'ready') {
+          toast?.(`✓ Model loaded successfully on port ${data.port}!`, 'success')
+          setIsLoading(false)
+          refreshRouterStatus()
+        } else if (data.status === 'error') {
+          toast?.(`Model loading failed: ${data.error || 'Unknown error'}`, 'error')
+          setIsLoading(false)
+          refreshRouterStatus()
+        }
+      } catch (err) {
+        console.error('[SSE] Parse error:', err)
+      }
+    }
+
+    eventSource.onerror = () => {
+      console.log('[SSE] Connection error, will retry...')
+    }
+
+    return () => {
+      eventSource.close()
+    }
+  }, [])
+
   const refreshRouterStatus = async () => {
     // Don't poll while loading to avoid hammering the endpoint during critical time
     if (isLoading) return;

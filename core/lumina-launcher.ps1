@@ -176,6 +176,10 @@ $HttpThreads = if ($Config.http_threads) { $Config.http_threads } else { $Defaul
 $ContBatching = if ($Config.cont_batching) { $true } else { $false }
 $ParallelSlots = if ($Config.parallel_slots) { $Config.parallel_slots } else { $DefaultParallelSlots }
 $NumaMode = if ($Config.numa_mode) { $Config.numa_mode } else { "none" }
+$NoMmap = if ($Config.no_mmap) { $Config.no_mmap } else { $true }
+$MoeModel = if ($Config.moe_model) { $Config.moe_model } else { $false }
+$MoeOverride = if ($Config.moe_override_tensor) { $Config.moe_override_tensor } else { "" }
+$KvQuant = if ($Config.kv_quant) { $Config.kv_quant } else { "turbo" }
 
 # ==================================================
 # VALIDATE ENVIRONMENT
@@ -427,7 +431,6 @@ switch ($Mode) {
             "--ubatch-size", $UbatchSize.ToString(),
             "--flash-attn", $FlashAttn,
             "--defrag-thold", $DefragThold.ToString(),
-            "--warmup",
             "--ctx-shift",
             "--min-p", $MinP.ToString(),
             "--top-k", $TopK.ToString(),
@@ -436,9 +439,32 @@ switch ($Mode) {
             "--threads-http", $HttpThreads.ToString()
         )
         if ($UseMlock) { $args += "--mlock" }
+        if ($NoMmap) { $args += "--no-mmap" }
+        
+        # MoE offloading flags
+        if ($MoeModel) {
+            if ($MoeOverride -and $MoeOverride -ne "") {
+                $args += "-ot"; $args += $MoeOverride
+            } else {
+                $args += "--cpu-moe"
+            }
+        }
+        
+        # KV cache quantization with TurboQuant
+        if ($KvQuant -eq "turbo") {
+            $args += "--flash-attn"
+            $args += "--cache-type-k"; $args += "turbo4"
+            $args += "--cache-type-v"; $args += "turbo3"
+        } elseif ($KvQuant -eq "q8_0") {
+            $args += "--cache-type-k"; $args += "q8_0"
+            $args += "--cache-type-v"; $args += "q8_0"
+        } elseif ($KvQuant -eq "q4_0") {
+            $args += "--cache-type-k"; $args += "q4_0"
+            $args += "--cache-type-v"; $args += "q4_0"
+        }
+        
         if ($ContBatching) { $args += "--cont-batching"; $args += "--parallel"; $args += $ParallelSlots.ToString() }
         if ($NumaMode -ne "none") { $args += "--numa"; $args += $NumaMode }
-        if ($KvCacheQuant) { $args += "--cache-type-k", $KvCacheQuant; $args += "--cache-type-v", $KvCacheQuant }
         
         # GPU-specific optimizations
         if ($Gpu -eq "nvidia") {
@@ -485,14 +511,35 @@ switch ($Mode) {
             "--repeat-penalty", $RepeatPenalty.ToString(),
             "--flash-attn",
             "--defrag-thold", $DefragThold.ToString(),
-            "--warmup",
             "--ctx-shift",
             "--min-p", $MinP.ToString(),
             "--top-k", $TopK.ToString(),
             "-n", "128"
         )
         if ($UseMlock) { $args += "--mlock" }
-        if ($KvCacheQuant) { $args += "--cache-type-k", $KvCacheQuant; $args += "--cache-type-v", $KvCacheQuant }
+        if ($NoMmap) { $args += "--no-mmap" }
+        
+        # MoE offloading flags
+        if ($MoeModel) {
+            if ($MoeOverride -and $MoeOverride -ne "") {
+                $args += "-ot"; $args += $MoeOverride
+            } else {
+                $args += "--cpu-moe"
+            }
+        }
+        
+        # KV cache quantization with TurboQuant
+        if ($KvQuant -eq "turbo") {
+            $args += "--flash-attn"
+            $args += "--cache-type-k"; $args += "turbo4"
+            $args += "--cache-type-v"; $args += "turbo3"
+        } elseif ($KvQuant -eq "q8_0") {
+            $args += "--cache-type-k"; $args += "q8_0"
+            $args += "--cache-type-v"; $args += "q8_0"
+        } elseif ($KvQuant -eq "q4_0") {
+            $args += "--cache-type-k"; $args += "q4_0"
+            $args += "--cache-type-v"; $args += "q4_0"
+        }
         
         # GPU-specific optimizations
         if ($Gpu -eq "nvidia") {

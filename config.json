@@ -35,6 +35,33 @@
   "mlx_adapter_path": "",
   "trust_remote_code": false,
 
+  "_comment_mlx_max_kv_size": "A: KV cache size cap - prevents unbounded growth (null = unlimited/model default)",
+  "mlx_max_kv_size": 8192,
+
+  "_comment_mlx_sampling": "B: Sampling parameters - exposed for UI control",
+  "mlx_sampling": {
+    "temperature": 0.7,
+    "top_p": 1.0,
+    "min_p": 0.0,
+    "repetition_penalty": 1.0,
+    "repetition_context_size": 20,
+    "max_tokens": 512
+  },
+
+  "_comment_mlx_metal_optimizations": "C: Enable Metal optimizations (env vars set before mlx import)",
+  "mlx_metal_optimizations": true,
+
+  "_comment_mlx_memory_limit_fraction": "D: Memory limit as fraction of RAM (null = don't set, 0.65 = 65%)",
+  "mlx_memory_limit_fraction": 0.65,
+
+  "_comment_mlx_kv_quant_native": "F: Native KV quantization (mutually exclusive with asymmetric mlx_kv_quant)",
+  "mlx_kv_quant_native": {
+    "enabled": false,
+    "kv_bits": 4,
+    "kv_group_size": 64,
+    "quantized_kv_start": 0
+  },
+
   "_comment_reserved": "Reserved keys — not currently active but may be wired up later",
   "_comment_api_port_secondary": "Reserved — not currently active",
   "api_port_secondary": 8081,
@@ -56,5 +83,21 @@
   },
   "_comment_numa_nodes": "Reserved — not currently active",
   "numa_nodes": 1,
-  "prompt_cache": false
+  "prompt_cache": false,
+
+  "_comment_moe": "MoE (Mixture of Experts) model settings - for llama.cpp only",
+  "moe_model": false,
+  "moe_override_tensor": "",
+
+  "_comment_no_mmap": "Disable memory-mapped file I/O - for llama.cpp only",
+  "no_mmap": true,
+
+  "_comment_kv_quant": "KV cache quantization: turbo (requires TurboQuant build), q8_0, q4_0, none - for llama.cpp only",
+  "kv_quant": "turbo",
+
+  "_comment_mlx_kv": "MLX KV quantization settings (macOS only)",
+  "mlx_kv_quant": {
+    "key_bits": 8,
+    "value_bits": 4
+  }
 }

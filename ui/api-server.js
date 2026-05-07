@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { spawn, exec } from 'child_process';
+import { spawn, exec, execFile } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -1131,6 +1131,31 @@ apiRouter.get('/router/active-port', (req, res) => {
   res.json({ port: ready.port, model: ready.name, id: ready.id });
 });
 
+// SSE clients for real-time model status updates
+const sseClients = new Set();
+
+function broadcastModelStatus(modelId, status, port, error = null) {
+  const data = JSON.stringify({ modelId, status, port, error, timestamp: Date.now() });
+  for (const client of sseClients) {
+    client.write(`data: ${data}\n\n`);
+  }
+}
+
+apiRouter.get('/router/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  sseClients.add(res);
+  console.log(`[SSE] Client connected. Total clients: ${sseClients.size}`);
+
+  req.on('close', () => {
+    sseClients.delete(res);
+    console.log(`[SSE] Client disconnected. Total clients: ${sseClients.size}`);
+  });
+});
+
 apiRouter.get('/router/routes', (req, res) => {
   const routes = Array.from(routerModels.values())
     .filter(m => m.status === 'ready')
@@ -1166,9 +1191,11 @@ apiRouter.post('/router/load', async (req, res) => {
   if (!fs.existsSync(targetPath)) return res.status(404).json({ error: 'Model not found' });
 
   // macOS MLX specific path handling
+  // Define stats outside the conditional blocks so it's available throughout the function
+  let stats;
   if (isMac) {
     // Check if it's a directory (MLX model) or file (GGUF)
-    const stats = fs.statSync(targetPath);
+    stats = fs.statSync(targetPath);
     if (stats.isDirectory()) {
       // MLX model directory — check for required files
       const hasConfig = fs.existsSync(path.join(targetPath, 'config.json'));
@@ -1203,7 +1230,7 @@ apiRouter.post('/router/load', async (req, res) => {
   });
 
   // Find available port
-  const port = findAvailablePort();
+  const port = await findAvailablePort();
   console.log(`[Router Load] Using port: ${port}`);
 
   // Store model info
@@ -1222,10 +1249,38 @@ apiRouter.post('/router/load', async (req, res) => {
 
   if (isMac) {
     const pythonCmd = getPythonCmd();
-    // MLX expects a directory with config.json + weights, not a single file
-    // If target is a file, use its parent directory
     const modelDir = stats.isFile() ? path.dirname(targetPath) : targetPath;
-    proc = spawn(pythonCmd, [path.join(scriptsDir, 'mlx_backend.py'), '--mode', 'api', '--model', modelDir, '--port', port.toString()]);
+
+    try {
+      proc = spawn(pythonCmd, [
+        path.join(scriptsDir, 'mlx_backend.py'),
+        '--mode', 'api',
+        '--model', modelDir,
+        '--port', port.toString()
+      ], {
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+
+      proc.stdout.on('data', (data) => {
+        console.log(`[MLX stdout]: ${data}`);
+      });
+
+      proc.stderr.on('data', (data) => {
+        console.error(`[MLX stderr]: ${data}`);
+      });
+
+      proc.on('error', (err) => {
+        console.error(`[MLX] Spawn error:`, err.message);
+        modelInfo.status = 'error';
+      });
+
+    } catch (err) {
+      routerModels.delete(id);
+      return res.status(500).json({
+        error: 'Failed to start MLX backend',
+        detail: err.message
+      });
+    }
   } else {
     let llamaServer = path.join(binDir, 'llama-server');
     if (os.platform() === 'win32') llamaServer += '.exe';
@@ -1265,6 +1320,10 @@ const httpThreads = parseInt(config.http_threads) || 2;
 const useMlock = config.use_mlock === true;
 const contBatching = config.cont_batching !== false;
 const promptCache = config.prompt_cache === true;
+
+// Check Vulkan capability and set effective GPU layers (needed for logging below)
+const vulkanOk = await checkVulkanCapability();
+const effectiveGpuLayers = vulkanOk ? nGpuLayers : 0;
 
 const cmdArgs = [
   '-m', targetPath,                           // model path
@@ -1341,9 +1400,7 @@ try {
   // Can't detect NUMA — skip the flag to be safe
 }
 
-// Check Vulkan capability and set effective GPU layers
-const vulkanOk = await checkVulkanCapability();
-const effectiveGpuLayers = vulkanOk ? nGpuLayers : 0;
+// Vulkan capability already checked earlier, use those results
 cmdArgs.push('--n-gpu-layers', effectiveGpuLayers.toString());
 
 if (!vulkanOk && nGpuLayers > 0) {
@@ -1443,6 +1500,7 @@ if (os.platform() === 'linux' && proc.pid) {
       clearTimeout(failsafeTimer);
       modelInfo.status = 'error';
       console.error(`[Router] Model ${modelInfo.name} failed to become ready after 60s`);
+      broadcastModelStatus(id, 'error', port, 'Model failed to become ready after 60s');
       return;
     }
     try {
@@ -1451,6 +1509,8 @@ if (os.platform() === 'linux' && proc.pid) {
         modelInfo.status = 'ready';
         clearInterval(checkReady);
         clearTimeout(failsafeTimer);
+        console.log(`[Router] Model ${modelInfo.name} is ready on port ${port}`);
+        broadcastModelStatus(id, 'ready', port);
       }
     } catch (e) { }
   }, 1000);
@@ -1460,6 +1520,7 @@ if (os.platform() === 'linux' && proc.pid) {
     clearInterval(checkReady);
     modelInfo.status = 'error';
     console.error(`[Router] Failsafe timeout hit for model ${modelInfo.name}`);
+    broadcastModelStatus(id, 'error', port, 'Failsafe timeout - model failed to load');
   }, 60000);
 
   // Store interval ref so we can clear it on unload
@@ -1471,6 +1532,7 @@ if (os.platform() === 'linux' && proc.pid) {
     clearTimeout(failsafeTimer);
     if (modelInfo.status !== 'unloaded') {
       modelInfo.status = 'error';
+      broadcastModelStatus(id, 'error', port, 'Process exited unexpectedly');
     }
   });
 
@@ -1881,7 +1943,43 @@ async function runStartupPipeline() {
 
         if (isMac) {
           const modelDir = targetModel.isDirectory ? targetModel.path : path.dirname(targetModel.path);
-          proc = spawn(getPythonCmd(), [path.join(scriptsDir, 'mlx_backend.py'), '--mode', 'api', '--model', modelDir, '--port', port.toString()]);
+
+          try {
+            proc = spawn(getPythonCmd(), [
+              path.join(scriptsDir, 'mlx_backend.py'),
+              '--mode', 'api',
+              '--model', modelDir,
+              '--port', port.toString()
+            ], {
+              stdio: ['ignore', 'pipe', 'pipe']
+            });
+
+            proc.stdout.on('data', (data) => {
+              console.log(`[MLX stdout]: ${data}`);
+            });
+
+            proc.stderr.on('data', (data) => {
+              console.error(`[MLX stderr]: ${data}`);
+            });
+
+            proc.on('error', (err) => {
+              console.error(`[MLX] Spawn error:`, err.message);
+              modelInfo.status = 'error';
+            });
+
+            proc.on('close', (code) => {
+              console.log(`[MLX] Process exited with code ${code}`);
+              if (modelInfo.status !== 'unloaded') {
+                modelInfo.status = 'error';
+              }
+            });
+          } catch (err) {
+            routerModels.delete(id);
+            return res.status(500).json({
+              error: 'Failed to start MLX backend',
+              detail: err.message
+            });
+          }
         } else {
           let llamaServer = path.join(binDir, 'llama-server');
           if (os.platform() === 'win32') llamaServer += '.exe';
@@ -1908,6 +2006,11 @@ const parallelSlots = parseInt(cfg.parallel_slots) || 1;
 const httpThreads = parseInt(cfg.http_threads) || 2;
 const useMlock = cfg.use_mlock === true;
 const contBatching = cfg.cont_batching !== false;
+const promptCache = cfg.prompt_cache === true;
+
+// Check Vulkan capability and set effective GPU layers (needed for logging below)
+const vulkanOk = await checkVulkanCapability();
+const effectiveGpuLayers = vulkanOk ? nGpuLayers : 0;
 
 const cmdArgs = [
   '-m', targetModel.path,                       // model path
@@ -1984,9 +2087,7 @@ try {
   // Can't detect NUMA — skip the flag to be safe
 }
 
-// Check Vulkan capability and set effective GPU layers
-const vulkanOk = await checkVulkanCapability();
-const effectiveGpuLayers = vulkanOk ? nGpuLayers : 0;
+// Vulkan capability already checked earlier, use those results
 cmdArgs.push('--n-gpu-layers', effectiveGpuLayers.toString());
 
 if (!vulkanOk && nGpuLayers > 0) {
@@ -2272,13 +2373,61 @@ app.post('/v1/chat/completions', async (req, res) => {
     delete headers.host;
     delete headers['content-length'];
 
+    const isStreaming = body.stream === true;
+
+    // Handle streaming vs non-streaming differently
+    if (isStreaming) {
+      // For streaming: pipe the response directly back to client
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+
+      try {
+        const response = await fetch(targetUrl, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(body)
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          res.write(`data: ${JSON.stringify({ error: errorText })}\n\n`);
+          res.end();
+          return;
+        }
+
+        // Pipe the stream directly to the client
+        if (response.body) {
+          const reader = response.body.getReader();
+          const encoder = new TextEncoder();
+
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              res.write(value);
+            }
+          } catch (streamErr) {
+            console.error('[/v1/chat/completions] Stream error:', streamErr.message);
+          }
+        }
+      } catch (err) {
+        console.error('[/v1/chat/completions] Streaming error:', err.message);
+        res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+      }
+
+      res.end();
+      return;
+    }
+
+    // Non-streaming: fetch full response and potentially modify
     const response = await fetch(targetUrl, {
       method: 'POST',
       headers: headers,
       body: JSON.stringify(body)
     });
 
-    // Parse and potentially modify response
     const responseData = await response.json();
 
     // If tools were requested, try to parse tool_calls from response
@@ -2287,7 +2436,6 @@ app.post('/v1/chat/completions', async (req, res) => {
       if (choice.message && choice.message.content) {
         const toolCall = extractToolCall(choice.message.content);
         if (toolCall) {
-          // Replace content with null and add tool_calls
           choice.message.content = null;
           choice.message.tool_calls = [toolCall];
           choice.finish_reason = 'tool_calls';

@@ -28,7 +28,7 @@ if [[ "$model_choice" =~ ^[0-9]+$ ]] && (( model_choice >= 1 && model_choice <= 
     
     # Test starting the server directly
     echo "Starting API server..."
-    ./bin/llama-server -m "$selected_file" --port 8080 --host 127.0.0.1 --ctx-size 4096 --n-gpu-layers 15 --threads 2 --threads-batch 4 --batch-size 256 --ubatch-size 256 --flash-attn on --defrag-thold 0.1 --warmup --min-p 0.05 --top-k 20 --threads-http 2 --cont-batching --parallel 1 &
+    ./bin/llama-server -m "$selected_file" --port 8080 --host 127.0.0.1 --ctx-size 4096 --n-gpu-layers 15 --threads 2 --threads-batch 4 --batch-size 256 --ubatch-size 256 --flash-attn on --defrag-thold 0.1 --min-p 0.05 --top-k 20 --threads-http 2 --cont-batching --parallel 1 &
     SERVER_PID=$!
     echo "Server started with PID: $SERVER_PID"
     sleep 3

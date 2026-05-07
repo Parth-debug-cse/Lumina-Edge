@@ -629,6 +629,10 @@ load_config() {
     NUMA_MODE="$(get_config numa_mode 'false')"
     MIN_P="$(get_config min_p 0.05)"
     TOP_K="$(get_config top_k 40)"
+    NO_MMAP="$(get_config no_mmap 'true')"
+    MOE_MODEL="$(get_config moe_model 'false')"
+    MOE_OVERRIDE="$(get_config moe_override_tensor '\"\"')"
+    KV_QUANT="$(get_config kv_quant 'turbo')"
     # Dynamic thread counts based on physical cores
     if [[ $PHYSICAL_CORES -ge 16 ]]; then
         DEFAULT_HTTP_THREADS=8
@@ -965,15 +969,38 @@ launch_core() {
     fi
     
     # Build command
-    local cmd=("$CLI_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -tb "$THREADS_BATCH" -c "$CTX_SIZE" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE" -n 128 --n-gpu-layers "$GPU_LAYERS" --temp "$TEMPERATURE" --top-p "$TOP_P" --repeat-penalty "$REPEAT_PENALTY" --flash-attn --defrag-thold "$DEFRAG_THOLD" --warmup --ctx-shift --min-p "$MIN_P" --top-k "$TOP_K")
+    local cmd=("$CLI_EXE" -m "$SELECTED_MODEL" -t "$THREADS" -tb "$THREADS_BATCH" -c "$CTX_SIZE" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE" -n 128 --n-gpu-layers "$GPU_LAYERS" --temp "$TEMPERATURE" --top-p "$TOP_P" --repeat-penalty "$REPEAT_PENALTY" --flash-attn --defrag-thold "$DEFRAG_THOLD" --ctx-shift --min-p "$MIN_P" --top-k "$TOP_K")
     
     # Add mlock if enabled
     if [[ "$USE_MLOCK" == "true" ]]; then
         cmd+=(--mlock)
     fi
     
-    # Add KV cache quantization
-    cmd+=(--cache-type-k "$KV_CACHE_QUANT" --cache-type-v "$KV_CACHE_QUANT")
+    # Add no-mmap if enabled (llama.cpp only, skip for MLX)
+    if [[ "$GPU" != "mlx" ]] && [[ "$NO_MMAP" == "true" ]]; then
+        cmd+=(--no-mmap)
+    fi
+    
+    # Add MoE offloading flags (llama.cpp only, skip for MLX)
+    if [[ "$GPU" != "mlx" ]] && [[ "$MOE_MODEL" == "true" ]]; then
+        if [[ -n "$MOE_OVERRIDE" && "$MOE_OVERRIDE" != "" ]]; then
+            cmd+=(-ot "$MOE_OVERRIDE")
+        else
+            cmd+=(--cpu-moe)
+        fi
+    fi
+    
+    # Add KV cache quantization with TurboQuant (llama.cpp only, skip for MLX)
+    # TurboQuant requires --flash-attn as hard dependency
+    if [[ "$GPU" != "mlx" ]]; then
+        if [[ "$KV_QUANT" == "turbo" ]]; then
+            cmd+=(--flash-attn --cache-type-k turbo4 --cache-type-v turbo3)
+        elif [[ "$KV_QUANT" == "q8_0" ]]; then
+            cmd+=(--cache-type-k q8_0 --cache-type-v q8_0)
+        elif [[ "$KV_QUANT" == "q4_0" ]]; then
+            cmd+=(--cache-type-k q4_0 --cache-type-v q4_0)
+        fi
+    fi
     
     # GPU-specific split-mode flags
     if [[ "$GPU" == "nvidia" ]]; then

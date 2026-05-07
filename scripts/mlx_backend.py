@@ -12,12 +12,50 @@ import time
 import subprocess
 import platform
 
+# ==============================================================================
+# PRE-IMPORT SETUP: Metal env vars and memory limit (must be before mlx import)
+# ==============================================================================
+
+def _load_config_early():
+    """Load config early for pre-import settings (Metal env, memory limit)."""
+    config_path = os.path.join(os.path.dirname(__file__), "..", "config.json")
+    try:
+        with open(config_path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+# Load config early to check for pre-import settings
+_early_config = _load_config_early()
+
+# C: Metal environment variables - set BEFORE mlx import if enabled
+if _early_config.get('mlx_metal_optimizations', True):
+    os.environ.setdefault('MLX_METAL_PREWARM', '1')
+    os.environ.setdefault('MTL_HUD_ENABLED', '0')
+    os.environ.setdefault('MTL_DEBUG_LAYER', '0')
+    os.environ.setdefault('MTL_SHADER_VALIDATION', '0')
+    os.environ.setdefault('METAL_DEVICE_WRAPPER_TYPE', '0')
+
+# Now import MLX
 try:
     import mlx.core as mx
     import mlx_lm
 except ImportError:
     print("❌ ERROR: MLX packages not found. Please install requirements-mac.txt")
     sys.exit(1)
+
+# D: Memory limit - set after MLX import if configured
+_mlx_memory_fraction = _early_config.get('mlx_memory_limit_fraction')
+if _mlx_memory_fraction is not None:
+    try:
+        import psutil
+        total_ram = psutil.virtual_memory().total
+    except Exception:
+        total_ram = 16 * (1024**3)  # fallback to 16GB
+    memory_limit = int(total_ram * float(_mlx_memory_fraction))
+    if hasattr(mx.metal, 'set_memory_limit'):
+        mx.metal.set_memory_limit(memory_limit)
+        print(f'[MLX] Memory limit set to {memory_limit / (1024**3):.2f} GB ({_mlx_memory_fraction * 100:.0f}% of RAM)', flush=True)
 
 # Module-level flags for model load state (used by HTTP handlers)
 MODEL_LOADED = False
@@ -46,30 +84,150 @@ def _set_offline_env(model_path=None):
         os.environ['HF_HUB_OFFLINE'] = '1'
         os.environ['TRANSFORMERS_OFFLINE'] = '1'
 
-# Detect asymmetric KV support at module level
+# Detect API support at module level
 try:
     import inspect as _inspect
     _gen_sig = _inspect.signature(mlx_lm.stream_generate)
     _supports_kv_asym = 'key_bits' in _gen_sig.parameters
     _supports_kv_sym = 'kv_bits' in _gen_sig.parameters
+    _supports_max_kv = 'max_kv_size' in _gen_sig.parameters
     if _supports_kv_asym:
         print('[MLX] Asymmetric KV quantization supported: K=8bit, V=4bit', flush=True)
     elif _supports_kv_sym:
         print('[MLX] Symmetric KV quantization supported: 8-bit', flush=True)
     else:
         print('[MLX] KV quantization not available in this mlx_lm version', flush=True)
+    if _supports_max_kv:
+        print('[MLX] max_kv_size parameter supported', flush=True)
 except Exception:
     _supports_kv_asym = False
     _supports_kv_sym = False
-    print('[MLX] KV quantization detection failed, using defaults', flush=True)
+    _supports_max_kv = False
+    print('[MLX] API detection failed, using defaults', flush=True)
 
-def _get_kv_kwargs():
-    """Get KV quantization kwargs based on mlx_lm support."""
-    if _supports_kv_asym:
-        return {'key_bits': 8, 'value_bits': 4}
-    elif _supports_kv_sym:
-        return {'kv_bits': 8}
-    return {}
+# B: Detect sampler API support (make_sampler vs bare kwargs)
+_supports_sampler = False
+try:
+    from mlx_lm import sample_utils
+    if hasattr(sample_utils, 'make_sampler'):
+        _supports_sampler = True
+        print('[MLX] make_sampler API supported (mlx_lm >= 0.28)', flush=True)
+except Exception:
+    pass
+
+if not _supports_sampler:
+    print('[MLX] Using bare kwargs for sampling (mlx_lm < 0.28)', flush=True)
+
+def _get_kv_kwargs(mlx_kv_quant_config=None, mlx_kv_quant_native=None, mlx_max_kv_size=None):
+    """Get KV quantization and cache kwargs based on mlx_lm support and config.
+    
+    Native KV quantization (mlx_kv_quant_native) takes precedence over asymmetric (mlx_kv_quant)
+    if both are enabled.
+    """
+    kwargs = {}
+    
+    # F: Native KV quantization takes precedence
+    if mlx_kv_quant_native and mlx_kv_quant_native.get('enabled', False):
+        if _supports_kv_sym:
+            kwargs['kv_bits'] = mlx_kv_quant_native.get('kv_bits', 4)
+            kwargs['kv_group_size'] = mlx_kv_quant_native.get('kv_group_size', 64)
+            kwargs['quantized_kv_start'] = mlx_kv_quant_native.get('quantized_kv_start', 0)
+    elif mlx_kv_quant_config:
+        # Use asymmetric path
+        key_bits = mlx_kv_quant_config.get('key_bits', 8)
+        value_bits = mlx_kv_quant_config.get('value_bits', 4)
+        if _supports_kv_asym:
+            kwargs['key_bits'] = key_bits
+            kwargs['value_bits'] = value_bits
+        elif _supports_kv_sym:
+            kwargs['kv_bits'] = key_bits
+    
+    # A: max_kv_size - only pass if set and supported
+    if mlx_max_kv_size is not None and _supports_max_kv:
+        kwargs['max_kv_size'] = mlx_max_kv_size
+    
+    return kwargs
+
+
+def get_mlx_generation_kwargs(config, prompt=None, override_temp=None, override_top_p=None, override_max_tokens=None):
+    """Build complete generation kwargs from config.
+    
+    This is the central place for all generation parameters including:
+    - Sampling (temperature, top_p, min_p, repetition_penalty)
+    - KV quantization (asymmetric or native)
+    - KV cache size limit
+    - Seed, stop tokens
+    
+    Args:
+        config: Full config dict from load_config()
+        prompt: Optional prompt to include (if None, caller adds it)
+        override_temp: Override temperature (for runtime changes)
+        override_top_p: Override top_p (for runtime changes)
+        override_max_tokens: Override max_tokens (for runtime changes)
+    
+    Returns:
+        dict: Complete kwargs for mlx_lm.stream_generate or mlx_lm.generate
+    """
+    # Get mlx_sampling config with defaults
+    sampling = config.get('mlx_sampling', {})
+    temperature = override_temp if override_temp is not None else sampling.get('temperature', 0.7)
+    top_p = override_top_p if override_top_p is not None else sampling.get('top_p', 1.0)
+    min_p = sampling.get('min_p', 0.0)
+    repetition_penalty = sampling.get('repetition_penalty', 1.0)
+    repetition_context_size = sampling.get('repetition_context_size', 20)
+    max_tokens = override_max_tokens if override_max_tokens is not None else sampling.get('max_tokens', 512)
+    
+    # Get other config values
+    seed = config.get('mlx_seed')
+    stop_tokens = _parse_stop_tokens(config.get('mlx_stop_tokens', []))
+    
+    # Get KV quantization and max_kv_size kwargs
+    kv_kwargs = _get_kv_kwargs(
+        config.get('mlx_kv_quant'),
+        config.get('mlx_kv_quant_native'),
+        config.get('mlx_max_kv_size')
+    )
+    
+    kwargs = {
+        'max_tokens': max_tokens,
+        **kv_kwargs,
+    }
+    
+    # B: Use sampler API if available (mlx_lm >= 0.28), otherwise bare kwargs
+    if _supports_sampler:
+        try:
+            from mlx_lm.sample_utils import make_sampler
+            sampler = make_sampler(
+                temperature=temperature,
+                top_p=top_p,
+                min_p=min_p if min_p > 0 else None,
+                repetition_penalty=repetition_penalty if repetition_penalty != 1.0 else None,
+                repetition_context_size=repetition_context_size if repetition_context_size != 20 else None,
+            )
+            kwargs['sampler'] = sampler
+        except Exception as e:
+            # Fallback: don't pass sampling params - use defaults
+            pass
+    else:
+        # Bare kwargs fallback for older mlx_lm versions - don't pass temp/temp
+        pass
+    
+    # Add seed if set
+    if seed:
+        try:
+            kwargs['seed'] = int(seed)
+        except Exception:
+            pass
+    
+    # Add stop tokens if set
+    if stop_tokens:
+        kwargs['stop'] = stop_tokens
+    
+    # Add prompt if provided
+    if prompt is not None:
+        kwargs['prompt'] = prompt
+    
+    return kwargs
 
 def _set_metal_env():
     """Set Metal performance environment variables."""
@@ -174,6 +332,32 @@ def load_config():
         "mlx_stop_tokens": [],
         "mlx_model_cache": "~/.cache/lumina-mlx/",
         "trust_remote_code": False,
+        "mlx_kv_quant": {
+            "key_bits": 8,
+            "value_bits": 4
+        },
+        # A: KV cache size cap
+        "mlx_max_kv_size": 8192,
+        # B: Sampling parameters
+        "mlx_sampling": {
+            "temperature": 0.7,
+            "top_p": 1.0,
+            "min_p": 0.0,
+            "repetition_penalty": 1.0,
+            "repetition_context_size": 20,
+            "max_tokens": 512
+        },
+        # C: Metal optimizations (enabled by default)
+        "mlx_metal_optimizations": True,
+        # D: Memory limit fraction (null = don't set, 0.65 = 65% of RAM)
+        "mlx_memory_limit_fraction": 0.65,
+        # F: Native KV quantization (mutually exclusive with asymmetric)
+        "mlx_kv_quant_native": {
+            "enabled": False,
+            "kv_bits": 4,
+            "kv_group_size": 64,
+            "quantized_kv_start": 0
+        },
     }
     try:
         with open(config_path, "r") as f:
@@ -213,18 +397,9 @@ def run_benchmark(model_path):
     # Pre-warm Metal and load model
     mx.eval(mx.zeros((1,)))
     load_start = time.time()
-    trust_remote = config.get("trust_remote_code", False)
-    model, tokenizer = mlx_lm.load(model_path, trust_remote_code=trust_remote)
+    model, tokenizer = mlx_lm.load(model_path)
     load_time = time.time() - load_start
     print(f"✓ Model loaded in {load_time:.2f}s")
-
-    # Pre-warm shaders with single token generation
-    warmup_prompt = tokenizer.apply_chat_template(
-        [{"role": "user", "content": "hi"}],
-        tokenize=False, add_generation_prompt=True
-    )
-    next(mlx_lm.stream_generate(model, tokenizer, prompt=warmup_prompt, max_tokens=1, temp=0.0, **_get_kv_kwargs()))
-    print("✓ Shaders pre-warmed")
 
     # Benchmark with realistic prompt
     bench_prompt = tokenizer.apply_chat_template(
@@ -235,13 +410,11 @@ def run_benchmark(model_path):
     token_count = 0
     gen_start = time.time()
 
-    for result in mlx_lm.stream_generate(
-        model, tokenizer,
-        prompt=bench_prompt,
-        max_tokens=100,
-        temp=0.0,
-        **_get_kv_kwargs(),
-    ):
+    gen_kwargs = get_mlx_generation_kwargs(config, prompt=bench_prompt, override_temp=0.0, override_max_tokens=100)
+    gen_kwargs['model'] = model
+    gen_kwargs['tokenizer'] = tokenizer
+
+    for result in mlx_lm.stream_generate(**gen_kwargs):
         token_count += 1
 
     gen_time = time.time() - gen_start
@@ -319,8 +492,6 @@ def launch_api_direct(model_path, port):
 
     print(f'[MLX Direct] Loading model: {os.path.basename(abs_model_path)}', flush=True)
     load_start = time.time()
-    trust_remote = config.get("trust_remote_code", False)
-    
     try:
         # Check for GGUF format (not supported on macOS/MLX)
         if abs_model_path.endswith('.gguf') or abs_model_path.endswith('.GGUF'):
@@ -340,11 +511,10 @@ def launch_api_direct(model_path, port):
                 print(f'[MLX Direct] Loading LoRA adapter: {adapter_path}', flush=True)
         
         # Load model with optional adapter
-        load_kwargs = {'trust_remote_code': trust_remote}
         if adapter_path and os.path.exists(os.path.expanduser(adapter_path)):
-            load_kwargs['adapter_path'] = os.path.expanduser(adapter_path)
-        
-        model, tokenizer = mlx_lm.load(abs_model_path, **load_kwargs)
+            model, tokenizer = mlx_lm.load(abs_model_path, adapter_path=os.path.expanduser(adapter_path))
+        else:
+            model, tokenizer = mlx_lm.load(abs_model_path)
         load_time = time.time() - load_start
         MODEL_LOADED = True
         print(f'[MLX Direct] Model loaded in {load_time:.1f}s', flush=True)
@@ -355,22 +525,6 @@ def launch_api_direct(model_path, port):
         MODEL_LOAD_ERROR = str(e)
         print(f'[MLX Direct] ERROR: Model loading failed: {e}', flush=True)
         # Continue with server running - health endpoint will report not ready
-    
-    # Pre-warm shaders efficiently (only if model loaded)
-    if MODEL_LOADED:
-        try:
-            warmup_prompt = tokenizer.apply_chat_template(
-                [{"role": "user", "content": "hi"}], 
-                tokenize=False, add_generation_prompt=True
-            )
-            next(mlx_lm.stream_generate(model, tokenizer, prompt=warmup_prompt, max_tokens=1, temp=0.0, **_get_kv_kwargs()))
-            print('[MLX Direct] Shaders compiled and warm', flush=True)
-        except Exception as e:
-            print(f'[MLX Direct] Warmup warning (non-fatal): {e}', flush=True)
-    else:
-        print('[MLX Direct] Skipping warmup - model not loaded', flush=True)
-    
-    kv_kwargs = _get_kv_kwargs()
 
     # Get MLX-specific config values
     mlx_config = {
@@ -461,11 +615,11 @@ def launch_api_direct(model_path, port):
                 return
             
             if stream:
-                self._stream_response(prompt, temperature, max_tokens, top_p, repetition_penalty, kv_kwargs)
+                self._stream_response(prompt, temperature, max_tokens, top_p, repetition_penalty)
             else:
-                self._blocking_response(prompt, temperature, max_tokens, top_p, repetition_penalty, kv_kwargs)
+                self._blocking_response(prompt, temperature, max_tokens, top_p, repetition_penalty)
         
-        def _stream_response(self, prompt, temperature, max_tokens, top_p, repetition_penalty, kv_kwargs):
+        def _stream_response(self, prompt, temperature, max_tokens, top_p, repetition_penalty):
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Cache-Control', 'no-cache')
@@ -480,33 +634,16 @@ def launch_api_direct(model_path, port):
                     "model": os.path.basename(abs_model_path),
                 }
 
-                # Build generate kwargs
-                gen_kwargs = {
-                    'model': model,
-                    'tokenizer': tokenizer,
-                    'prompt': prompt,
-                    'max_tokens': max_tokens,
-                    'temp': temperature,
-                    'top_p': top_p,
-                    **kv_kwargs,
-                }
-                # Add repetition_penalty if mlx_lm supports it
-                try:
-                    import inspect
-                    sig = inspect.signature(mlx_lm.stream_generate)
-                    if 'repetition_penalty' in sig.parameters:
-                        gen_kwargs['repetition_penalty'] = repetition_penalty
-                except Exception:
-                    pass
-                # Add seed if set
-                if mlx_config['seed']:
-                    try:
-                        gen_kwargs['seed'] = int(mlx_config['seed'])
-                    except Exception:
-                        pass
-                # Add stop tokens if set
-                if mlx_config['stop_tokens']:
-                    gen_kwargs['stop'] = mlx_config['stop_tokens']
+                # Use get_mlx_generation_kwargs with runtime overrides
+                gen_kwargs = get_mlx_generation_kwargs(
+                    config,
+                    prompt=prompt,
+                    override_temp=temperature,
+                    override_top_p=top_p,
+                    override_max_tokens=max_tokens
+                )
+                gen_kwargs['model'] = model
+                gen_kwargs['tokenizer'] = tokenizer
 
                 for result in mlx_lm.stream_generate(**gen_kwargs):
                     token_text = result.text if hasattr(result, 'text') else str(result)
@@ -545,6 +682,7 @@ def launch_api_direct(model_path, port):
                     self.wfile.flush()
                 except Exception:
                     pass
+                return
                     
             except Exception as e:
                 error_chunk = {"error": str(e)}
@@ -554,33 +692,19 @@ def launch_api_direct(model_path, port):
                 except Exception:
                     pass
         
-        def _blocking_response(self, prompt, temperature, max_tokens, top_p, repetition_penalty, kv_kwargs):
+        def _blocking_response(self, prompt, temperature, max_tokens, top_p, repetition_penalty):
             full_text = ""
             try:
-                # Build generate kwargs (same as streaming)
-                gen_kwargs = {
-                    'model': model,
-                    'tokenizer': tokenizer,
-                    'prompt': prompt,
-                    'max_tokens': max_tokens,
-                    'temp': temperature,
-                    'top_p': top_p,
-                    **kv_kwargs,
-                }
-                try:
-                    import inspect
-                    sig = inspect.signature(mlx_lm.stream_generate)
-                    if 'repetition_penalty' in sig.parameters:
-                        gen_kwargs['repetition_penalty'] = repetition_penalty
-                except Exception:
-                    pass
-                if mlx_config['seed']:
-                    try:
-                        gen_kwargs['seed'] = int(mlx_config['seed'])
-                    except Exception:
-                        pass
-                if mlx_config['stop_tokens']:
-                    gen_kwargs['stop'] = mlx_config['stop_tokens']
+                # Use get_mlx_generation_kwargs with runtime overrides
+                gen_kwargs = get_mlx_generation_kwargs(
+                    config,
+                    prompt=prompt,
+                    override_temp=temperature,
+                    override_top_p=top_p,
+                    override_max_tokens=max_tokens
+                )
+                gen_kwargs['model'] = model
+                gen_kwargs['tokenizer'] = tokenizer
 
                 for result in mlx_lm.stream_generate(**gen_kwargs):
                     full_text += result.text if hasattr(result, 'text') else str(result)
@@ -689,42 +813,10 @@ def launch_core(model_path, json_output=False):
         print(f'{{"status": "core_ready", "model": "{model_path}"}}')
 
     print("Loading model for chat...")
-    trust_remote = config.get("trust_remote_code", False)
-    model, tokenizer = mlx_lm.load(model_path, trust_remote_code=trust_remote)
+    model, tokenizer = mlx_lm.load(model_path)
     print("\nLumina Edge MLX Chat (type /exit to quit)\n")
 
     history = []
-    kv_kwargs = _get_kv_kwargs()
-
-    # Build base generation kwargs
-    base_gen_kwargs = {
-        'model': model,
-        'tokenizer': tokenizer,
-        'max_tokens': max_tokens,
-        'temp': temp,
-        'top_p': top_p,
-        **kv_kwargs,
-    }
-
-    # Add repetition_penalty if supported
-    try:
-        import inspect
-        sig = inspect.signature(mlx_lm.stream_generate)
-        if 'repetition_penalty' in sig.parameters:
-            base_gen_kwargs['repetition_penalty'] = repetition_penalty
-    except Exception:
-        pass
-
-    # Add seed if set
-    if seed:
-        try:
-            base_gen_kwargs['seed'] = int(seed)
-        except Exception:
-            pass
-
-    # Add stop tokens if set
-    if stop_tokens:
-        base_gen_kwargs['stop'] = stop_tokens
 
     while True:
         try:
@@ -738,8 +830,16 @@ def launch_core(model_path, json_output=False):
             print("AI: ", end="", flush=True)
             resp = ""
 
-            # Clone base kwargs and add prompt
-            gen_kwargs = {**base_gen_kwargs, 'prompt': prompt}
+            # Use get_mlx_generation_kwargs with runtime overrides from config
+            gen_kwargs = get_mlx_generation_kwargs(
+                config,
+                prompt=prompt,
+                override_temp=temp,
+                override_top_p=top_p,
+                override_max_tokens=max_tokens
+            )
+            gen_kwargs['model'] = model
+            gen_kwargs['tokenizer'] = tokenizer
 
             for result in mlx_lm.stream_generate(**gen_kwargs):
                 token_text = result.text if hasattr(result, 'text') else str(result)

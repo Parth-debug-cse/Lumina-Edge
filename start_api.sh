@@ -66,6 +66,10 @@ CONT_BATCHING=$(get_config cont_batching true)
 PARALLEL_SLOTS=$(get_config parallel_slots 1)
 KV_CACHE_QUANT=$(get_config kv_cache_quant 'f16')
 USE_MLOCK=$(get_config use_mlock true)
+NO_MMAP=$(get_config no_mmap 'true')
+MOE_MODEL=$(get_config moe_model 'false')
+MOE_OVERRIDE=$(get_config moe_override_tensor '""')
+KV_QUANT=$(get_config kv_quant 'turbo')
 
 # Convert boolean to on/off for flash-attn
 if [[ "$FLASH_ATTN" == "true" ]]; then
@@ -78,6 +82,33 @@ fi
 MLOCK_FLAG=""
 if [[ "$USE_MLOCK" == "true" ]]; then
     MLOCK_FLAG="--mlock"
+fi
+
+# MoE offloading flags (llama.cpp only)
+MOE_FLAGS=""
+if [[ "$MOE_MODEL" == "true" ]]; then
+    if [[ -n "$MOE_OVERRIDE" && "$MOE_OVERRIDE" != "" ]]; then
+        MOE_FLAGS="-ot $MOE_OVERRIDE"
+    else
+        MOE_FLAGS="--cpu-moe"
+    fi
+fi
+
+# no-mmap flag (llama.cpp only)
+NO_MMAP_FLAG=""
+if [[ "$NO_MMAP" == "true" ]]; then
+    NO_MMAP_FLAG="--no-mmap"
+fi
+
+# KV cache quantization with TurboQuant (llama.cpp only)
+# TurboQuant requires -fa as a hard dependency
+KV_QUANT_FLAGS=""
+if [[ "$KV_QUANT" == "turbo" ]]; then
+    KV_QUANT_FLAGS="--flash-attn --cache-type-k turbo4 --cache-type-v turbo3"
+elif [[ "$KV_QUANT" == "q8_0" ]]; then
+    KV_QUANT_FLAGS="--cache-type-k q8_0 --cache-type-v q8_0"
+elif [[ "$KV_QUANT" == "q4_0" ]]; then
+    KV_QUANT_FLAGS="--cache-type-k q4_0 --cache-type-v q4_0"
 fi
 
 CONT_BATCH_FLAGS=""
@@ -116,7 +147,6 @@ set -x
     --ubatch-size "$UBATCH_SIZE" \
     $FLASH_ATTN_FLAG \
     --defrag-thold "$DEFRAG_THOLD" \
-    --warmup \
     --min-p "$MIN_P" \
     --top-k "$TOP_K" \
     --top-p "$TOP_P" \
@@ -124,5 +154,6 @@ set -x
     --threads-http "$HTTP_THREADS" \
     $CONT_BATCH_FLAGS \
     $MLOCK_FLAG \
-    --cache-type-k "$KV_CACHE_QUANT" \
-    --cache-type-v "$KV_CACHE_QUANT"
+    $NO_MMAP_FLAG \
+    $MOE_FLAGS \
+    $KV_QUANT_FLAGS

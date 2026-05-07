@@ -178,6 +178,7 @@ export default function ChatPanel({ serverStatus, serverModel, toast }) {
         signal: controller.signal,
       })
     } catch (err) {
+      console.error('[sendMessage] Stream error:', err);
       if (err.name !== 'AbortError') {
         toast(`Error: ${err.message}`, 'error')
         // Remove empty AI message
@@ -189,6 +190,7 @@ export default function ChatPanel({ serverStatus, serverModel, toast }) {
         }
       }
     } finally {
+      console.log('[sendMessage] Finally block reached, setting streaming=false');
       // Final flush to localStorage with complete content
       if (flushTimerRef.current) {
         clearTimeout(flushTimerRef.current)

@@ -355,7 +355,7 @@ if !THREADS! gtr 4 set "AFFINITY=0xFF"
 if !THREADS! gtr 8 set "AFFINITY=0xFFFF"
 
 REM Build server command with optimized flags
-set "SERVER_CMD=!SERVER_EXE! -m "!SELECTED_MODEL!" -t !THREADS! -tb !THREADS_BATCH! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! --n-gpu-layers !GPU_LAYERS! --temp !TEMPERATURE! --top-p !TOP_P! --repeat-penalty !REPEAT_PENALTY! --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p 0.05 --top-k 20 --threads-http !HTTP_THREADS! -p !API_PORT! --cache-type-k !KV_CACHE_QUANT! --cache-type-v !KV_CACHE_QUANT! --slot-save-path cache\ --prompt-cache cache\system_prompt.bin"
+set "SERVER_CMD=!SERVER_EXE! -m "!SELECTED_MODEL!" -t !THREADS! -tb !THREADS_BATCH! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! --n-gpu-layers !GPU_LAYERS! --temp !TEMPERATURE! --top-p !TOP_P! --repeat-penalty !REPEAT_PENALTY! --flash-attn --defrag-thold 0.1 --ctx-shift --min-p 0.05 --top-k 20 --threads-http !HTTP_THREADS! -p !API_PORT! --cache-type-k !KV_CACHE_QUANT! --cache-type-v !KV_CACHE_QUANT! --slot-save-path cache\ --prompt-cache cache\system_prompt.bin"
 
 if "!CONT_BATCHING!"=="true" (
     set "SERVER_CMD=!SERVER_CMD! --cont-batching --parallel !PARALLEL_SLOTS!"
@@ -414,7 +414,7 @@ if !THREADS! gtr 4 set "AFFINITY=0xFF"
 if !THREADS! gtr 8 set "AFFINITY=0xFFFF"
 
 REM Build CLI command with optimized flags
-set "CLI_CMD=!CLI_EXE! -m "!SELECTED_MODEL!" -t !THREADS! -tb !THREADS_BATCH! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! -n 128 --n-gpu-layers !GPU_LAYERS! --temp !TEMPERATURE! --top-p !TOP_P! --repeat-penalty !REPEAT_PENALTY! --flash-attn --defrag-thold 0.1 --warmup --ctx-shift --min-p 0.05 --top-k 20 --cache-type-k !KV_CACHE_QUANT! --cache-type-v !KV_CACHE_QUANT!"
+set "CLI_CMD=!CLI_EXE! -m "!SELECTED_MODEL!" -t !THREADS! -tb !THREADS_BATCH! -c !CTX_SIZE! -b !BATCH_SIZE! -ub !UBATCH_SIZE! -n 128 --n-gpu-layers !GPU_LAYERS! --temp !TEMPERATURE! --top-p !TOP_P! --repeat-penalty !REPEAT_PENALTY! --flash-attn --defrag-thold 0.1 --ctx-shift --min-p 0.05 --top-k 20 --cache-type-k !KV_CACHE_QUANT! --cache-type-v !KV_CACHE_QUANT!"
 
 if "!MLOCK!"=="true" (
     set "CLI_CMD=!CLI_CMD! --mlock"
