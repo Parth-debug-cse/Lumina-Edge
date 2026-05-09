@@ -1,4 +1,6 @@
 {
+  "_comment_model": "Model file path (relative to models/ directory). Download from HuggingFace or model repos.",
+  "model": "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
   "_comment_ctx_size": "Context size: MINIMUM 4096 tokens enforced. Higher values (8192-32768) enable longer conversations but increase KV cache memory. Auto-tuned based on available RAM/VRAM. Can be resized at runtime via API or config.",
   "ctx_size": 16384,
   "_comment_quantization": "Quantization recommendation: If your model uses Q4_0, Q5_0, or Q8_0 quantization, consider switching to IQ (importance-matrix) equivalents like IQ4_XS, IQ4_NL, or IQ3_M for better quality/speed at the same or lower file size. IQ quantization uses importance matrices to preserve critical model weights.",
@@ -87,6 +89,15 @@
   "threads": 4,
   "threads_batch": 4,
   "parallel_slots": 1,
+  "_comment_rag": "RAG (Retrieval-Augmented Generation) settings for document Q&A",
+  "use_case": "default",
+  "system_prompt_preset": "presets/default.txt",
+  "rag_enabled": true,
+  "vectordb_path": "vectordb",
+  "embedding_model": "all-MiniLM-L6-v2",
+  "chunk_size": 512,
+  "chunk_overlap": 50,
+  "retrieval_top_k": 5,
   "mlx_model_dir": "/Users/parthsrivastava/Developer/2026-Lumina-Edge-LLM-Inference-Framework/models",
   "defrag_thold": 0.1
 }
