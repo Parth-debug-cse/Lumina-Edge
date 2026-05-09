@@ -1,0 +1,29 @@
+NON-DISCLOSURE AGREEMENT
+
+This Non-Disclosure Agreement ("Agreement") is entered into as of January 15, 2025, by and between:
+
+TechCorp Inc., a Delaware corporation ("Disclosing Party")
+and
+ConsultCo LLC, a California limited liability company ("Receiving Party")
+
+1. PURPOSE
+The parties wish to explore a potential business relationship concerning software development services ("Purpose").
+
+2. CONFIDENTIAL INFORMATION
+"Confidential Information" means any data or information disclosed by Disclosing Party, including but not limited to: technical data, trade secrets, business plans, customer lists, and financial information.
+
+3. OBLIGATIONS
+Receiving Party agrees to:
+(a) Hold Confidential Information in strict confidence
+(b) Not disclose to any third party without prior written consent
+(c) Use Confidential Information solely for the Purpose
+(d) Limit access to employees with a need to know
+
+4. TERM
+This Agreement shall remain in effect for three (3) years from the date first written above.
+
+5. RETURN OF MATERIALS
+Upon termination, Receiving Party shall return or destroy all Confidential Information.
+
+6. GOVERNING LAW
+This Agreement shall be governed by the laws of the State of California.
