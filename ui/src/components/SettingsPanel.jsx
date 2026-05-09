@@ -23,8 +23,6 @@ const MAIN_SECTIONS = [
     id: 'compute',
     title: 'Compute',
     fields: [
-      { key: 'threads',       label: 'CPU Threads (Physical)', type: 'readonly', hint: 'Auto-detected from physical cores. Set on launch.' },
-      { key: 'threads_batch', label: 'Batch Threads (Logical)', type: 'readonly', hint: 'Auto-detected from logical cores. Set on launch.' },
       { key: 'ctx_size',      label: 'Context Size',   type: 'select', options: [4096,8192,16384,32768], hint: 'Token context window length. Minimum 4096 tokens enforced.' },
       { key: 'batch_size',    label: 'Batch Size',     type: 'number', min: 1, max: 4096, hint: 'Prompt processing batch size.' },
       { key: 'ubatch_size',   label: 'Micro-Batch',    type: 'number', min: 1, max: 4096, hint: 'Physical micro-batch for memory efficiency.' },
@@ -66,7 +64,6 @@ const LLAMA_CPP_SECTIONS = [
       { key: 'flash_attn',    label: 'Flash Attention', type: 'toggle', hint: 'Enable Flash Attention for faster inference and lower memory (llama.cpp only).' },
       { key: 'kv_cache_quant', label: 'KV Cache Quant', type: 'select', options: ['f16', 'q8_0', 'q4_0'], hint: 'KV cache quantization type. Lower = less memory, slightly slower (llama.cpp only).' },
       { key: 'split_mode',    label: 'Split Mode',     type: 'select', options: ['auto', 'layer', 'row', 'none'], hint: 'GPU tensor split mode. Auto = detected by GPU type (llama.cpp only).' },
-      { key: 'defrag_thold',  label: 'Defrag Threshold', type: 'range', min: 0, max: 1, step: 0.05, hint: 'KV cache defragmentation threshold. 0 = disabled (llama.cpp only).' },
       { key: 'use_mlock',     label: 'Memory Lock (mlock)', type: 'toggle', hint: 'Lock pages in RAM to prevent swapping. Skip on macOS (llama.cpp only).' },
       { key: 'numa_mode',     label: 'NUMA Mode',      type: 'toggle', hint: 'Enable NUMA memory distribution for multi-socket systems (llama.cpp only).' },
     ],
@@ -76,7 +73,6 @@ const LLAMA_CPP_SECTIONS = [
     title: 'Batching (llama.cpp)',
     fields: [
       { key: 'cont_batching', label: 'Continuous Batching', type: 'toggle', hint: 'Enable continuous batching for parallel request processing (llama.cpp only).' },
-      { key: 'parallel_slots', label: 'Parallel Slots', type: 'range', min: 1, max: 8, step: 1, hint: 'Number of parallel processing slots when continuous batching enabled (llama.cpp only).' },
     ],
   },
 ]
@@ -113,7 +109,6 @@ const MLX_SECTIONS = [
     title: 'MLX Advanced',
     fields: [
       { key: 'mlx_adapter_path', label: 'LoRA Adapter Path', type: 'text', hint: 'Optional path to LoRA adapter (e.g., /path/to/adapter.safetensors). Leave empty for base model only.' },
-      { key: 'mlx_model_cache', label: 'Model Cache Path', type: 'text', hint: 'Directory for MLX converted/quantized models. Default: ~/.cache/lumina-mlx/' },
       { key: 'trust_remote_code', label: 'Trust Remote Code', type: 'toggle', hint: 'WARNING: Enable only for custom model architectures. Security risk if enabled.' },
     ],
   },

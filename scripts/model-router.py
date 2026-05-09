@@ -27,6 +27,17 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 
+def get_context_size():
+    """Read context_size from config.json, fallback to 4096"""
+    config_path = os.path.join(os.path.dirname(__file__), '..', 'config.json')
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        return int(config.get('ctx_size', 4096))
+    except Exception:
+        return 4096
+
+
 class ModelStatus(Enum):
     IDLE = "idle"
     LOADING = "loading"
@@ -49,7 +60,7 @@ class ModelInstance:
     inference_count: int = 0
     error_message: Optional[str] = None
     quantization: str = "Q4_K_M"
-    context_size: int = 4096
+    context_size: int = get_context_size()
     gpu_layers: Optional[int] = None
     
     def to_dict(self) -> Dict:

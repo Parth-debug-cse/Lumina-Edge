@@ -6,6 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { createServer } from 'net';
+import http from 'http';
 import { Router } from 'express';
 
 const apiRouter = Router();
@@ -13,9 +14,6 @@ const apiRouter = Router();
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-const PRIMARY_PORT = 8080;
-const SECONDARY_PORT = 8081;
 
 // Create __dirname for ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -39,8 +37,6 @@ function getPythonCmd() {
 console.log('[API Server] Starting Lumina Edge API Gateway');
 console.log('[API Server] Root directory:', rootDir);
 console.log('[API Server] Models directory:', modelsDir);
-console.log('[API Server] Primary port (inference + management):', PRIMARY_PORT);
-console.log('[API Server] Secondary port (management only):', SECONDARY_PORT);
 
 // Vulkan capability check - caches result to avoid repeated checks
 let _vulkanCapable = null;
@@ -193,9 +189,14 @@ async function findAvailablePort() {
 const configPath = path.join(rootDir, 'config.json');
 const convertibleExtensions = ['.gguf', '.safetensors', '.bin', '.pt'];
 
+// Load config to get port settings (after loadConfig is defined)
+const config = loadConfig();
+const PRIMARY_PORT = config.api_port || 8081;
+const SECONDARY_PORT = config.api_port_secondary || 8091;
+
 // Config caching to avoid repeated file reads
-let cachedConfig = null;
-let configTimestamp = 0;
+var cachedConfig = null;
+var configTimestamp = 0;
 
 function loadConfig() {
   try {
@@ -330,15 +331,12 @@ apiRouter.get('/system-info', (req, res) => {
 apiRouter.get('/optimized-config', (req, res) => {
   const config = loadConfig();
   res.json({
-    threads: config.threads,
-    threads_batch: config.threads_batch,
     ctx_size: config.ctx_size,
     batch_size: config.batch_size,
     ubatch_size: config.ubatch_size,
     n_gpu_layers: config.n_gpu_layers,
     gpu_type: config.gpu_type,
     http_threads: config.http_threads,
-    parallel_slots: config.parallel_slots,
     flash_attn: config.flash_attn,
     kv_cache_quant: config.kv_cache_quant,
     cont_batching: config.cont_batching,
@@ -374,8 +372,6 @@ apiRouter.post('/reoptimize', (req, res) => {
         success: true,
         message: 'System re-optimized successfully',
         config: {
-          threads: newConfig.threads,
-          threads_batch: newConfig.threads_batch,
           ctx_size: newConfig.ctx_size,
           batch_size: newConfig.batch_size,
           n_gpu_layers: newConfig.n_gpu_layers,
@@ -492,14 +488,11 @@ apiRouter.get('/hardware-info', async (req, res) => {
         totalMemory: os.totalmem(),
         freeMemory: os.freemem(),
         optimized_settings: {
-          threads: config.threads,
-          threads_batch: config.threads_batch,
           ctx_size: config.ctx_size,
           batch_size: config.batch_size,
           n_gpu_layers: config.n_gpu_layers,
           gpu_type: config.gpu_type,
-          http_threads: config.http_threads,
-          parallel_slots: config.parallel_slots
+          http_threads: config.http_threads
         },
         raw_output: output
       });
@@ -578,8 +571,9 @@ apiRouter.get('/models/list', (req, res) => {
       if (stats.isDirectory()) {
         // Check if it's an MLX model directory (has config.json and weights)
         const hasConfig = fs.existsSync(path.join(fullPath, 'config.json'));
-        const hasWeights = fs.existsSync(path.join(fullPath, 'model.safetensors')) || 
-                          fs.existsSync(path.join(fullPath, 'weights.npz'));
+        // Check for model.safetensors, weights.*.safetensors, or weights.npz
+        const modelFiles = fs.readdirSync(fullPath).filter(n => n.endsWith('.safetensors') || n.endsWith('.npz'));
+        const hasWeights = modelFiles.length > 0;
         
         if (hasConfig && hasWeights) {
           // Calculate directory size
@@ -1274,6 +1268,54 @@ apiRouter.post('/router/load', async (req, res) => {
         modelInfo.status = 'error';
       });
 
+      proc.on('close', (code) => {
+        console.log(`[MLX] Process exited with code ${code}`);
+        if (modelInfo.status !== 'unloaded') {
+          modelInfo.status = 'error';
+        }
+      });
+
+      // Wait up to 15 seconds for the MLX backend to start
+      const MAX_RETRIES = 15;
+      const RETRY_DELAY = 1000;
+      let backendReady = false;
+      let lastError = null;
+
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        try {
+          const httpClient = http;
+          await new Promise((resolve, reject) => {
+            const req = httpClient.get(`http://127.0.0.1:${port}/v1/models`, (resp) => {
+              if (resp.statusCode === 200) {
+                backendReady = true;
+                resolve();
+              } else {
+                reject(new Error(`Status ${resp.statusCode}`));
+              }
+            });
+            req.on('error', reject);
+            req.setTimeout(2000, () => { req.destroy(); reject(new Error('Timeout')); });
+          });
+          if (backendReady) break;
+        } catch (e) {
+          lastError = e.message;
+          await new Promise(r => setTimeout(r, RETRY_DELAY));
+        }
+      }
+
+      if (!backendReady) {
+        modelInfo.status = 'error';
+        if (proc && !proc.killed) proc.kill();
+        return res.status(500).json({
+          error: 'MLX backend failed to start',
+          detail: lastError || 'Unknown error'
+        });
+      }
+
+      modelInfo.process = proc;
+      modelInfo.status = 'ready';
+      return res.json({ success: true, message: `Model loaded on port ${port}`, port, id });
+
     } catch (err) {
       routerModels.delete(id);
       return res.status(500).json({
@@ -1294,12 +1336,6 @@ apiRouter.post('/router/load', async (req, res) => {
     }
     
     // Helper to read config values with enforced safety limits
-const threads = parseInt(config.threads) || 2;
-const threadsBatch = (() => {
-  const val = parseInt(config.threads_batch);
-  if (!val || isNaN(val)) return 4;
-  return val;
-})();
 const ctxSize = (() => {
   const val = parseInt(config.ctx_size);
   if (!val || isNaN(val) || val < 512) return 4096; // safe minimum
@@ -1310,12 +1346,6 @@ const ubatchSize = parseInt(config.ubatch_size) || 256;
 const nGpuLayers = parseInt(config.n_gpu_layers) ?? 0;
 const kvCacheType = config.kv_cache_quant || 'q8_0';
 const splitMode = config.split_mode || 'row';
-const defragThold = config.defrag_thold ?? 0.1;
-const parallelSlots = (() => {
-  const val = parseInt(config.parallel_slots);
-  if (!val || isNaN(val)) return 1;
-  return val;
-})();
 const httpThreads = parseInt(config.http_threads) || 2;
 const useMlock = config.use_mlock === true;
 const contBatching = config.cont_batching !== false;
@@ -1330,13 +1360,9 @@ const cmdArgs = [
   '--port', port.toString(),
   '--host', '127.0.0.1',
   '--ctx-size', ctxSize.toString(),
-  '--threads', threads.toString(),            // CPU threads for generation
-  '--threads-batch', threadsBatch.toString(), // CPU threads for prompt processing
   '--batch-size', batchSize.toString(),       // prompt batch size
   '--ubatch-size', ubatchSize.toString(),     // micro-batch size
   '--split-mode', splitMode,                  // tensor split mode
-  '--defrag-thold', defragThold.toString(),   // KV cache defrag threshold
-  '--parallel', parallelSlots.toString(),     // parallel request slots
   '--threads-http', httpThreads.toString(),   // HTTP server threads
   '--flash-attn',                             // NO argument — just the flag
   '--cache-type-k', kvCacheType,             // KV key cache quantization
@@ -1357,9 +1383,7 @@ if (!promptCache) {
 // Log actual flags being passed to llama-server
 console.log(`[Router] Launching llama-server with flags:`);
 console.log(`[Router]   ctx-size: ${ctxSize}`);
-console.log(`[Router]   threads: ${threads} / threads-batch: ${threadsBatch}`);
 console.log(`[Router]   n-gpu-layers: ${effectiveGpuLayers || nGpuLayers}`);
-console.log(`[Router]   parallel: ${parallelSlots}`);
 console.log(`[Router]   kv-cache-type: ${kvCacheType}`);
 console.log(`[Router]   mlock: ${useMlock}`);
 console.log(`[Router]   prompt-cache: ${promptCache}`);
@@ -1417,7 +1441,6 @@ let finalArgs = cmdArgs;
 
 if (os.platform() === 'linux') {
   try {
-    // Detect physical core IDs dynamically
     const cpuinfoRaw = fs.readFileSync('/proc/cpuinfo', 'utf8');
     const physicalCores = new Map();
     let currentProcessor = null;
@@ -1446,7 +1469,6 @@ if (os.platform() === 'linux') {
     }
   } catch (e) {
     console.log('[Router] taskset pinning skipped:', e.message);
-    // Fall through to normal spawn
   }
 }
 
@@ -1480,16 +1502,15 @@ if (os.platform() === 'linux' && proc.pid) {
 // Set process scheduling to SCHED_BATCH for better throughput
 if (os.platform() === 'linux' && proc.pid) {
   try {
-    // Set to SCHED_BATCH — better throughput for CPU-bound inference
     exec(`chrt -b -p 0 ${proc.pid} 2>/dev/null || true`);
     console.log(`[Router] ✓ Process scheduling optimized for PID ${proc.pid}`);
   } catch (e) {
     // Non-fatal
   }
 }
-  }
+}
 
-  modelInfo.process = proc;
+modelInfo.process = proc;
 
   // Poll for readiness
   let attempts = 0;
@@ -1866,8 +1887,8 @@ async function runStartupPipeline() {
     }
   }
 
-  // Step 2: Auto-load model
-  if (startupCfg.auto_load_model !== false) {
+  // Step 2: Auto-load model (only if explicitly enabled)
+  if (startupCfg.auto_load_model === true) {
     console.log('[Startup] Step 2: Scanning for models to auto-load...');
     try {
       const files = fs.readdirSync(modelsDir);
@@ -1882,9 +1903,8 @@ async function runStartupPipeline() {
         if (stats.isDirectory()) {
           // MLX model directory
           const hasConfig = fs.existsSync(path.join(fullPath, 'config.json'));
-          const hasWeights = fs.existsSync(path.join(fullPath, 'model.safetensors')) || 
-                            fs.existsSync(path.join(fullPath, 'weights.npz'));
-          if (hasConfig && hasWeights) {
+          const modelFiles = fs.readdirSync(fullPath).filter(n => n.endsWith('.safetensors') || n.endsWith('.npz'));
+          if (hasConfig && modelFiles.length > 0) {
             candidates.push({ name: f, path: fullPath, isDirectory: true });
           }
         } else {
@@ -1975,10 +1995,7 @@ async function runStartupPipeline() {
             });
           } catch (err) {
             routerModels.delete(id);
-            return res.status(500).json({
-              error: 'Failed to start MLX backend',
-              detail: err.message
-            });
+            console.error('[Startup] Failed to start MLX backend:', err.message);
           }
         } else {
           let llamaServer = path.join(binDir, 'llama-server');
@@ -1986,23 +2003,17 @@ async function runStartupPipeline() {
           
           if (!fs.existsSync(llamaServer)) {
             routerModels.delete(id);
-            return res.status(500).json({ 
-              error: 'llama-server binary not found',
-              message: `Expected binary at: ${llamaServer}. Please extract llama.cpp release binaries to the bin/ directory.`
-            });
+            console.error(`[Startup] llama-server binary not found at: ${llamaServer}`);
+            return;
           }
           
           // Helper to read config values with defaults
-const threads = parseInt(cfg.threads) || 2;
-const threadsBatch = parseInt(cfg.threads_batch) || 4;
 const ctxSize = parseInt(cfg.ctx_size) || 4096;
 const batchSize = parseInt(cfg.batch_size) || 256;
 const ubatchSize = parseInt(cfg.ubatch_size) || 256;
 const nGpuLayers = parseInt(cfg.n_gpu_layers) ?? 0;
 const kvCacheType = cfg.kv_cache_quant || 'q8_0';
 const splitMode = cfg.split_mode || 'row';
-const defragThold = cfg.defrag_thold ?? 0.1;
-const parallelSlots = parseInt(cfg.parallel_slots) || 1;
 const httpThreads = parseInt(cfg.http_threads) || 2;
 const useMlock = cfg.use_mlock === true;
 const contBatching = cfg.cont_batching !== false;
@@ -2017,13 +2028,9 @@ const cmdArgs = [
   '--port', port.toString(),
   '--host', '127.0.0.1',
   '--ctx-size', ctxSize.toString(),
-  '--threads', threads.toString(),            // CPU threads for generation
-  '--threads-batch', threadsBatch.toString(), // CPU threads for prompt processing
   '--batch-size', batchSize.toString(),       // prompt batch size
   '--ubatch-size', ubatchSize.toString(),     // micro-batch size
   '--split-mode', splitMode,                  // tensor split mode
-  '--defrag-thold', defragThold.toString(),   // KV cache defrag threshold
-  '--parallel', parallelSlots.toString(),     // parallel request slots
   '--threads-http', httpThreads.toString(),   // HTTP server threads
   '--flash-attn',                             // NO argument — just the flag
   '--cache-type-k', kvCacheType,             // KV key cache quantization
@@ -2044,9 +2051,7 @@ if (!promptCache) {
 // Log actual flags being passed to llama-server
 console.log(`[Startup] Launching llama-server with flags:`);
 console.log(`[Startup]   ctx-size: ${ctxSize}`);
-console.log(`[Startup]   threads: ${threads} / threads-batch: ${threadsBatch}`);
 console.log(`[Startup]   n-gpu-layers: ${effectiveGpuLayers || nGpuLayers}`);
-console.log(`[Startup]   parallel: ${parallelSlots}`);
 console.log(`[Startup]   kv-cache-type: ${kvCacheType}`);
 console.log(`[Startup]   mlock: ${useMlock}`);
 console.log(`[Startup]   prompt-cache: ${promptCache}`);
@@ -2251,25 +2256,31 @@ app.use('/api', apiRouter);
 // ===== /V1 ENDPOINTS FOR EXTENSION COMPATIBILITY =====
 
 // === Enriched /v1/models endpoint (for Continue/Cline) ===
-app.get('/v1/models', (req, res) => {
+app.get('/v1/models', async (req, res) => {
   try {
-    const readyModel = Array.from(routerModels.values()).find(m => m.status === 'ready');
-    
-    if (!readyModel) {
-      // No model loaded - return empty list with 200 OK (not 502)
+    const readyModels = Array.from(routerModels.values()).filter(m => m.status === 'ready');
+
+    if (readyModels.length === 0) {
+      // No router models — try direct MLX backend on MLX port
+      const mlxPort = parseInt(process.env.LUMINA_MLX_PORT || '8091');
+      try {
+        const resp = await fetch(`http://127.0.0.1:${mlxPort}/v1/models`);
+        if (resp.ok) {
+          const data = await resp.json();
+          return res.json(data);
+        }
+      } catch { }
+
       return res.status(200).json({
         object: 'list',
         data: []
       });
     }
     
-    // Get model filename without extension
-    const modelId = readyModel.name ? path.basename(readyModel.name, path.extname(readyModel.name)) : 'local-model';
     const now = Math.floor(Date.now() / 1000);
-    
-    res.json({
-      object: 'list',
-      data: [{
+    const modelList = readyModels.map(m => {
+      const modelId = m.name ? path.basename(m.name, path.extname(m.name)) : 'local-model';
+      return {
         id: modelId,
         object: 'model',
         created: now,
@@ -2280,7 +2291,12 @@ app.get('/v1/models', (req, res) => {
           tool_calling: true,
           streaming: true
         }
-      }]
+      };
+    });
+    
+    res.json({
+      object: 'list',
+      data: modelList
     });
   } catch (err) {
     console.error('[/v1/models] Error:', err.message);
@@ -2340,7 +2356,79 @@ app.post('/v1/chat/completions', async (req, res) => {
   try {
     const readyModel = Array.from(routerModels.values()).find(m => m.status === 'ready');
     if (!readyModel) {
-      return res.status(502).json({ error: 'No models currently loaded. Port 8000 is inactive.' });
+      // No router models loaded — try direct MLX backend
+      const directPort = parseInt(process.env.LUMINA_MLX_PORT || '8091');
+      const targetUrl = `http://127.0.0.1:${directPort}/v1/chat/completions`;
+
+      const body = { ...req.body };
+      const headers = { ...req.headers };
+      delete headers.host;
+      delete headers['content-length'];
+
+      const isStreaming = body.stream === true;
+
+      if (isStreaming) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+
+        try {
+          const response = await fetch(targetUrl, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(body)
+          });
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            res.write(`data: ${JSON.stringify({ error: errorText })}\n\n`);
+            res.end();
+            return;
+          }
+
+          if (response.body) {
+            const reader = response.body.getReader();
+            const encoder = new TextEncoder();
+
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                res.write(value);
+              }
+            } catch (streamErr) {
+              console.error('[/v1/chat/completions] Stream error:', streamErr.message);
+            }
+          }
+        } catch (err) {
+          console.error('[/v1/chat/completions] Streaming error:', err.message);
+          res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+        }
+        res.end();
+        return;
+      }
+
+      // Non-streaming: fetch and return
+      try {
+        const response = await fetch(targetUrl, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(body)
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          return res.status(response.status).json({ error: errorText });
+        }
+
+        const data = await response.json();
+        res.json(data);
+      } catch (err) {
+        console.error('[/v1/chat/completions] Direct backend error:', err.message);
+        return res.status(502).json({ error: `Backend error: ${err.message}` });
+      }
+      return;
     }
 
     const targetPort = readyModel.port;

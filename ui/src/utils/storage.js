@@ -119,10 +119,6 @@ export function setModelTags(tags) {
 const CONFIG_KEY = 'lumina_config'
 
 export const DEFAULT_CONFIG = {
-  // Auto-detected (read-only in UI)
-  threads: 'auto',  // Dynamically detected from physical cores (Windows/Linux)
-  threads_batch: 'auto',  // Dynamically detected from logical cores (Windows/Linux)
-
   // Core inference parameters (all platforms)
   ctx_size: 16384,
   batch_size: 256,
@@ -140,18 +136,15 @@ export const DEFAULT_CONFIG = {
   flash_attn: true,
   kv_cache_quant: 'f16',
   split_mode: 'auto',
-  defrag_thold: 0.1,
   use_mlock: true,
   numa_mode: false,
   cont_batching: true,
-  parallel_slots: 1,
   http_threads: 2,
 
   // MLX-specific parameters (macOS only)
   mlx_max_tokens: 2048,
   mlx_seed: '',  // Empty = random seed
   mlx_stop_tokens: '',  // Comma-separated list
-  mlx_model_cache: '~/.cache/lumina-mlx/',
   mlx_adapter_path: '',  // Optional LoRA adapter path
   trust_remote_code: false,
 
@@ -160,7 +153,7 @@ export const DEFAULT_CONFIG = {
 
   // UI/output
   json_output: false,
-  api_port: 1234,
+  api_port: 8090,
 }
 
 export function getLocalConfig() {

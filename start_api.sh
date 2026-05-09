@@ -25,8 +25,14 @@ except Exception:
 }
 
 # Default model selection (can be overridden by --model)
-MODEL="models/Qwen3.5-Coder-4b-Instruct-IQ4_XS.gguf"
+# IMPORTANT: On macOS use --gpu mlx and specify an MLX model directory
+# On Linux/Windows use a GGUF file, e.g., models/your-model.gguf
+MODEL=""
 GPU="vulkan"
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    GPU="mlx"
+fi
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -48,22 +54,18 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Read all settings from config.json with defaults
-PORT="${OVERRIDE_PORT:-$(get_config api_port 1234)}"
+PORT="${OVERRIDE_PORT:-$(get_config api_port 8090)}"
 CTX_SIZE=$(get_config ctx_size 16384)
 N_GPU_LAYERS=$(get_config n_gpu_layers 15)
-THREADS=$(get_config threads 2)
-THREADS_BATCH=$(get_config threads_batch 4)
 BATCH_SIZE=$(get_config batch_size 256)
 UBATCH_SIZE=$(get_config ubatch_size 256)
 FLASH_ATTN=$(get_config flash_attn true)
-DEFRAG_THOLD=$(get_config defrag_thold 0.1)
 MIN_P=$(get_config min_p 0.05)
 TOP_K=$(get_config top_k 20)
 TOP_P=$(get_config top_p 0.9)
 REPEAT_PENALTY=$(get_config repeat_penalty 1.1)
 HTTP_THREADS=$(get_config http_threads 2)
 CONT_BATCHING=$(get_config cont_batching true)
-PARALLEL_SLOTS=$(get_config parallel_slots 1)
 KV_CACHE_QUANT=$(get_config kv_cache_quant 'f16')
 USE_MLOCK=$(get_config use_mlock true)
 NO_MMAP=$(get_config no_mmap 'true')
@@ -113,7 +115,7 @@ fi
 
 CONT_BATCH_FLAGS=""
 if [[ "$CONT_BATCHING" == "true" ]]; then
-    CONT_BATCH_FLAGS="--cont-batching --parallel $PARALLEL_SLOTS"
+    CONT_BATCH_FLAGS="--cont-batching"
 fi
 
 echo "Starting Lumina Edge API..."
@@ -141,12 +143,9 @@ set -x
     --host 127.0.0.1 \
     --ctx-size "$CTX_SIZE" \
     --n-gpu-layers "$N_GPU_LAYERS" \
-    --threads "$THREADS" \
-    --threads-batch "$THREADS_BATCH" \
     --batch-size "$BATCH_SIZE" \
     --ubatch-size "$UBATCH_SIZE" \
     $FLASH_ATTN_FLAG \
-    --defrag-thold "$DEFRAG_THOLD" \
     --min-p "$MIN_P" \
     --top-k "$TOP_K" \
     --top-p "$TOP_P" \

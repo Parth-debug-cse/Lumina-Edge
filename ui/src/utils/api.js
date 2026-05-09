@@ -2,7 +2,7 @@
 // Lumina Edge UI — utility: API / llama-server client
 // ============================================================
 
-const BASE_URL = 'http://127.0.0.1:8080/v1'
+const BASE_URL = 'http://127.0.0.1:8090/v1'
 
 let _directPort = null;
 

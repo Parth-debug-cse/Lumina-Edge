@@ -330,7 +330,6 @@ def load_config():
         "mlx_max_tokens": 2048,
         "mlx_seed": None,
         "mlx_stop_tokens": [],
-        "mlx_model_cache": "~/.cache/lumina-mlx/",
         "trust_remote_code": False,
         "mlx_kv_quant": {
             "key_bits": 8,

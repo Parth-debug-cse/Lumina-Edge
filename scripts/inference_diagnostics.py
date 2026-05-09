@@ -193,14 +193,16 @@ def _diagnose_macos():
     try:
         mem_bytes = int(subprocess.check_output(['sysctl', '-n', 'hw.memsize'], text=True).strip())
         mem_total_gb = mem_bytes / (1024**3)
-        # Use psutil for available memory if available
         try:
             import psutil
             vm = psutil.virtual_memory()
             mem_available_gb = vm.available / (1024**3)
             usage_pct = vm.percent
         except ImportError:
-            mem_available_gb = mem_total_gb * 0.5  # Rough estimate
+            mem_available_gb = mem_total_gb * 0.5
+            usage_pct = 50
+        except Exception:
+            mem_available_gb = mem_total_gb * 0.5
             usage_pct = 50
         findings.append({
             "check": "memory",

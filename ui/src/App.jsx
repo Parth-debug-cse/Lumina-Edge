@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react'
-import ChatPanel      from './components/ChatPanel.jsx'
 import ModelManager   from './components/ModelManager.jsx'
 import SettingsPanel  from './components/SettingsPanel.jsx'
 import SessionHistory from './components/SessionHistory.jsx'
@@ -11,7 +10,7 @@ import { checkServerHealth } from './utils/api.js'
 // Navigation items
 // ============================================================
 const NAV = [
-  { id: 'chat',       icon: '💬', label: 'Chat' },
+  { id: 'chat',       icon: '💬', label: 'Chat', external: true },
   { id: 'models',     icon: '📦', label: 'Models' },
   { id: 'diagnostics',icon: '📊', label: 'Diagnostics' },
   { id: 'router',     icon: '🔄', label: 'Router' },
@@ -20,7 +19,7 @@ const NAV = [
 ]
 
 const PANEL_TITLES = {
-  chat:        { title: 'Chat',              sub: 'Local LLM conversation' },
+  chat:        { title: 'Chat',              sub: 'Open WebUI for conversations' },
   models:      { title: 'Model Manager',     sub: 'Browse, tag, and download GGUF models' },
   diagnostics: { title: 'Diagnostics',       sub: 'Resources, profiling, memory optimization, GPU benchmarks' },
   router:      { title: 'Multi-Model Router',sub: 'Load and route between multiple models' },
@@ -100,7 +99,6 @@ export default function App() {
   // ---- Render current panel ----
   const renderPanel = () => {
     switch (activePanel) {
-      case 'chat':      return <ChatPanel      serverStatus={serverStatus} serverModel={serverModel} toast={addToast} />
       case 'models':    return <ModelManager   localModels={localModels}   toast={addToast} />
       case 'diagnostics': return <DiagnosticsPanel localModels={localModels} toast={addToast} />
       case 'router':    return <MultiModelPanel                            toast={addToast} />
@@ -134,7 +132,7 @@ export default function App() {
             <div
               key={item.id}
               className={`nav-item${activePanel === item.id ? ' active' : ''}`}
-              onClick={() => setActivePanel(item.id)}
+              onClick={() => item.external ? window.open('http://localhost:8090', '_blank') : setActivePanel(item.id)}
               id={`nav-${item.id}`}
             >
               <span className="nav-item-icon">{item.icon}</span>
