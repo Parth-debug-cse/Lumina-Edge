@@ -69,17 +69,40 @@ python3 scripts/mlx_backend.py --mode api --model mlx-community/Llama-3.2-3B-Ins
 
 **Note:** Downloaded a GGUF model? Use the **Converter** tab to convert to MLX format before loading.
 
-### Step 2 — Launch the Desktop UI
+### Step 2 — Launch Lumina Edge
+
+**Universal Launcher (Recommended):**
 
 ```bash
-cd ui
-npm install
-npm start
+# macOS / Linux
+./start_lumina.sh
+
+# Windows PowerShell
+.\start_lumina.ps1
+
+# Windows Batch
+start_lumina.bat
 ```
 
-This opens the desktop app. From here you can download models, configure hardware backends, and chat — no terminal needed.
+**API-Only Launcher:**
+```bash
+./start_api.sh
+```
 
-> Advanced users: script-based launching is available in `core/` if preferred.
+This automatically:
+- Optimizes system for inference
+- Starts the appropriate backend (MLX for Mac, llama-server for Windows/Linux)
+- Launches the API gateway and web UI
+- Opens your browser to the interface
+
+> **Manual UI Launch:** If you prefer to start only the web interface:
+> ```bash
+> cd ui
+> npm install
+> npm start
+> ```
+
+> **Windows Users:** See [WINDOWS.md](WINDOWS.md) for detailed Windows setup instructions and troubleshooting.
 
 ---
 
