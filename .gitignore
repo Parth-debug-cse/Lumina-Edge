@@ -18,6 +18,7 @@ env/
 .venv/
 .env/
 venv_rag/
+venv_pipeline/
 
 # Build directories
 bin/
@@ -28,6 +29,11 @@ dist/
 *.log
 *.cache
 .cache/
+logs/
+.lumina_run/
+vectordb/
+vectordb/*.bin
+*.sqlite3
 
 # UI build artifacts
 ui/dist/
