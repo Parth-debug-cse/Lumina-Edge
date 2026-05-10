@@ -27,10 +27,6 @@ const binDir = path.join(rootDir, 'bin');
 
 // Get Python executable - prefer venv if it exists
 function getPythonCmd() {
-  const venvPython = path.join(rootDir, 'venv', 'bin', 'python');
-  if (fs.existsSync(venvPython)) {
-    return venvPython;
-  }
   return os.platform() === 'win32' ? 'python' : 'python3';
 }
 
@@ -1252,7 +1248,8 @@ apiRouter.post('/router/load', async (req, res) => {
         '--model', modelDir,
         '--port', port.toString()
       ], {
-        stdio: ['ignore', 'pipe', 'pipe']
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, OMP_NUM_THREADS: undefined, OMP_PROC_BIND: undefined, GOMP_SPINCOUNT: undefined, MALLOC_ARENA_MAX: undefined }
       });
 
       proc.stdout.on('data', (data) => {
@@ -1476,7 +1473,7 @@ proc = spawn(finalCmd, finalArgs, {
   env: {
     ...process.env,
     // Optimize OpenMP threading for llama.cpp
-    OMP_NUM_THREADS: threads.toString(),
+    OMP_NUM_THREADS: httpThreads.toString(),
     OMP_PROC_BIND: 'close',
     OMP_PLACES: 'cores',
     // Optimize memory allocation
@@ -1971,7 +1968,8 @@ async function runStartupPipeline() {
               '--model', modelDir,
               '--port', port.toString()
             ], {
-              stdio: ['ignore', 'pipe', 'pipe']
+              stdio: ['ignore', 'pipe', 'pipe'],
+              env: { ...process.env, OMP_NUM_THREADS: undefined, OMP_PROC_BIND: undefined, GOMP_SPINCOUNT: undefined, MALLOC_ARENA_MAX: undefined }
             });
 
             proc.stdout.on('data', (data) => {
@@ -2146,7 +2144,7 @@ proc = spawn(finalCmd, finalArgs, {
   env: {
     ...process.env,
     // Optimize OpenMP threading for llama.cpp
-    OMP_NUM_THREADS: threads.toString(),
+    OMP_NUM_THREADS: httpThreads.toString(),
     OMP_PROC_BIND: 'close',
     OMP_PLACES: 'cores',
     // Optimize memory allocation
@@ -2565,6 +2563,9 @@ app.all(/^\/v1\/.*/, async (req, res) => {
         if (isMac) {
           // For MLX on Mac, use the full model path
           bodyToUse.model = path.join(modelsDir, readyModel.name);
+          // strip .safetensors/.npz extension if present — mlx_lm expects dir names
+          const modelBase = bodyToUse.model.replace(/\.(safetensors|npz)$/i, '');
+          bodyToUse.model = fs.statSync(modelBase).isDirectory() ? modelBase : path.dirname(modelBase);
         }
       }
       fetchOptions.body = JSON.stringify(bodyToUse);

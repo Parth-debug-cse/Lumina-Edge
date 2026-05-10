@@ -2,6 +2,7 @@
 # ==============================================================================
 # start_api.sh — Quick-start wrapper. All settings are read from config.json.
 # Edit config.json or use the UI Settings page to change behavior.
+# Usage: ./start_api.sh [--model path] [--port port] [--gpu vulkan|nvidia|mlx]
 # ==============================================================================
 
 cd "$(dirname "$0")"
@@ -24,10 +25,6 @@ except Exception:
     fi
 }
 
-# Default model selection (can be overridden by --model)
-# IMPORTANT: On macOS use --gpu mlx and specify an MLX model directory
-# On Linux/Windows use a GGUF file, e.g., models/your-model.gguf
-MODEL=""
 GPU="vulkan"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -52,6 +49,30 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Auto-detect model: check startup.default_model, then first .gguf (Linux/Win) or .safetensors dir (macOS)
+if [[ -z "$MODEL" ]]; then
+    MODEL="$(get_config startup.default_model '')"
+fi
+if [[ -z "$MODEL" ]]; then
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        MODEL="$(find models -maxdepth 2 -name '*.safetensors' -o -name '*.mlx' 2>/dev/null | head -1 | xargs -I{} dirname {})"
+    else
+        MODEL="$(find models -maxdepth 1 -name '*.gguf' 2>/dev/null | head -1)"
+    fi
+fi
+
+if [[ -z "$MODEL" ]]; then
+    echo "ERROR: No model found."
+    echo "  Place a model file in ./models/ and set 'model' in config.json, or:"
+    echo "  ./start_api.sh --model models/your-model.gguf"
+    echo ""
+    echo "  For macOS: use an MLX model directory, e.g.:"
+    echo "  ./start_api.sh --model models/Llama-3.2-3B/"
+    exit 1
+fi
+
+echo "Model: $MODEL"
 
 # Read all settings from config.json with defaults
 PORT="${OVERRIDE_PORT:-$(get_config api_port 8090)}"

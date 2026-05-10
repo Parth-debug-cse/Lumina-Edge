@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='[Lumina Pipeline] %(levelname)s: %(message)s')
@@ -47,7 +47,7 @@ class AgentProcessManager:
                 "llama-server",
                 "--model", agent_config.get("model_path", ""),
                 "--host", "localhost",
-                "--port", str(agent_config.get("port", 8080)),
+                "--port", str(agent_config.get("port", 8090)),
                 "--ctx-size", str(agent_config.get("ctx_size", 2048))
             ]
             

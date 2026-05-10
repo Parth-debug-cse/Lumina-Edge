@@ -30,6 +30,30 @@ You have a normal laptop. You want to run a local LLM — for privacy, offline a
 
 ## Quick Start
 
+### Step 0 — Clone the Repository
+
+```bash
+git clone https://github.com/Parth-debug-cse/Lumina-Edge.git
+cd Lumina-Edge
+```
+
+### Prerequisites
+
+| OS | Requirements |
+|----|-------------|
+| Windows | Node.js 16+, Python 3.8+, [Vulkan Runtime](https://vulkan.lunarg.com/) (for Intel/AMD Vulkan build) |
+| Linux | Python 3.8+, cmake, build-essential, [Vulkan drivers](#linux--vulkan-setup) |
+| macOS | Python 3.8+, Xcode CLI tools (`xcode-select --install`), Apple Silicon (M1–M4), Homebrew |
+
+**Install Python dependencies:**
+```bash
+# Linux / Windows
+pip install --break-system-packages -r requirements.txt
+
+# macOS (Apple Silicon)
+pip install --break-system-packages -r scripts/requirements-macos.txt
+```
+
 ### Step 1 — Get the llama.cpp binaries
 
 Download the latest release from [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases/latest) and extract **all files directly** into `Lumina-Edge/bin/`. Do not create subfolders.
@@ -43,31 +67,31 @@ Download the latest release from [ggml-org/llama.cpp](https://github.com/ggml-or
 | Linux | Intel / AMD (integrated) | `llama-bXXX-bin-ubuntu-vulkan-x64.tar.gz` |
 | Linux | NVIDIA | `llama-bXXX-bin-ubuntu-x64-cuda.tar.gz` |
 
-> **Linux:** After extracting, make scripts executable:
+> **Linux / macOS:** After extracting, make scripts and binaries executable:
 > ```bash
-> chmod +x core/*.sh
+> chmod +x start_lumina.sh start_api.sh scripts/linux_prelaunch.sh bin/llama-*
 > ```
 
 ### Step 1B — Mac (Apple Silicon) Setup
 
-Apple silicon chips use **Unified Memory**, Lumina Edge favors Apple's **MLX Framework**.
+Apple silicon chips use **Unified Memory**, so Lumina Edge uses Apple's **MLX Framework**.
 
 **⚠️ Requirements:**
 - **Apple Silicon (M1/M2/M3/M4)** — Intel Macs are not supported
 - **macOS 12.3 (Monterey)** or later
 
 ```bash
-pip install -r scripts/requirements-macos.txt
+pip install --break-system-packages -r scripts/requirements-macos.txt
 ```
 
 MLX models use **safetensors** format, not GGUF. Use MLX-native models from HuggingFace:
 
 ```bash
-# Download an MLX-native model (example: Llama 3.2 3B)
-python3 scripts/mlx_backend.py --mode api --model mlx-community/Llama-3.2-3B-Instruct-4bit --port 1234
+# Launch with an MLX-native model from HuggingFace
+python3 scripts/mlx_backend.py --mode api --model mlx-community/Llama-3.2-3B-Instruct-4bit --port 8090
 ```
 
-**Note:** Downloaded a GGUF model? Use the **Converter** tab to convert to MLX format before loading.
+**Note:** Downloaded a GGUF model? Use the **Converter** tab in the UI to convert to MLX format before loading.
 
 ### Step 2 — Launch Lumina Edge
 
@@ -86,10 +110,16 @@ start_lumina.bat
 
 **API-Only Launcher:**
 ```bash
+# Linux / macOS
 ./start_api.sh
+# With custom model:
+./start_api.sh --model models/your-model.gguf
+
+# Windows PowerShell
+.\start_api.ps1 -Model "models\your-model.gguf"
 ```
 
-This automatically:
+The launcher automatically:
 - Optimizes system for inference
 - Starts the appropriate backend (MLX for Mac, llama-server for Windows/Linux)
 - Launches the API gateway and web UI
@@ -158,7 +188,7 @@ Think of quantization like image compression — a JPEG takes up less space than
 
 Lumina Edge's API mode solves a critical problem for developers: **you should not have to rewrite application code to switch between a cloud model and a local one.**
 
-When you launch an API server, Lumina Edge exposes a REST endpoint at `http://127.0.0.1:8080/v1` that speaks the exact same protocol as OpenAI's API. A secondary management-only port is available at `http://127.0.0.1:8081`. Any application already integrated with the OpenAI Python SDK, Node.js SDK, or any HTTP client can be redirected to a local model by changing a single line — the `base_url`.
+When you launch an API server, Lumina Edge exposes a REST endpoint at `http://127.0.0.1:8090/v1` that speaks the exact same protocol as OpenAI's API. A secondary management-only port is available at `http://127.0.0.1:8081`. Any application already integrated with the OpenAI Python SDK, Node.js SDK, or any HTTP client can be redirected to a local model by changing a single line — the `base_url`.
 
 Three immediate benefits:
 
@@ -174,7 +204,7 @@ No authentication required for local connections. The endpoint accepts standard 
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:8080/v1",
+    base_url="http://localhost:8090/v1",
     api_key="not-needed"  # Required by SDK but unused locally
 )
 
@@ -212,7 +242,7 @@ for chunk in stream:
 import OpenAI from "openai";
 
 const client = new OpenAI({
-  baseURL: "http://localhost:8080/v1",
+  baseURL: "http://localhost:8090/v1",
   apiKey: "not-needed"
 });
 
@@ -242,7 +272,7 @@ $body = @{
     max_tokens  = 500
 } | ConvertTo-Json -Depth 5
 
-$r = Invoke-RestMethod -Uri "http://localhost:8080/v1/chat/completions" `
+$r = Invoke-RestMethod -Uri "http://localhost:8090/v1/chat/completions" `
      -Method POST -ContentType "application/json" -Body $body
 
 $r.choices[0].message.content
@@ -251,7 +281,7 @@ $r.choices[0].message.content
 ### cURL
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:8090/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
@@ -304,7 +334,7 @@ response2 = requests.post('http://127.0.0.1:8001/v1/chat/completions', json=...)
 
 ## Management API Reference
 
-All endpoints available on **port 8080** (inference + management) and **port 8081** (management only).
+All endpoints available on **port 8090** (inference + management) and **port 8081** (management only).
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -350,7 +380,16 @@ On Linux, ensure executables have permission: `chmod +x bin/llama-*`
 <details>
 <summary><strong>No models appear in the selection list</strong></summary>
 
-The launcher scans `models/*.gguf`. Run `model-manager.bat` / `./model-manager.sh` to download a model, or manually place any `.gguf` file in `models/`. Files in other formats (`.safetensors`, `.bin`) will not appear.
+The launcher scans `models/*.gguf` (Linux/Windows) or model directories (macOS). Run the web UI, go to the **Model Manager** tab and click **Download**, or use the API directly:
+
+```bash
+# Download via API (put model file in models/ first)
+curl -X POST http://localhost:8090/api/download-model \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/mistral-7b-instruct-v0.2.Q4_K_M.gguf", "filename": "mistral-7b-instruct-v0.2.Q4_K_M.gguf"}'
+```
+
+Manually place any `.gguf` file in `models/` (Linux/Windows) or a full HuggingFace model directory in `models/` (macOS). Files in other formats (`.safetensors`, `.bin`) will not appear for Linux/Windows.
 </details>
 
 <details>
@@ -365,6 +404,23 @@ The launcher scans `models/*.gguf`. Run `model-manager.bat` / `./model-manager.s
 <summary><strong>Vulkan initialization failed</strong></summary>
 
 Install the Vulkan Runtime from [vulkan.lunarg.com](https://vulkan.lunarg.com), then update your GPU drivers. Verify with: `vulkaninfo | grep "GPU id"`. A missing or outdated runtime is the most common cause on Windows laptops.
+
+#### Linux — Vulkan Setup (Intel / AMD)
+
+```bash
+# Intel integrated graphics
+sudo apt install mesa-vulkan-drivers vulkan-utils
+
+# AMD GPU (RADV driver)
+sudo apt install mesa-vulkan-drivers vulkan-utils
+export RADV_PERFTEST=gpu    # optional: enables AMD-specific optimizations
+
+# Verify installation
+vulkaninfo | grep "GPU id"
+```
+
+
+Install the Vulkan Runtime from [vulkan.lunarg.com](https://vulkan.lunarg.com), then update your GPU drivers. Verify with: `vulkaninfo | grep "GPU id"`. A missing or outdated runtime is the most common cause on Windows laptops.
 </details>
 
 <details>
@@ -374,17 +430,17 @@ Run `nvidia-smi` to confirm your GPU is detected. If it is, update drivers to 53
 </details>
 
 <details>
-<summary><strong>Port 8080 already in use</strong></summary>
+<summary><strong>Port 8090 already in use</strong></summary>
 
-The API server listens on port **8080** (primary, inference + management) and **8081** (secondary, management only). To resolve conflicts:
+The API server listens on port **8090** (primary, inference + management) and **8081** (secondary, management only). To resolve conflicts:
 
 ```bash
 # Windows
-netstat -ano | findstr ":8080"
+netstat -ano | findstr ":8090"
 taskkill /PID <PID> /F
 
 # Linux
-ss -tlnp | grep 8080
+ss -tlnp | grep 8090
 sudo kill -9 <PID>
 ```
 </details>
@@ -429,7 +485,7 @@ A full system reboot also restores all services automatically.
 
 ### v2.0 — Ecosystem *(In Progress)*
 - [x] Plugin architecture for custom backends (DirectML, OpenCL, ROCm)
-- [x] Dual-port API surface (8080 inference + 8081 management)
+- [x] Dual-port API surface (8090 inference + 8081 management)
 - [x] Model unload with SIGTERM→SIGKILL escalation (no more hanging)
 - [x] Startup pipeline: system optimization + auto-load on launch
 - [x] Inference diagnostics & profiling (tokens/sec, latency breakdown)

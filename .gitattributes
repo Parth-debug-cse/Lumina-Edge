@@ -2,3 +2,7 @@
 *.sh text eol=lf
 *.ps1 text eol=crlf
 *.bat text eol=crlf
+*.cjs text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+ui/package.json text eol=lf

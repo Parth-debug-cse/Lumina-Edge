@@ -36,7 +36,7 @@ This checks:
 Create and activate a virtual environment (recommended):
 
 ```cmd
-cd "C:\Users\likit\OneDrive\Desktop\Lumina Edge\2026-Lumina-Edge-LLM-Inference-Framework"
+cd "path\to\Lumina-Edge"
 python -m venv venv
 venv\Scripts\activate
 ```

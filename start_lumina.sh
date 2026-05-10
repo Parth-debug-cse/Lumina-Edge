@@ -18,10 +18,17 @@ OW_PORT="${LUMINA_OW_PORT:-8080}"
 MODEL_PATH="${LUMINA_MODEL:-}"
 
 auto_find_model() {
-    # Try config.json first
+    # Try startup.default_model first
     local config_model
     config_model="$(get_config startup.default_model '')"
-    if [[ -n "$config_model" && -d "$config_model" || -f "$config_model" ]]; then
+    if [[ -n "$config_model" && (-d "$config_model" || -f "$config_model") ]]; then
+        echo "$config_model"
+        return 0
+    fi
+
+    # Fall back to top-level "model" key (used by launch_api.ps1 for consistency)
+    config_model="$(get_config model '')"
+    if [[ -n "$config_model" && (-d "$config_model" || -f "$config_model") ]]; then
         echo "$config_model"
         return 0
     fi
@@ -64,10 +71,12 @@ stop_existing() {
         done < "$PID_FILE"
         > "$PID_FILE"
     fi
-    # Fallback: kill by pattern
-    pkill -f 'mlx_backend.*api' 2>/dev/null || true
-    pkill -f 'api-server.js' 2>/dev/null || true
-    pkill -f 'vite' 2>/dev/null || true
+    # Fallback: kill by pattern (Linux only — pkill not available on macOS by default)
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        pkill -f 'mlx_backend.*api' 2>/dev/null || true
+        pkill -f 'api-server.js' 2>/dev/null || true
+        pkill -f 'vite' 2>/dev/null || true
+    fi
     sleep 1
 }
 
@@ -78,7 +87,15 @@ get_config() {
         python3 -c "
 import json
 try:
-    v = json.load(open('$ROOT/config.json')).get('$key')
+    cfg = json.load(open('$ROOT/config.json'))
+    parts = '$key'.split('.')
+    v = cfg
+    for p in parts:
+        if isinstance(v, dict) and p in v:
+            v = v[p]
+        else:
+            v = None
+            break
     print(v if v is not None else $default)
 except:
     print($default)
@@ -164,7 +181,6 @@ start_backend() {
         log "  MLX backend → port $MLX_PORT"
 
         LUMINA_MLX_PORT="$MLX_PORT" \
-        LUMINA_API_PORT="$MLX_PORT" \
         python3 "$SCRIPTS/mlx_backend.py" \
             --mode api \
             --model "$MODEL_PATH" \
@@ -200,6 +216,18 @@ start_backend() {
         N_GPU_LAYERS=$(get_config n_gpu_layers 15)
         BATCH_SIZE=$(get_config batch_size 256)
         UBATCH_SIZE=$(get_config ubatch_size 256)
+        TEMPERATURE=$(get_config temperature 0.7)
+        TOP_P=$(get_config top_p 0.9)
+        TOP_K=$(get_config top_k 40)
+        REPEAT_PENALTY=$(get_config repeat_penalty 1.1)
+        MIN_P=$(get_config min_p 0.05)
+        HTTP_THREADS=$(get_config http_threads 2)
+        FLASH_ATTN=$(get_config flash_attn true)
+
+        FLASH_ATTN_FLAG=""
+        if [[ "$FLASH_ATTN" == "true" ]]; then
+            FLASH_ATTN_FLAG="--flash-attn"
+        fi
 
         BACKEND_LOG="$RUNDIR/llama_server.log"
         log "  llama-server → port $API_PORT"
@@ -212,7 +240,13 @@ start_backend() {
             --n-gpu-layers "$N_GPU_LAYERS" \
             --batch-size "$BATCH_SIZE" \
             --ubatch-size "$UBATCH_SIZE" \
-            --flash-attn \
+            --threads-http "$HTTP_THREADS" \
+            --temperature "$TEMPERATURE" \
+            --top-p "$TOP_P" \
+            --top-k "$TOP_K" \
+            --repeat-penalty "$REPEAT_PENALTY" \
+            --min-p "$MIN_P" \
+            $FLASH_ATTN_FLAG \
             >> "$BACKEND_LOG" 2>&1 &
 
         local ll_pid=$!
@@ -388,7 +422,7 @@ print_summary() {
     echo "  Logs:        $RUNDIR/"
     echo "  PIDs:        $PID_FILE"
     echo ""
-    echo "  To stop:     kill \$(cat $PID_FILE)"
+    echo "  To stop:     pkill -f 'llama-server' 2>/dev/null; pkill -f 'api-server.js' 2>/dev/null; pkill -f 'vite' 2>/dev/null || true"
     echo "============================================================"
     echo ""
 

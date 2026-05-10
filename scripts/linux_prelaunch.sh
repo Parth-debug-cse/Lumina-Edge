@@ -87,7 +87,8 @@ echo "20" | sudo -n tee /proc/sys/vm/dirty_ratio &>/dev/null || true
 # These are read by llama-server when it initializes Vulkan
 export MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE=1
 export ANV_QUEUE_THREAD_DISABLE=0
-export RADV_PERFTEST=""  # clear any AMD flags that might interfere
+# No AMD Vulkan env vars here — linux_prelaunch.sh targets Intel iGPU/Vulkan
+# AMD users should use AMD-specific scripts or set RADV flags themselves
 
 # Check if Vulkan is available for Intel
 if command -v vulkaninfo &>/dev/null; then

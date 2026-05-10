@@ -41,7 +41,7 @@ try:
     import mlx.core as mx
     import mlx_lm
 except ImportError:
-    print("❌ ERROR: MLX packages not found. Please install requirements-mac.txt")
+    print("❌ ERROR: MLX packages not found. Please install: pip install --break-system-packages -r scripts/requirements-macos.txt")
     sys.exit(1)
 
 # D: Memory limit - set after MLX import if configured
@@ -323,7 +323,7 @@ def load_config():
     """Load configuration from config.json with comprehensive defaults."""
     config_path = os.path.join(os.path.dirname(__file__), "..", "config.json")
     defaults = {
-        "api_port": 1234,
+        "api_port": 8090,
         "temperature": 0.7,
         "top_p": 0.9,
         "repeat_penalty": 1.1,
@@ -778,8 +778,8 @@ def launch_api_direct(model_path, port):
 def launch_api(model_path, port=None):
     abs_model_path = os.path.abspath(model_path)
     config = load_config()
-    # Use provided port, or config api_port, or default 1234
-    actual_port = port if port is not None else config.get('api_port', 1234)
+    # Use provided port, or config api_port, or default 8090
+    actual_port = port if port is not None else config.get('api_port', 8090)
     
     # Determine port source for logging
     port_source = "CLI arg" if port is not None else ("config.json" if 'api_port' in config else "default")

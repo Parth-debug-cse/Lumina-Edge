@@ -374,6 +374,13 @@ class SystemOptimizer:
         
     def optimize_config(self):
         """Generate optimized configuration based on system detection"""
+        config_path = os.path.join(os.path.dirname(__file__), '..', 'config.json')
+        try:
+            with open(config_path, 'r') as f:
+                existing_config = json.load(f)
+        except Exception:
+            existing_config = {}
+
         config = {}
         
         # CPU-based optimizations
@@ -548,9 +555,12 @@ class SystemOptimizer:
         config['numa_mode'] = 'distribute' if numa_node_count > 1 else 'none'
         config['numa_nodes'] = numa_node_count
         
-        # API configuration
-        config['api_port'] = 1234
-        config['api_port_secondary'] = 8081
+        # API configuration — only set if not already in existing config
+        # (we don't override user-set api_port to avoid port conflicts)
+        if 'api_port' not in existing_config:
+            config['api_port'] = 8090
+        if 'api_port_secondary' not in existing_config:
+            config['api_port_secondary'] = 8081
         
         self.optimized_config = config
         return config
@@ -561,8 +571,6 @@ class SystemOptimizer:
             config_path = os.path.join(os.path.dirname(__file__), '..', 'config.json')
             
         try:
-            # Load existing config to preserve user settings
-            existing_config = {}
             if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
                     existing_config = json.load(f)

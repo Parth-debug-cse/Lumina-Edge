@@ -1,3 +1,7 @@
+# ==============================================================================
+# Lumina Edge .gitignore
+# ==============================================================================
+
 # Model files (all formats)
 models/*.gguf
 models/*.safetensors
@@ -12,13 +16,14 @@ models/*.pb
 models/*/
 !models/.gitkeep
 
-# Virtual environments
+# Virtual environments — all variants
 venv/
 env/
 .venv/
 .env/
 venv_rag/
 venv_pipeline/
+venv_mlx/
 
 # Build directories
 bin/
@@ -45,12 +50,14 @@ ui/.env.local
 # Python
 __pycache__/
 scripts/__pycache__/
+orchestrator/__pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
 pip-log.txt
 pip-delete-this-directory.txt
+.pytest_cache/
 
 # OS files
 .DS_Store
@@ -67,3 +74,10 @@ Thumbs.db
 # Package files
 *.egg-info/
 .eggs/
+
+# Untracked entry point scripts (platform-specific)
+# These are supplements to start_lumina.{sh,ps1,bat} for API-only use
+requirements.txt
+start_api.sh
+start_api.ps1
+pipeline_api.py

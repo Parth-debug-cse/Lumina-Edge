@@ -13,7 +13,7 @@ $ErrorActionPreference = "Stop"
 
 # Get script directory
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RootDir = Split-Path -Parent $ScriptDir
+$RootDir = if ($ScriptDir -match '[\\/]core$') { Split-Path -Parent $ScriptDir } else { $ScriptDir }
 Set-Location $RootDir
 
 # Helper function to read from config.json

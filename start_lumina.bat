@@ -181,11 +181,33 @@ call :get_config "ctx_size" "16384" "CTX_SIZE"
 call :get_config "n_gpu_layers" "15" "N_GPU_LAYERS"
 call :get_config "batch_size" "256" "BATCH_SIZE"
 call :get_config "ubatch_size" "256" "UBATCH_SIZE"
+call :get_config "temperature" "0.7" "TEMPERATURE"
+call :get_config "top_p" "0.9" "TOP_P"
+call :get_config "top_k" "40" "TOP_K"
+call :get_config "repeat_penalty" "1.1" "REPEAT_PENALTY"
+call :get_config "min_p" "0.05" "MIN_P"
+call :get_config "http_threads" "2" "HTTP_THREADS"
+call :get_config "flash_attn" "true" "FLASH_ATTN"
+call :get_config "use_mlock" "true" "USE_MLOCK"
+call :get_config "kv_quant" "q8_0" "KV_QUANT"
+call :get_config "cont_batching" "true" "CONT_BATCHING"
 
 set "BACKEND_LOG=%RUNDIR%\llama_server.log"
 call :log "  llama-server → port %API_PORT%"
 
-start /B "" "%LLAMA_SERVER%" -m "%MODEL_PATH%" --port "%API_PORT%" --host 127.0.0.1 --ctx-size "%CTX_SIZE%" --n-gpu-layers "%N_GPU_LAYERS%" --batch-size "%BATCH_SIZE%" --ubatch-size "%UBATCH_SIZE%" --flash-attn > "%BACKEND_LOG%" 2>&1
+if "%FLASH_ATTN%"=="true" (
+    set "FLASH_FLAG=--flash-attn"
+) else (
+    set "FLASH_FLAG="
+)
+
+if "%CONT_BATCHING%"=="true" (
+    set "CB_FLAG=--cont-batching"
+) else (
+    set "CB_FLAG=--no-cont-batching"
+)
+
+start /B "" "%LLAMA_SERVER%" -m "%MODEL_PATH%" --port "%API_PORT%" --host 127.0.0.1 --ctx-size "%CTX_SIZE%" --n-gpu-layers "%N_GPU_LAYERS%" --batch-size "%BATCH_SIZE%" --ubatch-size "%UBATCH_SIZE%" --threads-http "%HTTP_THREADS%" --temperature "%TEMPERATURE%" --top-p "%TOP_P%" --top-k "%TOP_K%" --repeat-penalty "%REPEAT_PENALTY%" --min-p "%MIN_P%" --cache-type-k "%KV_QUANT%" --cache-type-v "%KV_QUANT%" %FLASH_FLAG% %CB_FLAG% > "%BACKEND_LOG%" 2>&1
 
 REM Get PID of the started process (approximation)
 for /f "tokens=2" %%a in ('tasklist /FI "IMAGENAME eq llama-server.exe" /FO csv ^| find "llama-server.exe"') do (

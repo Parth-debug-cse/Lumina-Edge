@@ -82,19 +82,32 @@ function Get-Config {
     if (Test-Path $configFile) {
         try {
             $config = Get-Content $configFile -Raw | ConvertFrom-Json
-            if ($config.PSObject.Properties.Name -contains $Key) {
-                return $config.$Key
+            $parts = $Key -split '\.'
+            $value = $config
+            foreach ($part in $parts) {
+                if ($value.PSObject.Properties.Name -contains $part) {
+                    $value = $value.$part
+                } else {
+                    return $Default
+                }
             }
+            return $value
         } catch {
-            # Fall through to default
+            return $Default
         }
     }
     return $Default
 }
 
 function AutoFind-Model {
-    # Try config.json first
+    # Try startup.default_model first
     $configModel = Get-Config "startup.default_model" ""
+    if ($configModel -and (Test-Path $configModel)) {
+        return $configModel
+    }
+
+    # Fall back to top-level "model" key (used by launch_api.ps1 for consistency)
+    $configModel = Get-Config "model" ""
     if ($configModel -and (Test-Path $configModel)) {
         return $configModel
     }
@@ -176,11 +189,18 @@ function Start-Backend {
     $N_GPU_LAYERS = Get-Config "n_gpu_layers" "15"
     $BATCH_SIZE = Get-Config "batch_size" "256"
     $UBATCH_SIZE = Get-Config "ubatch_size" "256"
-    
+    $TEMPERATURE = Get-Config "temperature" "0.7"
+    $TOP_P = Get-Config "top_p" "0.9"
+    $TOP_K = Get-Config "top_k" "40"
+    $REPEAT_PENALTY = Get-Config "repeat_penalty" "1.1"
+    $MIN_P = Get-Config "min_p" "0.05"
+    $HTTP_THREADS = Get-Config "http_threads" "2"
+    $FLASH_ATTN = Get-Config "flash_attn" "true"
+
     $BACKEND_LOG = Join-Path $RUNDIR "llama_server.log"
     Write-Log "  llama-server → port $API_PORT"
-    
-    $process = Start-Process -FilePath $LLAMA_SERVER -ArgumentList @(
+
+    $Arguments = @(
         "-m", $MODEL_PATH,
         "--port", $API_PORT,
         "--host", "127.0.0.1",
@@ -188,8 +208,18 @@ function Start-Backend {
         "--n-gpu-layers", $N_GPU_LAYERS,
         "--batch-size", $BATCH_SIZE,
         "--ubatch-size", $UBATCH_SIZE,
-        "--flash-attn"
-    ) -RedirectStandardOutput $BACKEND_LOG -RedirectStandardError $BACKEND_LOG -PassThru
+        "--threads-http", $HTTP_THREADS,
+        "--temperature", $TEMPERATURE,
+        "--top-p", $TOP_P,
+        "--top-k", $TOP_K,
+        "--repeat-penalty", $REPEAT_PENALTY,
+        "--min-p", $MIN_P
+    )
+    if ($FLASH_ATTN -eq $true) {
+        $Arguments += "--flash-attn"
+    }
+
+    $process = Start-Process -FilePath $LLAMA_SERVER -ArgumentList $Arguments -RedirectStandardOutput $BACKEND_LOG -RedirectStandardError $BACKEND_LOG -PassThru
     
     $ll_pid = $process.Id
     Add-Content -Path $PID_FILE -Value "$ll_pid llama_server"

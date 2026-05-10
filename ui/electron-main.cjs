@@ -34,9 +34,9 @@ function isPortOpen(port, timeout = 5000) {
 function startAPIServer() {
   return new Promise((resolve, reject) => {
     // First, check if server is already running
-    isPortOpen(8080, 1000).then((isReady) => {
+    isPortOpen(8090, 1000).then((isReady) => {
       if (isReady) {
-        console.log('API server is already running on port 8080');
+        console.log('API server is already running on port 8090');
         resolve();
         return;
       }
@@ -78,9 +78,9 @@ function startAPIServer() {
 
         // Wait for server to be ready
         const checkReady = async () => {
-          const isReady = await isPortOpen(8080, 10000);
+          const isReady = await isPortOpen(8090, 10000);
           if (isReady) {
-            console.log('API server started successfully on port 8080');
+            console.log('API server started successfully on port 8090');
             resolve();
           } else {
             reject(new Error('API server failed to start within timeout'));
