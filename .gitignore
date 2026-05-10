@@ -74,10 +74,3 @@ Thumbs.db
 # Package files
 *.egg-info/
 .eggs/
-
-# Untracked entry point scripts (platform-specific)
-# These are supplements to start_lumina.{sh,ps1,bat} for API-only use
-requirements.txt
-start_api.sh
-start_api.ps1
-pipeline_api.py

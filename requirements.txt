@@ -1,0 +1,13 @@
+# Lumina Edge — Runtime Dependencies (Linux / Windows)
+# Install with: pip install --break-system-packages -r requirements.txt
+#
+# NOTE: macOS/Apple Silicon uses scripts/requirements-macos.txt instead.
+
+psutil>=5.9.0
+requests>=2.28.0
+huggingface-hub>=0.16.0
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+tiktoken>=0.3.0
+pymupdf>=1.23.0
+python-docx>=0.8.0
