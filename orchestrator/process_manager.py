@@ -3,6 +3,7 @@ Process Manager for Pipeline Agents
 Manages lifecycle of llama-server subprocesses for each agent.
 """
 
+import argparse
 import json
 import logging
 import os

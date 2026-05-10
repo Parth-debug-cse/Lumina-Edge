@@ -62,6 +62,8 @@ class ModelInstance:
     quantization: str = "Q4_K_M"
     context_size: int = get_context_size()
     gpu_layers: Optional[int] = None
+    priority: int = 1
+    weight: int = 1
     
     def to_dict(self) -> Dict:
         """Convert to dictionary"""
@@ -80,10 +82,67 @@ class ModelRouter:
     def __init__(self, config_path: str = "config.json"):
         self.config_path = Path(config_path)
         self.models: Dict[str, ModelInstance] = {}
-        self.routing_policy = "round-robin"  # round-robin, load-balanced, first-available
+        self.routing_policy = "round-robin"
         self.model_lock = threading.Lock()
-        self._rr_index = 0  # For true round-robin
+        self._rr_index = 0
+        self.health_check_interval = 10
+        self.health_check_timeout = 5
+        self.health_check_active = False
+        self._health_thread = None
+        self.is_macos = is_apple_silicon()
+        self.multi_model_config = {}
         self.load_config()
+    
+    def start_health_checks(self):
+        """Start background health check thread"""
+        if self.health_check_active:
+            return
+        self.health_check_active = True
+        self._health_thread = threading.Thread(target=self._health_check_loop, daemon=True)
+        self._health_thread.start()
+        logger.info(f"✓ Started health checks (interval: {self.health_check_interval}s)")
+    
+    def stop_health_checks(self):
+        """Stop background health check thread"""
+        self.health_check_active = False
+        if self._health_thread:
+            self._health_thread.join(timeout=5)
+            logger.info("✓ Stopped health checks")
+    
+    def _health_check_loop(self):
+        """Background health check loop"""
+        while self.health_check_active:
+            self._run_health_checks()
+            time.sleep(self.health_check_interval)
+    
+    def _run_health_checks(self):
+        """Run health check on all models"""
+        with self.model_lock:
+            model_list = list(self.models.values())
+        
+        for model in model_list:
+            is_healthy = self._check_model_health(model)
+            if is_healthy and model.status == ModelStatus.IDLE:
+                logger.info(f"✓ Model {model.id} recovered, marking ready")
+                with self.model_lock:
+                    self.models[model.id].status = ModelStatus.READY
+            elif not is_healthy and model.status == ModelStatus.READY:
+                logger.warning(f"⚠ Model {model.id} unhealthy, marking idle")
+                with self.model_lock:
+                    self.models[model.id].status = ModelStatus.IDLE
+    
+    def _check_model_health(self, model: ModelInstance) -> bool:
+        """Check if model endpoint is healthy"""
+        # AUDIT FIX: use /health for LLama server (Linux/Windows), /v1/models for MLX (macOS)
+        endpoint = "/health" if not self.is_macos else "/v1/models"
+        url = f"http://127.0.0.1:{model.port}{endpoint}"
+        
+        try:
+            req = urllib.request.Request(url, method='GET')
+            with urllib.request.urlopen(req, timeout=self.health_check_timeout) as response:
+                return response.status == 200
+        except Exception:
+            return False
     
     def load_config(self):
         """Load configuration"""
@@ -103,10 +162,16 @@ class ModelRouter:
                     self.use_mlock = config.get('use_mlock', True)
                     self.flash_attn = config.get('flash_attn', True)
                     self.kv_cache_quant = config.get('kv_cache_quant', 'q8_0')
-                    self.ctx_size = config.get('ctx_size', 4096)  # Read from config, fallback to 4096
+                    self.ctx_size = config.get('ctx_size', 4096)
+                    # AUDIT FIX: read health check interval from config.json
+                    multi_model = config.get('multi_model', {})
+                    self.multi_model_config = multi_model
+                    self.health_check_interval = multi_model.get('health_check_interval', 10)
+                    self.health_check_timeout = multi_model.get('health_check_timeout', 5)
                     logger.info(f"✓ Loaded routing policy: {self.routing_policy}")
                     logger.info(f"✓ Loaded GPU layers: {self.n_gpu_layers}")
                     logger.info(f"✓ Loaded context size: {self.ctx_size}")
+                    logger.info(f"✓ Loaded health check interval: {self.health_check_interval}s, timeout: {self.health_check_timeout}s")
             except Exception as e:
                 logger.warning(f"Could not load config: {e}")
                 # Set defaults if config loading fails
@@ -122,6 +187,8 @@ class ModelRouter:
                 self.flash_attn = True
                 self.kv_cache_quant = 'q8_0'
                 self.ctx_size = 4096
+                self.health_check_interval = 10
+                self.health_check_timeout = 5
         else:
             # Set defaults if no config file
             self.n_gpu_layers = 'auto'
@@ -136,8 +203,52 @@ class ModelRouter:
             self.flash_attn = True
             self.kv_cache_quant = 'q8_0'
             self.ctx_size = 4096
+            self.health_check_interval = 10
+            self.health_check_timeout = 5
     
-    def register_model(self, model_path: str, port: int, quantization: str = "Q4_K_M") -> ModelInstance:
+    def load_instances_from_config(self):
+        """Load model instances from config.json"""
+        if not self.config_path.exists():
+            return
+        
+        try:
+            with open(self.config_path, 'r') as f:
+                config = json.load(f)
+            
+            multi_model = config.get('multi_model', {})
+            instances = multi_model.get('instances', [])
+            
+            for inst in instances:
+                host = inst.get('host', '127.0.0.1')
+                port = inst.get('port', 9001)
+                priority = inst.get('priority', 1)
+                weight = inst.get('weight', 1)
+                
+                # Register an instance on this port (model path and process ID will be set when actually started)
+                model_id = str(uuid.uuid4())[:8]
+                
+                instance = ModelInstance(
+                    id=model_id,
+                    name=f"model_{port}",
+                    model_path="",
+                    port=port,
+                    priority=priority,
+                    weight=weight,
+                    status=ModelStatus.IDLE
+                )
+                
+                with self.model_lock:
+                    self.models[model_id] = instance
+                
+                logger.info(f"✓ Loaded instance from config: {host}:{port}, priority={priority}, weight={weight}")
+            
+            # AUDIT FIX: start health checks after loading instances
+            self.start_health_checks()
+            
+        except Exception as e:
+            logger.warning(f"Could not load instances from config: {e}")
+    
+    def register_model(self, model_path: str, port: int, quantization: str = "Q4_K_M", priority: int = 1, weight: int = 1) -> ModelInstance:
         """Register a new model instance"""
         model_id = str(uuid.uuid4())[:8]
         model_name = Path(model_path).stem
@@ -149,13 +260,15 @@ class ModelRouter:
             port=port,
             quantization=quantization,
             status=ModelStatus.IDLE,
-            context_size=self.ctx_size  # Use ctx_size from router config
+            context_size=self.ctx_size,
+            priority=priority,
+            weight=weight
         )
         
         with self.model_lock:
             self.models[model_id] = instance
         
-        logger.info(f"✓ Registered model: {model_name} (ID: {model_id}) on port {port}")
+        logger.info(f"✓ Registered model: {model_name} (ID: {model_id}) on port {port}, priority={priority}, weight={weight}")
         return instance
     
     def get_model_status(self, model_id: str) -> Optional[ModelInstance]:
@@ -193,11 +306,23 @@ class ModelRouter:
             return ready_models[0]
         
         if self.routing_policy == "round-robin":
-            # True round-robin: cycle through all ready models
+            # AUDIT FIX: lock protects read+increment to prevent race condition between two concurrent requests
             with self.model_lock:
-                selected = ready_models[self._rr_index % len(ready_models)]
+                index = self._rr_index % len(ready_models)
                 self._rr_index += 1
-            return selected
+                return ready_models[index]
+        
+        elif self.routing_policy == "priority":
+            # AUDIT FIX: priority-based routing - higher priority first, fallback to lower priority if unhealthy
+            # Sort by priority descending, then use round-robin within same priority level
+            by_priority = sorted(ready_models, key=lambda m: (-m.priority, m.inference_count))
+            highest_priority = by_priority[0].priority
+            top_group = [m for m in by_priority if m.priority == highest_priority]
+            # Round-robin within same priority group
+            with self.model_lock:
+                index = self._rr_index % len(top_group)
+                self._rr_index += 1
+                return top_group[index]
         
         elif self.routing_policy == "load-balanced":
             # Balance by inference count, skip dead processes
@@ -368,7 +493,8 @@ class MultiModelServer:
         self.scripts_path = Path(scripts_path)
         self.models_dir = Path(models_dir)
         self.router = ModelRouter()
-        self.start_port = 8000  # Base port for models
+        # AUDIT FIX: Use base_port from config (default 9000), not 8000 which conflicts with pipeline API
+        self.start_port = self.router.multi_model_config.get('base_port', 9000)
         self.server_processes = {}
         self.is_macos = is_apple_silicon()
 
@@ -590,6 +716,67 @@ class MultiModelServer:
 
         self.server_processes.clear()
         logger.info("✓ All models shut down")
+
+
+class RouterProxy:
+    """HTTP proxy that routes requests to model instances with retry logic"""
+    
+    def __init__(self, router: ModelRouter, host: str = "127.0.0.1", port: int = 9000):
+        self.router = router
+        self.host = host
+        self.port = port
+        self.max_retries = 3
+        self.request_timeout = 300
+    
+    def proxy_request(self, method: str, path: str, headers: Dict, body: Optional[bytes] = None) -> Tuple[int, Dict, bytes]:
+        """
+        Proxy request to backend model with retry on failure.
+        
+        Returns: (status_code, response_headers, response_body)
+        """
+        last_error = None
+        
+        for attempt in range(self.max_retries):
+            model = self.router.select_model()
+            if not model:
+                return (503, {}, b'{"error": "No models available"}')
+            
+            backend_url = f"http://{self.router.models[model.id].port if hasattr(self.router.models[model.id], 'port') and self.router.models[model.id].port else 9001}"
+            
+            try:
+                url = f"http://127.0.0.1:{model.port}{path}"
+                
+                req = urllib.request.Request(
+                    url,
+                    data=body,
+                    headers=headers,
+                    method=method
+                )
+                
+                with urllib.request.urlopen(req, timeout=self.request_timeout) as response:
+                    response_headers = dict(response.headers)
+                    response_body = response.read()
+                    
+                    if response.status == 200:
+                        return (response.status, response_headers, response_body)
+                    else:
+                        # AUDIT FIX: retry on non-200 status, try next instance
+                        logger.warning(f"Model {model.id} returned {response.status}, retrying...")
+                        last_error = (response.status, response_body)
+                        continue
+                        
+            except Exception as e:
+                logger.warning(f"Request to model {model.id} failed: {e}, attempt {attempt + 1}/{self.max_retries}")
+                last_error = (500, str(e).encode())
+                continue
+        
+        # All retries exhausted
+        status, body = last_error if last_error else (503, b'{"error": "All retries failed"}')
+        return (status, {}, body)
+    
+    def handle_request(self, method: str, path: str, headers: Dict, body: Optional[bytes] = None) -> Tuple[int, Dict, bytes]:
+        """Handle incoming request with retry logic"""
+        return self.proxy_request(method, path, headers, body)
 
 
 class AgentDispatcher:

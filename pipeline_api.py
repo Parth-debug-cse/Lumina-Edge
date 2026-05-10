@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
 from orchestrator.pipeline import Agent, PipelineOrchestrator, create_orchestrator_from_config, load_config
 
 # Configure logging
@@ -28,6 +29,15 @@ app = FastAPI(
     title="Lumina Pipeline API",
     description="Multi-Agent Pipeline Orchestrator API",
     version="1.0.0"
+)
+
+# AUDIT FIX: Add CORS middleware for OpenWebUI and browser access
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Global variables
@@ -199,14 +209,40 @@ async def chat_completions(request: Dict[str, Any]):
         }
         
         if stream:
-            # For streaming, return a generator
+            # AUDIT FIX: Proper SSE streaming response
             async def generate():
-                yield f"data: {json.dumps(response)}\n\n"
+                # Stream each chunk as SSE
+                for chunk in final_output.split():
+                    chunk_data = {
+                        "id": f"chatcmpl-{int(time.time())}",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": request.get("model", "lumina-default"),
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": chunk + " "},
+                            "finish_reason": None
+                        }]
+                    }
+                    yield f"data: {json.dumps(chunk_data)}\n\n"
+                # Send final chunk
+                final_data = {
+                    "id": f"chatcmpl-{int(time.time())}",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": request.get("model", "lumina-default"),
+                    "choices": [{
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop"
+                    }]
+                }
+                yield f"data: {json.dumps(final_data)}\n\n"
                 yield "data: [DONE]\n\n"
             
-            return JSONResponse(
-                content=generate(),
-                media_type="text/plain"
+            return StreamingResponse(
+                generate(),
+                media_type="text/event-stream"
             )
         else:
             return response

@@ -79,13 +79,18 @@
   "_comment_reserved": "--- Reserved / Future Use ---",
   "_comment_reserved_multi_model": "multi_model: Reserved — not currently active.",
   "multi_model": {
-    "base_port": 8000,
+    "base_port": 9000,
     "max_parallel_loads": 4,
     "health_check_interval": 10,
+    "health_check_timeout": 5,
     "startup_timeout": 60,
     "default_max_tokens": 512,
     "default_temperature": 0.7,
-    "pipeline_stop_on_error": true
+    "pipeline_stop_on_error": true,
+    "instances": [
+      {"host": "127.0.0.1", "port": 9001, "priority": 1, "weight": 1},
+      {"host": "127.0.0.1", "port": 9002, "priority": 1, "weight": 1}
+    ]
   },
   "_comment_reserved_startup": "startup: Reserved for startup pipeline control.",
   "startup": {
@@ -93,13 +98,44 @@
     "auto_load_model": false,
     "default_model": null
   },
+  "pipeline": {
+    "default_mode": "sequential",
+    "max_parallel": 2,
+    "timeout": 300,
+    "retry_on_error": true
+  },
+  "agents": {
+    "analyst": {
+      "name": "analyst",
+      "port": 8001,
+      "model_path": "",
+      "description": "Analyzes and summarizes information"
+    },
+    "writer": {
+      "name": "writer",
+      "port": 8002,
+      "model_path": "",
+      "description": "Generates final output"
+    }
+  },
+  "api": {
+    "host": "0.0.0.0",
+    "port": 8000
+  },
   "_comment_reserved_rag": "RAG settings: Reserved for future use. Currently handled by scripts/ingest_docs.py and scripts/query_docs.py directly.",
   "use_case": "default",
   "system_prompt_preset": "presets/default.txt",
+  "system_prompt_preset_legal": "presets/legal.txt",
+  "system_prompt_preset_hr": "presets/hr.txt",
+  "system_prompt_preset_ngo": "presets/ngo.txt",
   "rag_enabled": true,
   "vectordb_path": "vectordb",
   "embedding_model": "all-MiniLM-L6-v2",
   "chunk_size": 512,
   "chunk_overlap": 50,
-  "retrieval_top_k": 5
+  "retrieval_top_k": 5,
+  "retrieval_top_k_legal": 5,
+  "retrieval_top_k_hr": 3,
+  "retrieval_top_k_ngo": 4,
+  "retrieval_threshold": 0.3
 }

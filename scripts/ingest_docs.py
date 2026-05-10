@@ -8,6 +8,7 @@ Cross-platform (Windows, Linux, macOS)
 import os
 import json
 import sys
+import hashlib
 from pathlib import Path
 from typing import List, Dict
 import argparse
@@ -125,6 +126,25 @@ def chunk_text(text: str, chunk_size: int = 512, overlap: int = 50, verbose: boo
     
     return chunks
 
+def compute_document_hash(file_path: str, text: str) -> str:
+    """Compute SHA256 hash of document content for deduplication"""
+    hasher = hashlib.sha256()
+    hasher.update(file_path.encode('utf-8'))
+    hasher.update(text.encode('utf-8'))
+    return hasher.hexdigest()[:16]
+
+def get_document_hashes(collection) -> set:
+    """Get existing document hashes from collection"""
+    try:
+        all_data = collection.get(include=["metadatas"])
+        hashes = set()
+        for metadata in all_data.get('metadatas', []):
+            if 'doc_hash' in metadata:
+                hashes.add(metadata['doc_hash'])
+        return hashes
+    except:
+        return set()
+
 # Embedding and storage
 def ingest_documents(doc_dir: str, config: dict, verbose: bool = False):
     """
@@ -178,11 +198,16 @@ def ingest_documents(doc_dir: str, config: dict, verbose: bool = False):
     
     print(f"\nFound {len(files)} document(s) to ingest")
     
+    # AUDIT FIX: load existing document hashes for deduplication
+    existing_hashes = get_document_hashes(collection)
+    print(f"  Loaded {len(existing_hashes)} existing document hashes")
+    
     chunk_size = config.get('chunk_size', 512)
     chunk_overlap = config.get('chunk_overlap', 50)
     
     total_chunks = 0
     success_count = 0
+    skipped_duplicate = 0
     
     for file_path in files:
         print(f"\n📄 Processing: {file_path.name}")
@@ -194,6 +219,13 @@ def ingest_documents(doc_dir: str, config: dict, verbose: bool = False):
             
             if len(text.strip()) == 0:
                 print(f"  ⚠️ Document appears to be empty, skipping")
+                continue
+            
+            # AUDIT FIX: check for duplicate by hash
+            doc_hash = compute_document_hash(str(file_path), text)
+            if doc_hash in existing_hashes:
+                print(f"  ⏭️ Document already ingested (hash: {doc_hash}), skipping")
+                skipped_duplicate += 1
                 continue
             
             # Chunk text
@@ -213,14 +245,15 @@ def ingest_documents(doc_dir: str, config: dict, verbose: bool = False):
             print(f"  Generating embeddings...")
             embeddings = embedding_model.encode(chunks, show_progress_bar=False)
             
-            # Prepare metadata
+            # Prepare metadata with document hash
             ids = [f"{file_path.stem}_chunk_{i}" for i in range(len(chunks))]
             metadatas = [
                 {
                     "source": file_path.name,
                     "chunk_id": i,
                     "total_chunks": len(chunks),
-                    "file_path": str(file_path)
+                    "file_path": str(file_path),
+                    "doc_hash": doc_hash
                 }
                 for i in range(len(chunks))
             ]
@@ -232,6 +265,8 @@ def ingest_documents(doc_dir: str, config: dict, verbose: bool = False):
                 documents=chunks,
                 metadatas=metadatas
             )
+            # AUDIT FIX: track this hash for future deduplication
+            existing_hashes.add(doc_hash)
             print(f"  ✓ Ingested {len(chunks)} chunks successfully")
             total_chunks += len(chunks)
             success_count += 1
@@ -246,6 +281,7 @@ def ingest_documents(doc_dir: str, config: dict, verbose: bool = False):
     print(f"\n{'='*60}")
     print(f"✓ Ingestion complete!")
     print(f"  Files processed: {success_count}/{len(files)}")
+    print(f"  Duplicates skipped: {skipped_duplicate}")
     print(f"  Total chunks stored: {total_chunks}")
     print(f"  Collection: {collection_name}")
     print(f"  Total documents in collection: {collection.count()}")
@@ -254,6 +290,8 @@ def ingest_documents(doc_dir: str, config: dict, verbose: bool = False):
 def main():
     parser = argparse.ArgumentParser(description="Ingest documents into Lumina Edge VectorDB")
     parser.add_argument("doc_dir", help="Directory containing documents to ingest")
+    parser.add_argument("--domain", "-d", choices=["legal", "hr", "ngo"], default="default",
+                       help="Domain for document classification (creates separate collection)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     args = parser.parse_args()
     
@@ -266,6 +304,10 @@ def main():
     check_dependencies()
     
     config = load_config()
+    
+    # AUDIT FIX: allow domain override via command line
+    domain = args.domain
+    config['use_case'] = domain
     
     if not config.get('rag_enabled', True):
         print("WARNING: RAG is disabled in config.json. Set 'rag_enabled': true to use this feature.")
