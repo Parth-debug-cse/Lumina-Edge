@@ -10,7 +10,127 @@ This guide walks through each use case from zero to running output.
 
 ---
 
+## Quick Start — Launch the Full Stack
+
+The fastest way to get everything running (inference backend, API server, and UI) is to use the launcher scripts:
+
+### Linux / macOS
+
+```bash
+cd /path/to/2026-Lumina-Edge-LLM-Inference-Framework
+./start_lumina.sh
+```
+
+This will:
+1. Optimize your system for inference
+2. Auto-detect your model from `./models/` or `config.json`
+3. Start the llama-server (Linux) or MLX backend (macOS)
+4. Start the Lumina Core API gateway
+5. Start the Lumina Core UI at `http://localhost:5173`
+6. Check for OpenWebUI (optional)
+
+### Windows
+
+```powershell
+cd C:\path\to\2026-Lumina-Edge-LLM-Inference-Framework
+.\start_lumina.ps1
+```
+
+This will do the same on Windows:
+1. Optimize system for inference
+2. Auto-detect model
+3. Start llama-server
+4. Start API gateway
+5. Start Lumina Core UI at `http://localhost:5173`
+6. Check for OpenWebUI
+
+### Expected Output
+
+After running the launcher, you should see:
+```
+============================================================
+  Lumina Edge — All systems ready
+============================================================
+
+  Model:       ./models/your-model.gguf
+  Backend:     http://127.0.0.1:8090
+  Lumina Core: http://localhost:5173
+
+  Logs:        .lumina_run/
+  PIDs:        .lumina_run/pids.txt
+
+  To stop:     pkill -f 'llama-server' 2>/dev/null; pkill -f 'api-server.js' 2>/dev/null; pkill -f 'vite' 2>/dev/null || true
+============================================================
+```
+
+### Access Points
+
+- **Lumina Core UI**: `http://localhost:5173` — Web interface for chat, settings, and model management
+- **API Server**: `http://127.0.0.1:8090` — OpenAI-compatible REST API
+- **Management API**: `http://127.0.0.1:8081` — Lumina internal management endpoints
+
+---
+
 ## Prerequisites
+
+### Required Software
+
+**All Platforms:**
+- Python 3.10+ with pip
+- Node.js 18+ and npm
+- Git
+
+**Linux:**
+```bash
+# Install system dependencies
+sudo apt update && sudo apt install -y build-essential curl
+
+# Install Python dependencies
+pip3 install -r requirements.txt
+
+# Install Node dependencies
+cd ui && npm install && cd ..
+```
+
+**macOS:**
+```bash
+# Install Homebrew if needed
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install Python and Node
+brew install python3 node
+
+# Install Python dependencies
+pip3 install -r requirements.txt
+
+# Install Node dependencies
+cd ui && npm install && cd ..
+```
+
+**Windows:**
+```powershell
+# Install Python from https://python.org (add to PATH)
+# Install Node.js from https://nodejs.org
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Install Node dependencies
+cd ui
+npm install
+cd ..
+```
+
+### Verify Binary Permissions (Linux/macOS)
+
+```bash
+chmod +x ./bin/llama-server
+chmod +x ./start_api.sh
+chmod +x ./start_lumina.sh
+chmod +x scripts/ingest_docs.py
+chmod +x scripts/query_docs.py
+chmod +x scripts/mlx_backend.py
+```
 
 ### If models are already downloaded
 
@@ -138,6 +258,8 @@ After this section the reader has everything installed. Now the use cases begin.
 
 Lumina Edge runs a code-capable LLM locally and exposes it as an OpenAI-compatible endpoint. Any coding assistant that supports a custom API base — OpenCode, Aider, Kilo Code, Continue.dev — connects to it instantly. No cloud, no API key, no cost per token.
 
+> **Tip**: For a quick start that launches everything (backend + API + UI), use `./start_lumina.sh` (Linux/macOS) or `.\start_lumina.ps1` (Windows) from the project root.
+
 ### Step-by-step
 
 **Step 1 — Start the API server**
@@ -156,6 +278,12 @@ Windows:
 ```powershell
 .\start_api.ps1
 ```
+
+> **Alternative**: Use the full launcher to start backend + API + UI at once:
+> ```bash
+> ./start_lumina.sh    # Linux/macOS
+> .\start_lumina.ps1  # Windows
+> ```
 
 What you will see:
 ```
@@ -270,6 +398,8 @@ Windows: Press Ctrl+C in the PowerShell window running start_api.ps1, or close t
 
 Multi-Model Router load-balances across multiple LLM instances with round-robin and priority-based routing. Why this matters for edge: one powerful request doesn't block others, and if one instance fails, requests automatically route to healthy instances.
 
+> **Tip**: For this use case, start the API server first using `./start_api.sh` (Linux/macOS) or `.\start_api.ps1` (Windows), then use the router script as shown below. The full launcher (`start_lumina.sh` / `start_lumina.ps1`) starts a single model only.
+
 ### Step-by-step
 
 **Step 1 — Configure instances**
@@ -383,6 +513,10 @@ Windows: Press Ctrl+C in the PowerShell window, or close the terminal. All model
 ### What this is
 
 Vertical RAG delivers domain-specific AI grounded in YOUR documents. Ingest PDF/DOCX/TXT files into a vector database, then ask questions — the AI answers with citations showing which documents it used. No hallucination, no training data reliance, just your data.
+
+> **Tip**: The LLM API server is required for RAG. You can either:
+> - Run `./start_lumina.sh` (Linux/macOS) or `.\start_lumina.ps1` (Windows) to start everything at once
+> - Or run `./start_api.sh` / `.\start_api.ps1` just for the API server
 
 ### Step-by-step
 
@@ -540,6 +674,8 @@ Windows: Press Ctrl+C in the PowerShell window, or close the terminal.
 ### What this is
 
 Multi-Agent Pipeline chains multiple LLMs together sequentially. One request flows through all agents, each transforming the output. Real example: a cleaner agent first normalizes dirty log data, then a categorizer agent assigns severity labels and categorizes entries.
+
+> **Note**: The pipeline uses its own API (`pipeline_api.py`). This is separate from the main Lumina launcher. Start it directly as shown below.
 
 ### Step-by-step
 
@@ -814,6 +950,23 @@ python pipeline_api.py
 ---
 
 ## Quick Reference — All Commands
+
+### Quick Start — Full Stack Launcher
+
+**Linux/macOS:**
+```bash
+./start_lumina.sh                    # Start everything (backend + API + UI)
+```
+
+**Windows:**
+```powershell
+.\start_lumina.ps1                   # Start everything (backend + API + UI)
+```
+
+Access points after launch:
+- Lumina Core UI: `http://localhost:5173`
+- API Server: `http://127.0.0.1:8090`
+- Management API: `http://127.0.0.1:8081`
 
 ### UC1 — Coder (Agentic AI Coding)
 
