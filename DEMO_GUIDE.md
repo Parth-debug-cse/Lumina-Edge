@@ -14,9 +14,14 @@ This guide walks through each use case from zero to running output.
 
 ### If models are already downloaded
 
-Verify models are in the right place:
+**Linux/macOS:**
 ```bash
 ls ./models/
+```
+
+**Windows:**
+```powershell
+Get-ChildItem .\models\
 ```
 
 Expected output shows .gguf files (Linux) or directories with safetensors (macOS):
@@ -24,9 +29,16 @@ Expected output shows .gguf files (Linux) or directories with safetensors (macOS
 LFM2.5-1.2B-Thinking-Q4_K_M.gguf  tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
 ```
 
-Verify llama-server binary exists (Linux):
+Verify llama-server binary exists:
+
+Linux:
 ```bash
 ls ./bin/llama-server
+```
+
+Windows:
+```powershell
+Get-ChildItem .\bin\llama-server.exe
 ```
 
 Verify mlx_lm is installed (macOS):
@@ -34,9 +46,16 @@ Verify mlx_lm is installed (macOS):
 python3 -m mlx_lm.server --help 2>&1 | head -5
 ```
 
-Verify Python dependencies (Linux/macOS):
+Verify Python dependencies:
+
+Linux/macOS:
 ```bash
 pip3 install -r requirements.txt --quiet
+```
+
+Windows:
+```powershell
+pip install -r requirements.txt --quiet
 ```
 
 Verify permissions (Linux/macOS):
@@ -48,6 +67,8 @@ chmod +x scripts/ingest_docs.py
 chmod +x scripts/query_docs.py
 chmod +x scripts/mlx_backend.py
 ```
+
+Windows does not require permission changes.
 
 ### If models are NOT yet downloaded
 
@@ -88,6 +109,25 @@ Recommended mlx-community models:
 - **UC3 RAG**: mlx-community/Qwen2.5-3B-Instruct-4bit
 - **UC4 Pipeline**: mlx-community/TinyLlama-1.1B-Chat-v1.0-4bit + mlx-community/Qwen2.5-1.5B-Instruct-4bit
 
+**Windows (GGUF models for llama.cpp):**
+
+Windows uses the same GGUF format as Linux. Download using huggingface-cli:
+
+```powershell
+pip install huggingface-hub
+```
+
+Example download command:
+```powershell
+huggingface-cli download Qwen/Qwen2.5-Coder-3B-Instruct-GGUF --include "*Q4_K_M.gguf" --local-dir .\models\
+```
+
+Same recommended models as Linux:
+- **UC1 Coding**: Qwen2.5-Coder-3B-Instruct-Q4_K_M
+- **UC2 Router**: Any 3B Q4_K_M model (same model on multiple ports)
+- **UC3 RAG**: Qwen2.5-3B-Instruct-Q4_K_M
+- **UC4 Pipeline**: Two different small models, e.g., TinyLlama-1.1B + Qwen2.5-1.5B
+
 After this section the reader has everything installed. Now the use cases begin.
 
 ---
@@ -110,6 +150,11 @@ Linux:
 macOS:
 ```bash
 ./start_api.sh --gpu mlx
+```
+
+Windows:
+```powershell
+.\start_api.ps1
 ```
 
 What you will see:
@@ -148,6 +193,16 @@ opencode --api-base http://127.0.0.1:8090/v1
 
 **Aider** (Linux/macOS):
 ```bash
+aider --openai-api-base http://127.0.0.1:8090/v1 --openai-api-key none
+```
+
+**OpenCode** (Windows):
+```powershell
+opencode --api-base http://127.0.0.1:8090/v1
+```
+
+**Aider** (Windows):
+```powershell
 aider --openai-api-base http://127.0.0.1:8090/v1 --openai-api-key none
 ```
 
@@ -199,7 +254,9 @@ Expected response includes a "choices" array with the generated text.
 
 **Step 5 — Stop**
 
-Press Ctrl+C in the terminal running start_api.sh. The server will clean up and exit.
+Linux/macOS: Press Ctrl+C in the terminal running start_api.sh. The server will clean up and exit.
+
+Windows: Press Ctrl+C in the PowerShell window running start_api.ps1, or close the window. The server will clean up and exit.
 
 ### Demo talking point
 
@@ -255,6 +312,11 @@ python3 scripts/model-router.py load \
   ./models/Qwen2.5-3B-Instruct/
 ```
 
+Windows:
+```powershell
+python scripts\model-router.py load --bin-path .\bin --scripts .\scripts --models-dir .\models .\models\tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf .\models\tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
+```
+
 Expected output:
 ```
 🚀 Starting llama-server: ./bin/llama-server -m ./models/... --port 9001 ...
@@ -293,6 +355,9 @@ fuser -k 9001/tcp
 
 # macOS
 lsof -ti:9001 | xargs kill
+
+# Windows
+Get-Process -Id (Get-NetTCPConnection -LocalPort 9001 -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force
 ```
 
 Then send another request to port 9000 (the router proxy). It routes to the healthy instance on port 9002. The router logs show:
@@ -303,7 +368,9 @@ Then send another request to port 9000 (the router proxy). It routes to the heal
 
 **Step 5 — Stop**
 
-Press Ctrl+C to stop the router. All model instances clean up.
+Linux/macOS: Press Ctrl+C to stop the router. All model instances clean up.
+
+Windows: Press Ctrl+C in the PowerShell window, or close the terminal. All model instances clean up.
 
 ### Demo talking point
 
@@ -321,11 +388,16 @@ Vertical RAG delivers domain-specific AI grounded in YOUR documents. Ingest PDF/
 
 **Step 1 — Prepare documents**
 
-Create the domain document directories:
+Linux/macOS:
 ```bash
 mkdir -p rag/documents/legal
 mkdir -p rag/documents/hr
 mkdir -p rag/documents/ngo
+```
+
+Windows:
+```powershell
+New-Item -ItemType Directory -Force -Path rag\documents\legal, rag\documents\hr, rag\documents\ngo
 ```
 
 Place PDF/DOCX/TXT files into the relevant folder. For demo: put sample documents in each folder:
@@ -340,6 +412,13 @@ Linux/macOS:
 python3 scripts/ingest_docs.py rag/documents/legal --domain legal
 python3 scripts/ingest_docs.py rag/documents/hr --domain hr
 python3 scripts/ingest_docs.py rag/documents/ngo --domain ngo
+```
+
+Windows:
+```powershell
+python scripts\ingest_docs.py rag\documents\legal --domain legal
+python scripts\ingest_docs.py rag\documents\hr --domain hr
+python scripts\ingest_docs.py rag\documents\ngo --domain ngo
 ```
 
 Expected output:
@@ -361,25 +440,53 @@ Note: This only needs to be run once per document set. Re-running is safe — de
 **Step 3 — Start the RAG API**
 
 The RAG system queries the main LLM API. Ensure the API server is running:
+
+Linux/macOS:
 ```bash
 ./start_api.sh
+```
+
+Windows:
+```powershell
+.\start_api.ps1
 ```
 
 Then query documents using the query script:
 
 **Legal query:**
+
+Linux/macOS:
 ```bash
 python3 scripts/query_docs.py "What are the termination clauses?" --domain legal
 ```
 
+Windows:
+```powershell
+python scripts\query_docs.py "What are the termination clauses?" --domain legal
+```
+
 **HR query:**
+
+Linux/macOS:
 ```bash
 python3 scripts/query_docs.py "What is the leave policy?" --domain hr
 ```
 
+Windows:
+```powershell
+python scripts\query_docs.py "What is the leave policy?" --domain hr
+```
+
 **NGO query:**
+
+Linux/macOS:
 ```bash
 python3 scripts/query_docs.py "What are the funding guidelines?" --domain ngo
+```
+
+Windows:
+```powershell
+python scripts\query_docs.py "What are the funding guidelines?" --domain ngo
 ```
 
 Expected response:
@@ -403,15 +510,24 @@ Expected response:
 **Step 4 — Verify domain isolation**
 
 Prove that Legal queries don't bleed into HR results:
+
+Linux/macOS:
 ```bash
 python3 scripts/query_docs.py "What are the termination clauses?" --domain hr
+```
+
+Windows:
+```powershell
+python scripts\query_docs.py "What are the termination clauses?" --domain hr
 ```
 
 Expected: "No relevant documents found above similarity threshold." or a very low-confidence response that clearly didn't come from Legal documents.
 
 **Step 5 — Stop**
 
-Press Ctrl+C to stop the API server.
+Linux/macOS: Press Ctrl+C to stop the API server.
+
+Windows: Press Ctrl+C in the PowerShell window, or close the terminal.
 
 ### Demo talking point
 
@@ -454,12 +570,15 @@ Edit the `agents` section in config.json:
 }
 ```
 
-Linux: model_path points to GGUF files.
+Linux/macOS: model_path points to GGUF files.
 macOS: model_path points to MLX model directories (e.g., mlx-community/Llama-3.2-3B-Instruct-4bit).
+Windows: model_path points to GGUF files (e.g., .\models\tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf).
 
 **Step 2 — Prepare a sample log file for the demo**
 
 Create a realistic dirty log file:
+
+Linux/macOS:
 ```bash
 cat > /tmp/demo_logs.txt << 'EOF'
 2024-01-15 08:23:11.442 [ERROR] usr=john.doe@company.com db_conn failed: timeout after 30s retrying...
@@ -473,6 +592,20 @@ null null null [DEBUG] gc sweep complete 14ms
 EOF
 ```
 
+Windows:
+```powershell
+@"
+2024-01-15 08:23:11.442 [ERROR] usr=john.doe@company.com db_conn failed: timeout after 30s retrying...
+2024-01-15 08:23:11.443 [ERROR] usr=john.doe@company.com db_conn failed: timeout after 30s retrying...
+2024-01-15 08:23:12.001 [INFO] heartbeat ok
+2024-1-15 8:23:15 WARN network latency spike 450ms on eth0
+2024-01-15 08:24:00.000 [CRITICAL] auth service unreachable - 127.0.0.1:8443 connection refused
+null null null [DEBUG] gc sweep complete 14ms
+2024-01-15 08:24:01 INFO heartbeat ok
+2024-01-15 08:24:05 ERROR payment gateway timeout usr=jane.smith@company.com amount=4999
+"@ | Out-File -FilePath $env:TEMP\demo_logs.txt -Encoding UTF8
+```
+
 This log is intentionally dirty: duplicate lines, inconsistent timestamp formats, PII (email addresses), mixed severity formats. Perfect for showing what the cleaner agent does.
 
 **Step 3 — Start the pipeline**
@@ -480,6 +613,11 @@ This log is intentionally dirty: duplicate lines, inconsistent timestamp formats
 Linux/macOS:
 ```bash
 python3 pipeline_api.py
+```
+
+Windows:
+```powershell
+python pipeline_api.py
 ```
 
 Expected output:
@@ -493,10 +631,23 @@ Note: macOS waits 5 seconds for MLX model load. The terminal shows "Application 
 
 **Step 4 — Run the pipeline on the sample logs**
 
+Linux/macOS:
 ```bash
 curl http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d "{\"model\":\"lumina-pipeline\",\"messages\":[{\"role\":\"user\",\"content\":$(cat /tmp/demo_logs.txt | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))\")}]}"
+```
+
+Windows (PowerShell):
+```powershell
+$content = Get-Content -Raw $env:TEMP\demo_logs.txt
+$body = @{
+    model = "lumina-pipeline"
+    messages = @(
+        @{role = "user"; content = $content}
+    )
+} | ConvertTo-Json -Compress
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/v1/chat/completions" -Method Post -ContentType "application/json" -Body $body
 ```
 
 Expected: the categorizer's JSON output — cleaned logs organized by severity and category. Example:
@@ -515,8 +666,14 @@ This is the money shot of the demo.
 
 **Step 5 — Check pipeline status**
 
+Linux/macOS:
 ```bash
 curl http://127.0.0.1:8000/api/v1/pipeline/status
+```
+
+Windows:
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/pipeline/status"
 ```
 
 Expected output:
@@ -541,7 +698,9 @@ Point to the latency fields in the status response. Each agent's contribution to
 
 **Step 7 — Stop**
 
-Press Ctrl+C in the terminal running pipeline_api.py. Clean shutdown message appears.
+Linux/macOS: Press Ctrl+C in the terminal running pipeline_api.py. Clean shutdown message appears.
+
+Windows: Press Ctrl+C in the PowerShell window, or close the terminal. Clean shutdown message appears.
 
 ### Demo talking point
 
@@ -563,17 +722,30 @@ macOS:
 lsof -ti:8090 | xargs kill
 ```
 
+Windows:
+```powershell
+Get-Process -Id (Get-NetTCPConnection -LocalPort 8090 -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
 Then restart the relevant component.
 
 ### Model not loading / server not starting
 
 Check the log:
-```bash
-# Linux
-tail -50 .lumina_run/llama_server.log
 
-# macOS
+Linux:
+```bash
+tail -50 .lumina_run/llama_server.log
+```
+
+macOS:
+```bash
 tail -50 .lumina_run/mlx_backend.log
+```
+
+Windows:
+```powershell
+Get-Content .lumina_run\llama_server.log -Tail 50
 ```
 
 Common causes: wrong model path, not enough RAM, wrong binary permissions.
@@ -591,19 +763,34 @@ python3 -c "from mlx_lm import load; load('mlx-community/MODEL-NAME')"
 
 The server is not ready yet. Wait a few seconds and retry.
 Check if the process is running:
-```bash
-# Linux
-ps aux | grep llama-server
 
-# macOS
+Linux:
+```bash
+ps aux | grep llama-server
+```
+
+macOS:
+```bash
 ps aux | grep mlx_backend
+```
+
+Windows:
+```powershell
+Get-Process | Where-Object { $_.ProcessName -like "*llama-server*" }
 ```
 
 ### RAG returns empty results
 
 Documents may not be ingested. Re-run the ingestion step:
+
+Linux/macOS:
 ```bash
 python3 scripts/ingest_docs.py rag/documents/legal --domain legal
+```
+
+Windows:
+```powershell
+python scripts\ingest_docs.py rag\documents\legal --domain legal
 ```
 
 Check similarity threshold in config.json — it may be too high (lower the `retrieval_threshold` from 0.3 to 0.5 or 0.7).
@@ -611,9 +798,17 @@ Check similarity threshold in config.json — it may be too high (lower the `ret
 ### OpenWebUI shows blank response
 
 The API response schema is wrong. Check pipeline_api.py returns all required OpenAI fields. Restart the API after any code changes:
+
+Linux/macOS:
 ```bash
 # Stop with Ctrl+C, then restart
 python3 pipeline_api.py
+```
+
+Windows:
+```powershell
+# Stop with Ctrl+C, then restart
+python pipeline_api.py
 ```
 
 ---
@@ -622,14 +817,23 @@ python3 pipeline_api.py
 
 ### UC1 — Coder (Agentic AI Coding)
 
+**Linux/macOS:**
 ```bash
 ./start_api.sh                                    # start API server
 curl http://127.0.0.1:8090/v1/models              # verify ready
 Ctrl+C                                           # stop
 ```
 
+**Windows:**
+```powershell
+.\start_api.ps1                                   # start API server
+Invoke-RestMethod http://127.0.0.1:8090/v1/models  # verify ready
+Ctrl+C                                           # stop
+```
+
 ### UC2 — Router (Multi-Model)
 
+**Linux/macOS:**
 ```bash
 python3 scripts/model-router.py load --bin-path ./bin --scripts ./scripts --models-dir ./models ./models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf ./models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf  # start router
 curl http://127.0.0.1:9001/v1/models              # verify instance 1
@@ -637,8 +841,17 @@ fuser -k 9001/tcp (Linux) / lsof -ti:9001 | xargs kill (macOS)  # simulate failo
 Ctrl+C                                           # stop
 ```
 
+**Windows:**
+```powershell
+python scripts\model-router.py load --bin-path .\bin --scripts .\scripts --models-dir .\models .\models\tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf .\models\tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf  # start router
+Invoke-RestMethod http://127.0.0.1:9001/v1/models  # verify instance 1
+Get-Process -Id (Get-NetTCPConnection -LocalPort 9001 -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force  # simulate failover
+Ctrl+C                                           # stop
+```
+
 ### UC3 — RAG (Vertical RAG)
 
+**Linux/macOS:**
 ```bash
 mkdir -p rag/documents/legal rag/documents/hr rag/documents/ngo
 python3 scripts/ingest_docs.py rag/documents/legal --domain legal    # ingest legal docs
@@ -650,8 +863,21 @@ python3 scripts/query_docs.py "Your question" --domain hr             # query HR
 Ctrl+C                                           # stop
 ```
 
+**Windows:**
+```powershell
+New-Item -ItemType Directory -Force -Path rag\documents\legal, rag\documents\hr, rag\documents\ngo
+python scripts\ingest_docs.py rag\documents\legal --domain legal     # ingest legal docs
+python scripts\ingest_docs.py rag\documents\hr --domain hr            # ingest HR docs
+python scripts\ingest_docs.py rag\documents\ngo --domain ngo          # ingest NGO docs
+.\start_api.ps1                                  # start LLM API (required for RAG)
+python scripts\query_docs.py "Your question" --domain legal          # query legal
+python scripts\query_docs.py "Your question" --domain hr              # query HR
+Ctrl+C                                           # stop
+```
+
 ### UC4 — Pipeline (Multi-Agent)
 
+**Linux/macOS:**
 ```bash
 python3 pipeline_api.py                          # start pipeline API
 cat > /tmp/demo_logs.txt << 'EOF'
@@ -659,6 +885,19 @@ cat > /tmp/demo_logs.txt << 'EOF'
 EOF
 curl http://127.0.0.1:8000/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"lumina-pipeline\",\"messages\":[{\"role\":\"user\",\"content\":$(cat /tmp/demo_logs.txt | python3 -c \"import sys,json; print(json.dumps(sys.stdin.read()))\")}]}"  # run pipeline
 curl http://127.0.0.1:8000/api/v1/pipeline/status  # check status
+Ctrl+C                                           # stop
+```
+
+**Windows:**
+```powershell
+python pipeline_api.py                          # start pipeline API
+@"
+...dirty log data...
+"@ | Out-File -FilePath $env:TEMP\demo_logs.txt -Encoding UTF8
+$content = Get-Content -Raw $env:TEMP\demo_logs.txt
+$body = @{model="lumina-pipeline";messages=@{role="user";content=$content}} | ConvertTo-Json -Compress
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/v1/chat/completions" -Method Post -ContentType "application/json" -Body $body  # run pipeline
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/pipeline/status  # check status
 Ctrl+C                                           # stop
 ```
 
