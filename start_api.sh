@@ -96,9 +96,9 @@ KV_QUANT=$(get_config kv_quant 'turbo')
 
 # Convert boolean to on/off for flash-attn
 if [[ "$FLASH_ATTN" == "true" ]]; then
-    FLASH_ATTN_FLAG="--flash-attn"
+    FLASH_ATTN_FLAG="--flash-attn on"
 else
-    FLASH_ATTN_FLAG=""
+    FLASH_ATTN_FLAG="--flash-attn off"
 fi
 
 # Convert boolean flags
@@ -127,7 +127,7 @@ fi
 # TurboQuant requires -fa as a hard dependency
 KV_QUANT_FLAGS=""
 if [[ "$KV_QUANT" == "turbo" ]]; then
-    KV_QUANT_FLAGS="--flash-attn --cache-type-k turbo4 --cache-type-v turbo3"
+    KV_QUANT_FLAGS="--cache-type-k turbo4 --cache-type-v turbo3"
 elif [[ "$KV_QUANT" == "q8_0" ]]; then
     KV_QUANT_FLAGS="--cache-type-k q8_0 --cache-type-v q8_0"
 elif [[ "$KV_QUANT" == "q4_0" ]]; then

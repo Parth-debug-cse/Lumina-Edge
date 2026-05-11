@@ -49,7 +49,21 @@ export default function App() {
   const [serverStatus, setServerStatus] = useState('checking') // 'online' | 'offline' | 'checking'
   const [serverModel, setServerModel]   = useState('')
   const [localModels, setLocalModels]   = useState([]) // populated from server models list
+  const [chatUrl, setChatUrl]           = useState('http://localhost:8090')
   const { toasts, addToast } = useToasts()
+
+  // ---- Fetch chat URL (platform-aware) ----
+  const fetchChatUrl = useCallback(async () => {
+    try {
+      const res = await fetch('/api/chat-url')
+      if (res.ok) {
+        const data = await res.json()
+        if (data.url) setChatUrl(data.url)
+      }
+    } catch {
+      // Silently fallback to default
+    }
+  }, [])
 
   // ---- Fetch local models ----
   const fetchLocalModels = useCallback(async () => {
@@ -75,6 +89,7 @@ export default function App() {
   useEffect(() => {
     pollHealth(); // immediate check on mount
     fetchLocalModels(); // fetch once on mount
+    fetchChatUrl(); // detect platform-appropriate chat UI
 
     let rapidCount = 0;
     let slowInterval = null;
@@ -91,7 +106,7 @@ export default function App() {
       clearInterval(rapidInterval);
       if (slowInterval) clearInterval(slowInterval);
     };
-  }, [pollHealth, fetchLocalModels]);
+  }, [pollHealth, fetchLocalModels, fetchChatUrl]);
 
   // ---- Panel title ----
   const pt = PANEL_TITLES[activePanel] || PANEL_TITLES.chat
@@ -132,7 +147,7 @@ export default function App() {
             <div
               key={item.id}
               className={`nav-item${activePanel === item.id ? ' active' : ''}`}
-              onClick={() => item.external ? window.open('http://localhost:8090', '_blank') : setActivePanel(item.id)}
+              onClick={() => item.external ? window.open(chatUrl, '_blank') : setActivePanel(item.id)}
               id={`nav-${item.id}`}
             >
               <span className="nav-item-icon">{item.icon}</span>

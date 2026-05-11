@@ -14,6 +14,9 @@ API_PORT="${LUMINA_API_PORT:-8090}"
 MLX_PORT="${LUMINA_MLX_PORT:-8091}"
 UI_PORT="${LUMINA_UI_PORT:-5173}"
 OW_PORT="${LUMINA_OW_PORT:-8080}"
+export LUMINA_API_PORT="$API_PORT"
+export LUMINA_MLX_PORT="$MLX_PORT"
+export LUMINA_OW_PORT="$OW_PORT"
 
 MODEL_PATH="${LUMINA_MODEL:-}"
 
@@ -226,15 +229,15 @@ start_backend() {
 
         FLASH_ATTN_FLAG=""
         if [[ "$FLASH_ATTN" == "true" ]]; then
-            FLASH_ATTN_FLAG="--flash-attn"
+            FLASH_ATTN_FLAG="--flash-attn on"
         fi
 
         BACKEND_LOG="$RUNDIR/llama_server.log"
-        log "  llama-server → port $API_PORT"
+        log "  llama-server → port $MLX_PORT"
 
         "$LLAMA_SERVER" \
             -m "$MODEL_PATH" \
-            --port "$API_PORT" \
+            --port "$MLX_PORT" \
             --host 127.0.0.1 \
             --ctx-size "$CTX_SIZE" \
             --n-gpu-layers "$N_GPU_LAYERS" \
@@ -255,8 +258,8 @@ start_backend() {
 
         log "  Waiting for llama-server to be ready..."
         for i in $(seq 1 30); do
-            if curl -s --max-time 2 "http://127.0.0.1:$API_PORT/v1/models" 2>/dev/null | grep -q 'model'; then
-                log_ok "llama-server ready on port $API_PORT"
+            if curl -s --max-time 2 "http://127.0.0.1:$MLX_PORT/v1/models" 2>/dev/null | grep -q 'model'; then
+                log_ok "llama-server ready on port $MLX_PORT"
                 return 0
             fi
             sleep 1
@@ -356,7 +359,40 @@ setup_openwebui() {
         fi
     fi
 
-    # Check local installation
+    # On macOS, auto-start OpenWebUI via Docker if available (MLX has no built-in web UI)
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        if command -v docker &>/dev/null; then
+            log "  Auto-starting OpenWebUI via Docker (macOS)..."
+            docker run -d \
+                -p "$OW_PORT":8080 \
+                -v open-webui:/app/backend/data \
+                --name open-webui \
+                --add-host=host.docker.internal:host-gateway \
+                -e OLLAMA_BASE_URL="http://host.docker.internal:$API_PORT/v1" \
+                -e OPENAI_API_BASE_URL="http://host.docker.internal:$API_PORT/v1" \
+                -e OPENAI_API_KEY="lumina-openai-key" \
+                openwebui/openwebui:latest >> "$RUNDIR/openwebui.log" 2>&1 || true
+
+            log "  Waiting for OpenWebUI container..."
+            for i in $(seq 1 30); do
+                if curl -s --max-time 3 "http://127.0.0.1:$OW_PORT/" 2>/dev/null | grep -q 'html'; then
+                    log_ok "OpenWebUI ready at http://127.0.0.1:$OW_PORT"
+                    log "  Configure: Settings → Connections → API Base URL → http://host.docker.internal:$API_PORT/v1"
+                    return 0
+                fi
+                sleep 1
+            done
+
+            log_err "OpenWebUI container failed to start. Check $RUNDIR/openwebui.log"
+            return 0
+        else
+            log "  Docker not found. Install Docker to use OpenWebUI on macOS:"
+            log "    https://docs.docker.com/desktop/install/mac-install/"
+            return 0
+        fi
+    fi
+
+    # Check local installation (Linux fallback)
     if command -v openwebui &>/dev/null; then
         log "  OpenWebUI CLI found"
     elif [[ -d "/Applications/OpenWebUI.app" ]]; then
@@ -426,7 +462,9 @@ print_summary() {
     echo "============================================================"
     echo ""
 
-    if [[ "$(uname -s)" == "Darwin" ]]; then
+    if command -v xdg-open &>/dev/null; then
+        xdg-open "http://localhost:$UI_PORT" 2>/dev/null || true
+    elif [[ "$(uname -s)" == "Darwin" ]]; then
         open "http://localhost:$UI_PORT" 2>/dev/null || true
     fi
 }

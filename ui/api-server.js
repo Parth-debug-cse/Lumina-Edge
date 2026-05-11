@@ -187,8 +187,8 @@ const convertibleExtensions = ['.gguf', '.safetensors', '.bin', '.pt'];
 
 // Load config to get port settings (after loadConfig is defined)
 const config = loadConfig();
-const PRIMARY_PORT = config.api_port || 8081;
-const SECONDARY_PORT = config.api_port_secondary || 8091;
+const PRIMARY_PORT = parseInt(process.env.LUMINA_API_PORT) || config.api_port || 8081;
+const SECONDARY_PORT = parseInt(process.env.LUMINA_API_PORT_SECONDARY) || config.api_port_secondary || 8091;
 
 // Config caching to avoid repeated file reads
 var cachedConfig = null;
@@ -321,6 +321,15 @@ apiRouter.get('/system-info', (req, res) => {
     isMacAppleSilicon: mac,
     backend: mac ? 'mlx' : 'llama.cpp'
   });
+});
+
+apiRouter.get('/chat-url', (req, res) => {
+  const mac = isMac();
+  // macOS → OpenWebUI on OW_PORT; Linux → API gateway root (proxies to llama-server web UI)
+  const chatUrl = mac
+    ? `http://127.0.0.1:${process.env.LUMINA_OW_PORT || 8080}`
+    : `http://127.0.0.1:${PRIMARY_PORT}`;
+  res.json({ url: chatUrl, platform: os.platform() });
 });
 
 // Get current optimized configuration
@@ -2259,15 +2268,19 @@ app.get('/v1/models', async (req, res) => {
     const readyModels = Array.from(routerModels.values()).filter(m => m.status === 'ready');
 
     if (readyModels.length === 0) {
-      // No router models — try direct MLX backend on MLX port
+      // No router models — try direct backend on multiple ports
       const mlxPort = parseInt(process.env.LUMINA_MLX_PORT || '8091');
-      try {
-        const resp = await fetch(`http://127.0.0.1:${mlxPort}/v1/models`);
-        if (resp.ok) {
-          const data = await resp.json();
-          return res.json(data);
-        }
-      } catch { }
+      const directPorts = [PRIMARY_PORT, 8090, mlxPort];
+      
+      for (const port of directPorts) {
+        try {
+          const resp = await fetch(`http://127.0.0.1:${port}/v1/models`, { timeout: 3000 });
+          if (resp.ok) {
+            const data = await resp.json();
+            return res.json(data);
+          }
+        } catch { }
+      }
 
       return res.status(200).json({
         object: 'list',
@@ -2354,8 +2367,11 @@ app.post('/v1/chat/completions', async (req, res) => {
   try {
     const readyModel = Array.from(routerModels.values()).find(m => m.status === 'ready');
     if (!readyModel) {
-      // No router models loaded — try direct MLX backend
-      const directPort = parseInt(process.env.LUMINA_MLX_PORT || '8091');
+      // No router models loaded — try direct backend (MLX on LUMINA_MLX_PORT, or llama-server on LUMINA_API_PORT)
+      const mlxPort = parseInt(process.env.LUMINA_MLX_PORT || '8091');
+      const directPort = (process.env.LUMINA_API_PORT && parseInt(process.env.LUMINA_API_PORT) !== PRIMARY_PORT)
+        ? parseInt(process.env.LUMINA_API_PORT)
+        : (mlxPort !== PRIMARY_PORT ? mlxPort : 8090);
       const targetUrl = `http://127.0.0.1:${directPort}/v1/chat/completions`;
 
       const body = { ...req.body };
@@ -2590,6 +2606,53 @@ app.all(/^\/v1\/.*/, async (req, res) => {
   } catch (err) {
     console.error(`[API Proxy] Error: ${err.message}`);
     res.status(500).json({ error: 'Proxy failed', message: err.message });
+  }
+});
+
+// =============================================================================
+// Proxy non-API requests to the chat web UI.
+// Linux → llama-server built-in web UI (port MLX_PORT).
+// macOS → OpenWebUI (port OW_PORT) since MLX has no built-in web UI.
+// =============================================================================
+const isDarwin = os.platform() === 'darwin' && os.arch() === 'arm64';
+const BACKEND_PORT = isDarwin
+  ? parseInt(process.env.LUMINA_OW_PORT || '8080')
+  : parseInt(process.env.LUMINA_MLX_PORT || '8091');
+const BACKEND_HOST = '127.0.0.1';
+
+app.use((req, res, next) => {
+  // Let explicit API routes handle their own paths
+  if (req.path.startsWith('/api') || req.path.startsWith('/v1')) {
+    return next();
+  }
+
+  const proxyReq = http.request({
+    hostname: BACKEND_HOST,
+    port: BACKEND_PORT,
+    path: req.url,
+    method: req.method,
+    headers: {
+      ...req.headers,
+      host: `${BACKEND_HOST}:${BACKEND_PORT}`
+    }
+  }, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode, proxyRes.headers);
+    proxyRes.pipe(res);
+  });
+
+  proxyReq.on('error', (err) => {
+    console.error(`[Proxy] Backend error for ${req.method} ${req.url}:`, err.message);
+    res.status(502).send('Backend unavailable');
+  });
+
+  if (req.body !== undefined) {
+    // express.json() already consumed the stream — forward parsed body
+    const body = JSON.stringify(req.body);
+    proxyReq.setHeader('Content-Length', Buffer.byteLength(body));
+    proxyReq.write(body);
+    proxyReq.end();
+  } else {
+    req.pipe(proxyReq);
   }
 });
 
