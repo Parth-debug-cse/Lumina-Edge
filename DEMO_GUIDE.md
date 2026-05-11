@@ -1,1059 +1,409 @@
-# Lumina Edge — Demo & Testing Guide
+# Lumina Edge Demo Guide
 
-## What is Lumina Edge
-
-Lumina Edge is a local LLM inference framework designed for consumer hardware — laptops, desktops, and single-board computers — that runs powerful AI models without cloud dependency or per-token costs. It targets x86_64 systems with llama.cpp (Linux/Windows) and Apple Silicon with MLX (macOS), optimizing memory before inference to maximize available RAM. The framework exposes an OpenAI-compatible REST API, allowing any tool that works with OpenAI to connect to a local model instantly.
-
-The project implements four distinct use cases: Agentic AI Coding connects a code-capable LLM to development tools like OpenCode, Aider, or Continue.dev via the API endpoint; Multi-Model Router load-balances across multiple llama-server or MLX instances with health checks and automatic failover; Vertical RAG (Legal/HR/NGO) ingests domain documents into a vector database and answers questions grounded in those documents with source citations; and Multi-Agent Pipeline chains multiple LLMs together sequentially, where each agent processes the output of the previous one.
-
-This guide walks through each use case from zero to running output.
-
----
-
-## Quick Start — Launch the Full Stack
-
-The fastest way to get everything running (inference backend, API server, and UI) is to use the launcher scripts:
-
-### Linux / macOS
-
-```bash
-cd /path/to/2026-Lumina-Edge-LLM-Inference-Framework
-./start_lumina.sh
-```
-
-This will:
-1. Optimize your system for inference
-2. Auto-detect your model from `./models/` or `config.json`
-3. Start the llama-server (Linux) or MLX backend (macOS)
-4. Start the Lumina Core API gateway
-5. Start the Lumina Core UI at `http://localhost:5173`
-6. Check for OpenWebUI (optional)
-
-### Windows
-
-```powershell
-cd C:\path\to\2026-Lumina-Edge-LLM-Inference-Framework
-.\start_lumina.ps1
-```
-
-This will do the same on Windows:
-1. Optimize system for inference
-2. Auto-detect model
-3. Start llama-server
-4. Start API gateway
-5. Start Lumina Core UI at `http://localhost:5173`
-6. Check for OpenWebUI
-
-### Expected Output
-
-After running the launcher, you should see:
-```
-============================================================
-  Lumina Edge — All systems ready
-============================================================
-
-  Model:       ./models/your-model.gguf
-  Backend:     http://127.0.0.1:8090
-  Lumina Core: http://localhost:5173
-
-  Logs:        .lumina_run/
-  PIDs:        .lumina_run/pids.txt
-
-  To stop:     pkill -f 'llama-server' 2>/dev/null; pkill -f 'api-server.js' 2>/dev/null; pkill -f 'vite' 2>/dev/null || true
-============================================================
-```
-
-### Access Points
-
-- **Lumina Core UI**: `http://localhost:5173` — Web interface for chat, settings, and model management
-- **API Server**: `http://127.0.0.1:8090` — OpenAI-compatible REST API
-- **Management API**: `http://127.0.0.1:8081` — Lumina internal management endpoints
+Lumina Edge is a local LLM inference framework that runs models on consumer hardware using llama.cpp (Linux/Windows) or Apple's MLX (macOS). It exposes an OpenAI-compatible HTTP API, enabling any OpenAI-integrated tool to use a local model with zero code changes.
 
 ---
 
 ## Prerequisites
 
-### Required Software
+| OS | Requirements |
+|---|---|
+| **Windows** | Node.js 16+, Python 3.8+, Vulkan Runtime ([lunarg.com](https://vulkan.lunarg.com)) |
+| **Linux** | Python 3.8+, cmake, build-essential, Vulkan drivers |
+| **macOS** | Python 3.8+, Xcode CLI tools, Apple Silicon (M1–M4), Homebrew |
 
-**All Platforms:**
-- Python 3.10+ with pip
-- Node.js 18+ and npm
-- Git
+### Install Dependencies
 
-**Linux:**
+**Linux / Windows:**
 ```bash
-# Install system dependencies
-sudo apt update && sudo apt install -y build-essential curl
-
-# Install Python dependencies
-pip3 install -r requirements.txt
-
-# Install Node dependencies
-cd ui && npm install && cd ..
+pip install --break-system-packages -r requirements.txt
 ```
 
 **macOS:**
 ```bash
-# Install Homebrew if needed
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install Python and Node
-brew install python3 node
-
-# Install Python dependencies
-pip3 install -r requirements.txt
-
-# Install Node dependencies
-cd ui && npm install && cd ..
+pip install --break-system-packages -r scripts/requirements-macos.txt
 ```
 
-**Windows:**
-```powershell
-# Install Python from https://python.org (add to PATH)
-# Install Node.js from https://nodejs.org
+### Get llama.cpp Binaries
 
-# Install Python dependencies
-pip install -r requirements.txt
+Download from [ggml-org/llama.cpp/releases](https://github.com/ggml-org/llama.cpp/releases/latest) and extract all files into `bin/`:
 
-# Install Node dependencies
-cd ui
-npm install
-cd ..
-```
+| OS | GPU | File |
+|---|---|---|
+| Windows | Intel/AMD | `llama-bXXX-bin-win-vulkan-x64.zip` |
+| Windows | NVIDIA | `llama-bXXX-bin-win-cuda-cu12.x-x64.zip` |
+| Linux | Intel/AMD | `llama-bXXX-bin-ubuntu-vulkan-x64.tar.gz` |
+| Linux | NVIDIA | `llama-bXXX-bin-ubuntu-x64-cuda.tar.gz` |
 
-### Verify Binary Permissions (Linux/macOS)
-
-```bash
-chmod +x ./bin/llama-server
-chmod +x ./start_api.sh
-chmod +x ./start_lumina.sh
-chmod +x scripts/ingest_docs.py
-chmod +x scripts/query_docs.py
-chmod +x scripts/mlx_backend.py
-```
-
-### If models are already downloaded
-
-**Linux/macOS:**
-```bash
-ls ./models/
-```
-
-**Windows:**
-```powershell
-Get-ChildItem .\models\
-```
-
-Expected output shows .gguf files (Linux) or directories with safetensors (macOS):
-```
-LFM2.5-1.2B-Thinking-Q4_K_M.gguf  tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
-```
-
-Verify llama-server binary exists:
-
-Linux:
-```bash
-ls ./bin/llama-server
-```
-
-Windows:
-```powershell
-Get-ChildItem .\bin\llama-server.exe
-```
-
-Verify mlx_lm is installed (macOS):
-```bash
-python3 -m mlx_lm.server --help 2>&1 | head -5
-```
-
-Verify Python dependencies:
-
-Linux/macOS:
-```bash
-pip3 install -r requirements.txt --quiet
-```
-
-Windows:
-```powershell
-pip install -r requirements.txt --quiet
-```
-
-Verify permissions (Linux/macOS):
-```bash
-chmod +x ./bin/llama-server
-chmod +x ./start_api.sh
-chmod +x ./start_lumina.sh
-chmod +x scripts/ingest_docs.py
-chmod +x scripts/query_docs.py
-chmod +x scripts/mlx_backend.py
-```
-
-Windows does not require permission changes.
-
-### If models are NOT yet downloaded
-
-**Linux (GGUF models for llama.cpp):**
-
-GGUF is a single-file quantized model format that bundles weights and tokenizer together, optimized for CPU/GPU inference with llama.cpp. Download using huggingface-cli:
-
-```bash
-pip3 install huggingface-hub
-```
-
-Give concrete recommended models for each use case:
-
-- **UC1 Coding**: Qwen2.5-Coder-3B-Instruct-Q4_K_M — a code-optimized model that works well with coding assistants
-- **UC2 Router**: Any 3B Q4_K_M model (same model on multiple ports for load balancing)
-- **UC3 RAG**: Qwen2.5-3B-Instruct-Q4_K_M — good general-purpose model for answering questions
-- **UC4 Pipeline**: Two different small models, e.g., TinyLlama-1.1B + Qwen2.5-1.5B
-
-Example download command:
-```bash
-huggingface-cli download Qwen/Qwen2.5-Coder-3B-Instruct-GGUF --include "*Q4_K_M.gguf" --local-dir ./models/
-```
-
-**macOS (MLX models):**
-
-macOS uses HuggingFace mlx-community models in safetensors format, downloaded automatically on first run. MLX is Apple's Metal framework for accelerated ML inference on Apple Silicon.
-
-For automatic download (happens on first mlx_lm.server start), no manual step is needed — mlx_lm downloads and caches from HuggingFace. First run will be slow; subsequent runs use cache at ~/.cache/huggingface/.
-
-To pre-download to avoid demo delays:
-```bash
-python3 -c "from mlx_lm import load; load('mlx-community/Qwen2.5-3B-Instruct-4bit')"
-```
-
-Recommended mlx-community models:
-- **UC1 Coding**: mlx-community/Qwen2.5-Coder-3B-Instruct-4bit
-- **UC2 Router**: mlx-community/Llama-3.2-3B-Instruct-4bit (same model, multiple ports)
-- **UC3 RAG**: mlx-community/Qwen2.5-3B-Instruct-4bit
-- **UC4 Pipeline**: mlx-community/TinyLlama-1.1B-Chat-v1.0-4bit + mlx-community/Qwen2.5-1.5B-Instruct-4bit
-
-**Windows (GGUF models for llama.cpp):**
-
-Windows uses the same GGUF format as Linux. Download using huggingface-cli:
-
-```powershell
-pip install huggingface-hub
-```
-
-Example download command:
-```powershell
-huggingface-cli download Qwen/Qwen2.5-Coder-3B-Instruct-GGUF --include "*Q4_K_M.gguf" --local-dir .\models\
-```
-
-Same recommended models as Linux:
-- **UC1 Coding**: Qwen2.5-Coder-3B-Instruct-Q4_K_M
-- **UC2 Router**: Any 3B Q4_K_M model (same model on multiple ports)
-- **UC3 RAG**: Qwen2.5-3B-Instruct-Q4_K_M
-- **UC4 Pipeline**: Two different small models, e.g., TinyLlama-1.1B + Qwen2.5-1.5B
-
-After this section the reader has everything installed. Now the use cases begin.
+macOS: Skip this step — MLX backend uses built-in Apple frameworks.
 
 ---
 
-## Use Case 1 — Agentic AI Coding
+## Model Download
 
-### What this is
+### Linux / Windows (GGUF)
 
-Lumina Edge runs a code-capable LLM locally and exposes it as an OpenAI-compatible endpoint. Any coding assistant that supports a custom API base — OpenCode, Aider, Kilo Code, Continue.dev — connects to it instantly. No cloud, no API key, no cost per token.
+Download a model to `models/`:
+```bash
+# Example: TinyLlama 1.1B Q4
+huggingface-cli download TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf --local-dir models/
+```
 
-> **Tip**: For a quick start that launches everything (backend + API + UI), use `./start_lumina.sh` (Linux/macOS) or `.\start_lumina.ps1` (Windows) from the project root.
+Or manually download from HuggingFace and place in `models/`.
 
-### Step-by-step
+### macOS (MLX/Safetensors)
 
-**Step 1 — Start the API server**
+```bash
+# MLX models use --model pointing to a directory
+# Example: Llama 3.2 3B Instruct (4-bit)
+python3 scripts/mlx_backend.py --mode api --model mlx-community/Llama-3.2-3B-Instruct-4bit --port 8090
+```
 
-Linux:
+The model downloads automatically on first run. Alternatively, download from HuggingFace and place in `models/`.
+
+---
+
+## Use Case 1: Agentic AI Coding
+
+**What it demonstrates:** Lumina Edge exposes a local model as an OpenAI-compatible endpoint. Any coding tool built for OpenAI (Aider, OpenCode, Continue.dev) can point its `base_url` at Lumina Edge instead of OpenAI's servers.
+
+**Expected behavior:** A coding assistant responds to prompts using a local model with no internet and no API key.
+
+### Linux / macOS
+
 ```bash
 ./start_api.sh
 ```
 
-macOS:
-```bash
-./start_api.sh --gpu mlx
+Output:
+```
+Starting Lumina Edge API...
+Model: models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
+GPU: vulkan
+Port: 8090
+llama-server -m models/... --port 8090 ...
 ```
 
-Windows:
+When ready:
+```
+Lumina Edge API ready!
+  Endpoint:  http://127.0.0.1:8090
+  Docs:      http://127.0.0.1:8090/docs
+```
+
+### Windows
+
 ```powershell
 .\start_api.ps1
 ```
 
-> **Alternative**: Use the full launcher to start backend + API + UI at once:
-> ```bash
-> ./start_lumina.sh    # Linux/macOS
-> .\start_lumina.ps1  # Windows
-> ```
-
-What you will see:
+Output:
 ```
-Model: ./models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
-Starting Lumina Edge API...
-GPU: vulkan
-Port: 8090
-Context Size: 16384
-GPU Layers: 15
-+ ./bin/llama-server -m ./models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf --port 8090 --host 127.0.0.1 ...
+Lumina Edge API Server (Windows)
+  Model:       C:\path\to\model.gguf
+  Port:        8090
+  Ctx Size:    16384
+  GPU Layers:  15
 ```
 
-Wait for the server to be ready — the terminal will show the model loading progress. On Linux, llama-server prints "HTTP server listening" when ready. On macOS, mlx_backend.py prints "[MLX Direct] Server ready on port 8090".
+### Test the Endpoint
 
-**Step 2 — Select a model**
-
-The start_api.sh script auto-detects the model from:
-1. The `startup.default_model` key in config.json
-2. The `model` key in config.json
-3. The first .gguf file in ./models/ (Linux) or first safetensors directory (macOS)
-
-To use a specific model, pass it explicitly:
-```bash
-./start_api.sh --model ./models/your-model.gguf
-```
-
-**Step 3 — Connect your coding tool**
-
-Show exact commands for each tool:
-
-**OpenCode** (Linux/macOS):
-```bash
-opencode --api-base http://127.0.0.1:8090/v1
-```
-
-**Aider** (Linux/macOS):
-```bash
-aider --openai-api-base http://127.0.0.1:8090/v1 --openai-api-key none
-```
-
-**OpenCode** (Windows):
-```powershell
-opencode --api-base http://127.0.0.1:8090/v1
-```
-
-**Aider** (Windows):
-```powershell
-aider --openai-api-base http://127.0.0.1:8090/v1 --openai-api-key none
-```
-
-**Continue.dev** (VS Code extension):
-
-In the Continue extension's config.json, add:
-```json
-{
-  "models": [{
-    "model": "local",
-    "provider": "openai",
-    "apiBase": "http://127.0.0.1:8090/v1"
-  }]
-}
-```
-
-**Kilo Code**:
-
-Set base URL to: `http://127.0.0.1:8090/v1`
-
-**Step 4 — Verify it works**
-
-Quick sanity check without any coding tool:
-```bash
-curl http://127.0.0.1:8090/v1/models
-```
-
-Expected output:
-```json
-{
-  "object": "list",
-  "data": [{
-    "id": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
-    "object": "model",
-    "created": 1715334000,
-    "owned_by": "local"
-  }]
-}
-```
-
-Then test a completion:
 ```bash
 curl http://127.0.0.1:8090/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf","messages":[{"role":"user","content":"Write a Python hello world"}],"max_tokens":100}'
+  -d '{
+    "model": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+    "messages": [{"role": "user", "content": "Write a Python function to reverse a string."}],
+    "max_tokens": 200
+  }'
 ```
 
-Expected response includes a "choices" array with the generated text.
-
-**Step 5 — Stop**
-
-Linux/macOS: Press Ctrl+C in the terminal running start_api.sh. The server will clean up and exit.
-
-Windows: Press Ctrl+C in the PowerShell window running start_api.ps1, or close the window. The server will clean up and exit.
-
-### Demo talking point
-
-"This is a full coding assistant running on your laptop with no internet connection and no API costs — I just selected the model and it was ready in under 30 seconds."
+**Demo talking point:** "Any tool that works with OpenAI works with Lumina Edge — just change the URL."
 
 ---
 
-## Use Case 2 — Multi-Model Router
+## Use Case 2: Multi-Model Router
 
-### What this is
+**What it demonstrates:** model-router.py starts multiple llama-server instances on separate ports and proxies requests in round-robin fashion. If one instance dies, traffic routes to healthy ones.
 
-Multi-Model Router load-balances across multiple LLM instances with round-robin and priority-based routing. Why this matters for edge: one powerful request doesn't block others, and if one instance fails, requests automatically route to healthy instances.
+**Expected behavior:** Two model servers run, requests alternate between them in logs, then one is killed and requests continue through the other.
 
-> **Tip**: For this use case, start the API server first using `./start_api.sh` (Linux/macOS) or `.\start_api.ps1` (Windows), then use the router script as shown below. The full launcher (`start_lumina.sh` / `start_lumina.ps1`) starts a single model only.
+### Start the Router
 
-### Step-by-step
-
-**Step 1 — Configure instances**
-
-Edit the `multi_model.instances` section in config.json:
-
-```json
-{
-  "multi_model": {
-    "base_port": 9000,
-    "instances": [
-      {"host": "127.0.0.1", "port": 9001, "priority": 1, "weight": 1},
-      {"host": "127.0.0.1", "port": 9002, "priority": 1, "weight": 1}
-    ]
-  }
-}
-```
-
-Same model file, different ports = two workers. For Linux, use GGUF files. For macOS, specify the MLX model directory path for each instance.
-
-**Step 2 — Start the router**
-
-Linux:
 ```bash
 python3 scripts/model-router.py load \
-  --bin-path ./bin \
-  --scripts ./scripts \
-  --models-dir ./models \
-  ./models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
-  ./models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
+  models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
+  models/second-model.gguf \
+  --bin-path bin \
+  --scripts scripts \
+  --models-dir models
 ```
 
-macOS:
-```bash
-python3 scripts/model-router.py load \
-  --bin-path ./bin \
-  --scripts ./scripts \
-  --models-dir ./models \
-  ./models/Qwen2.5-3B-Instruct/ \
-  ./models/Qwen2.5-3B-Instruct/
+Output:
 ```
+INFO: ✓ Registered model: tinyllama (ID: a1b2c3d4) on port 9001
+INFO: ✓ Started health checks (interval: 10s)
+INFO: ✓ Registered model: second-model (ID: e5f6g7h8) on port 9002
+INFO: ✓ Model server ready on port 9001
+INFO: ✓ Model server ready on port 9002
+INFO: ✓ Loaded routing policy: round-robin
+INFO: ✓ Loaded context size: 16384
 
-Windows:
-```powershell
-python scripts\model-router.py load --bin-path .\bin --scripts .\scripts --models-dir .\models .\models\tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf .\models\tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
-```
+🔄 Starting parallel model loading (2 models)...
 
-Expected output:
-```
-🚀 Starting llama-server: ./bin/llama-server -m ./models/... --port 9001 ...
-🚀 Starting llama-server: ./bin/llama-server -m ./models/... --port 9002 ...
-✓ Model server ready on port 9001
-✓ Model server ready on port 9002
 📊 Multi-Model Router Status:
   Total Models: 2
   Ready Models: 2
   Routing Policy: round-robin
+
+  Available Endpoints:
+    - tinyllama: http://127.0.0.1:9001/v1 (inferences: 0)
+    - second-model: http://127.0.0.1:9002/v1 (inferences: 0)
 ```
 
-**Step 3 — Verify round-robin**
+### Send Requests
 
-Run two requests back to back:
 ```bash
-curl http://127.0.0.1:9001/v1/chat/completions \
+# Route through proxy on port 9000
+curl http://127.0.0.1:9000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"local","messages":[{"role":"user","content":"Say the number 1"}],"max_tokens":10}'
+  -d '{"model": "local", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
+### Kill One Instance and Retry
+
 ```bash
-curl http://127.0.0.1:9002/v1/chat/completions \
+# Find and kill one llama-server process
+pkill -f "llama-server.*9002"
+
+# Request still succeeds via 9001
+curl http://127.0.0.1:9000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"local","messages":[{"role":"user","content":"Say the number 2"}],"max_tokens":10}'
+  -d '{"model": "local", "messages": [{"role": "user", "content": "Are you still there?"}]}'
 ```
 
-The router logs show requests alternating between instances. Watch the terminal output — each request logs which model instance handled it.
-
-**Step 4 — Verify health check failover**
-
-Kill one backend to see failover in action:
-```bash
-# Linux
-fuser -k 9001/tcp
-
-# macOS
-lsof -ti:9001 | xargs kill
-
-# Windows
-Get-Process -Id (Get-NetTCPConnection -LocalPort 9001 -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force
-```
-
-Then send another request to port 9000 (the router proxy). It routes to the healthy instance on port 9002. The router logs show:
-```
-⚠ Model <id> unhealthy, marking idle
-✓ Model <id> recovered, marking ready
-```
-
-**Step 5 — Stop**
-
-Linux/macOS: Press Ctrl+C to stop the router. All model instances clean up.
-
-Windows: Press Ctrl+C in the PowerShell window, or close the terminal. All model instances clean up.
-
-### Demo talking point
-
-"This router automatically distributes load across two local models — if one crashes, requests seamlessly fail over to the other in under 10 seconds."
+**Demo talking point:** "Zero-downtime model switching — kill a backend, requests keep flowing."
 
 ---
 
-## Use Case 3 — Vertical RAG (Legal / HR / NGO)
+## Use Case 3: Vertical RAG (Legal / HR / NGO)
 
-### What this is
+**What it demonstrates:** ingest_docs.py reads PDF/DOCX/TXT files, chunks them, generates embeddings, and stores them in a local vector database organized by domain. query_docs.py retrieves relevant chunks and sends them plus the question to the LLM, which answers with citations showing which source files it used.
 
-Vertical RAG delivers domain-specific AI grounded in YOUR documents. Ingest PDF/DOCX/TXT files into a vector database, then ask questions — the AI answers with citations showing which documents it used. No hallucination, no training data reliance, just your data.
+**Expected behavior:** A question is answered with file-name citations proving the AI read YOUR documents.
 
-> **Tip**: The LLM API server is required for RAG. You can either:
-> - Run `./start_lumina.sh` (Linux/macOS) or `.\start_lumina.ps1` (Windows) to start everything at once
-> - Or run `./start_api.sh` / `.\start_api.ps1` just for the API server
+### Ingest Documents
 
-### Step-by-step
-
-**Step 1 — Prepare documents**
-
-Linux/macOS:
+**Linux / macOS:**
 ```bash
-mkdir -p rag/documents/legal
-mkdir -p rag/documents/hr
-mkdir -p rag/documents/ngo
+python3 scripts/ingest_docs.py demo_docs/ --domain legal
 ```
 
-Windows:
+**Windows:**
 ```powershell
-New-Item -ItemType Directory -Force -Path rag\documents\legal, rag\documents\hr, rag\documents\ngo
+python scripts\ingest_docs.py demo_docs\ --domain legal
 ```
 
-Place PDF/DOCX/TXT files into the relevant folder. For demo: put sample documents in each folder:
-- `rag/documents/legal/sample_nda.txt` — copy from demo_docs/
-- `rag/documents/hr/employee_handbook_excerpt.txt` — copy from demo_docs/
-- `rag/documents/ngo/grant_report_q1.txt` — copy from demo_docs/
-
-**Step 2 — Ingest documents**
-
-Linux/macOS:
-```bash
-python3 scripts/ingest_docs.py rag/documents/legal --domain legal
-python3 scripts/ingest_docs.py rag/documents/hr --domain hr
-python3 scripts/ingest_docs.py rag/documents/ngo --domain ngo
+Output:
 ```
+Loading embedding model: all-MiniLM-L6-v2
+  ✓ Model loaded successfully
+Created new collection: legal_docs
 
-Windows:
-```powershell
-python scripts\ingest_docs.py rag\documents\legal --domain legal
-python scripts\ingest_docs.py rag\documents\hr --domain hr
-python scripts\ingest_docs.py rag\documents\ngo --domain ngo
-```
-
-Expected output:
-```
 Found 1 document(s) to ingest
+
 📄 Processing: sample_nda.txt
   Extracted 1204 characters
   Created 3 chunks
   Generating embeddings...
   ✓ Ingested 3 chunks successfully
+
 ✓ Ingestion complete!
   Files processed: 1/1
+  Duplicates skipped: 0
   Total chunks stored: 3
   Collection: legal_docs
 ```
 
-Note: This only needs to be run once per document set. Re-running is safe — deduplication handles it.
-
-**Step 3 — Start the RAG API**
-
-The RAG system queries the main LLM API. Ensure the API server is running:
-
-Linux/macOS:
+Repeat for other domains:
 ```bash
-./start_api.sh
+python3 scripts/ingest_docs.py demo_docs/ --domain hr
+python3 scripts/ingest_docs.py demo_docs/ --domain ngo
 ```
 
-Windows:
-```powershell
-.\start_api.ps1
-```
+### Query Documents
 
-Then query documents using the query script:
-
-**Legal query:**
-
-Linux/macOS:
+**Linux / macOS:**
 ```bash
-python3 scripts/query_docs.py "What are the termination clauses?" --domain legal
+python3 scripts/query_docs.py "What is the confidentiality period in the NDA?" --domain legal
 ```
 
-Windows:
+**Windows:**
 ```powershell
-python scripts\query_docs.py "What are the termination clauses?" --domain legal
+python scripts\query_docs.py "What is the confidentiality period in the NDA?" --domain legal
 ```
 
-**HR query:**
-
-Linux/macOS:
-```bash
-python3 scripts/query_docs.py "What is the leave policy?" --domain hr
+Output:
 ```
-
-Windows:
-```powershell
-python scripts\query_docs.py "What is the leave policy?" --domain hr
-```
-
-**NGO query:**
-
-Linux/macOS:
-```bash
-python3 scripts/query_docs.py "What are the funding guidelines?" --domain ngo
-```
-
-Windows:
-```powershell
-python scripts\query_docs.py "What are the funding guidelines?" --domain ngo
-```
-
-Expected response:
-```
-🔍 Query: "What are the termination clauses?"
+🔍 Query: "What is the confidentiality period in the NDA?"
 📚 Retrieving top 5 relevant chunks from legal collection...
+
 ✓ Retrieved 2 chunks
 ⚙️ Querying LLM on port 8090...
 
 ======================================================================
 📝 ANSWER:
 ======================================================================
-[Answer from the AI based on retrieved documents]
+The NDA specifies that the confidentiality obligations shall remain in effect for a period of three (3) years following the termination of this Agreement.
 ======================================================================
 
 📚 Sources Referenced:
-  📄 sample_nda.txt (chunk 1/3)
-  📄 sample_nda.txt (chunk 2/3)
+  📄 sample_nda.txt (chunk 1/2)
+  📄 sample_nda.txt (chunk 2/2)
 ```
 
-**Step 4 — Verify domain isolation**
-
-Prove that Legal queries don't bleed into HR results:
-
-Linux/macOS:
-```bash
-python3 scripts/query_docs.py "What are the termination clauses?" --domain hr
-```
-
-Windows:
-```powershell
-python scripts\query_docs.py "What are the termination clauses?" --domain hr
-```
-
-Expected: "No relevant documents found above similarity threshold." or a very low-confidence response that clearly didn't come from Legal documents.
-
-**Step 5 — Stop**
-
-Linux/macOS: Press Ctrl+C to stop the API server.
-
-Windows: Press Ctrl+C in the PowerShell window, or close the terminal.
-
-### Demo talking point
-
-"This AI answers questions from YOUR documents with source citations — see those file names? That's proof it's using your data, not hallucinating."
+**Demo talking point:** "The answer cites exactly which file and chunk it used — no hallucination, no guesswork."
 
 ---
 
-## Use Case 4 — Multi-Agent Pipeline
+## Use Case 4: Multi-Agent Pipeline
 
-### What this is
+**What it demonstrates:** pipeline/orchestrator.py starts two separate llama-server instances (agents), each assigned a role from config.json. A single user request flows through both agents in sequence — agent 1's output becomes agent 2's input. The demo uses dirty server logs: agent 1 (cleaner) normalizes inconsistent timestamps and removes duplicates, agent 2 (categorizer) assigns severity labels and groups entries by category.
 
-Multi-Agent Pipeline chains multiple LLMs together sequentially. One request flows through all agents, each transforming the output. Real example: a cleaner agent first normalizes dirty log data, then a categorizer agent assigns severity labels and categorizes entries.
+**Expected behavior:** Raw messy log input goes in, structured categorized JSON output comes out. The /health endpoint shows both agents' activity timestamps proving both ran.
 
-> **Note**: The pipeline uses its own API (`pipeline_api.py`). This is separate from the main Lumina launcher. Start it directly as shown below.
+### Start the Pipeline
 
-### Step-by-step
-
-**Step 1 — Configure agents in config.json**
-
-Edit the `agents` section in config.json:
-
-```json
-{
-  "agents": {
-    "cleaner": {
-      "name": "cleaner",
-      "port": 8001,
-      "model_path": "./models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
-      "description": "Cleans and normalizes raw log data"
-    },
-    "categorizer": {
-      "name": "categorizer",
-      "port": 8002,
-      "model_path": "./models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
-      "description": "Assigns severity and category to log entries"
-    }
-  },
-  "api": {
-    "host": "0.0.0.0",
-    "port": 8000
-  }
-}
-```
-
-Linux/macOS: model_path points to GGUF files.
-macOS: model_path points to MLX model directories (e.g., mlx-community/Llama-3.2-3B-Instruct-4bit).
-Windows: model_path points to GGUF files (e.g., .\models\tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf).
-
-**Step 2 — Prepare a sample log file for the demo**
-
-Create a realistic dirty log file:
-
-Linux/macOS:
+**Linux / macOS:**
 ```bash
-cat > /tmp/demo_logs.txt << 'EOF'
-2024-01-15 08:23:11.442 [ERROR] usr=john.doe@company.com db_conn failed: timeout after 30s retrying...
-2024-01-15 08:23:11.443 [ERROR] usr=john.doe@company.com db_conn failed: timeout after 30s retrying...
-2024-01-15 08:23:12.001 [INFO] heartbeat ok
-2024-1-15 8:23:15 WARN network latency spike 450ms on eth0
-2024-01-15 08:24:00.000 [CRITICAL] auth service unreachable - 127.0.0.1:8443 connection refused
-null null null [DEBUG] gc sweep complete 14ms
-2024-01-15 08:24:01 INFO heartbeat ok
-2024-01-15 08:24:05 ERROR payment gateway timeout usr=jane.smith@company.com amount=4999
-EOF
+./pipeline/start_pipeline.sh
 ```
 
-Windows:
+**Windows:**
 ```powershell
-@"
-2024-01-15 08:23:11.442 [ERROR] usr=john.doe@company.com db_conn failed: timeout after 30s retrying...
-2024-01-15 08:23:11.443 [ERROR] usr=john.doe@company.com db_conn failed: timeout after 30s retrying...
-2024-01-15 08:23:12.001 [INFO] heartbeat ok
-2024-1-15 8:23:15 WARN network latency spike 450ms on eth0
-2024-01-15 08:24:00.000 [CRITICAL] auth service unreachable - 127.0.0.1:8443 connection refused
-null null null [DEBUG] gc sweep complete 14ms
-2024-01-15 08:24:01 INFO heartbeat ok
-2024-01-15 08:24:05 ERROR payment gateway timeout usr=jane.smith@company.com amount=4999
-"@ | Out-File -FilePath $env:TEMP\demo_logs.txt -Encoding UTF8
+.\pipeline\start_pipeline.ps1
 ```
 
-This log is intentionally dirty: duplicate lines, inconsistent timestamp formats, PII (email addresses), mixed severity formats. Perfect for showing what the cleaner agent does.
+Output:
+```
+Loading config from config.json...
+Model found: models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
+Model found: models/LFM2.5-1.2B-Thinking-Q4_K_M.gguf
 
-**Step 3 — Start the pipeline**
+==========================================
+Starting Agent 1 (Cleaner) on port 8001...
+==========================================
+Cleaner PID: 12345
 
-Linux/macOS:
+==========================================
+Starting Agent 2 (Categorizer) on port 8002...
+==========================================
+Categorizer PID: 12346
+
+Waiting for agents to initialize...
+Agent 1 (Cleaner) ready on port 8001
+Agent 2 (Categorizer) ready on port 8002
+
+==========================================
+Starting Orchestrator on port 8000...
+==========================================
+Orchestrator PID: 12347
+
+==========================================
+PIPELINE READY
+==========================================
+Agent 1 (Cleaner):  http://localhost:8001
+Agent 2 (Categorizer): http://localhost:8002
+Orchestrator:     http://localhost:8000
+```
+
+### Send a Request
+
 ```bash
-python3 pipeline_api.py
-```
-
-Windows:
-```powershell
-python pipeline_api.py
-```
-
-Expected output:
-```
-INFO:     Started server process [12345]
-INFO:     Application startup complete.
-[Lumina Pipeline] INFO: Created orchestrator with 2 agents
-```
-
-Note: macOS waits 5 seconds for MLX model load. The terminal shows "Application startup complete." when ready.
-
-**Step 4 — Run the pipeline on the sample logs**
-
-Linux/macOS:
-```bash
-curl http://127.0.0.1:8000/v1/chat/completions \
+curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d "{\"model\":\"lumina-pipeline\",\"messages\":[{\"role\":\"user\",\"content\":$(cat /tmp/demo_logs.txt | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))\")}]}"
+  -d '{
+    "model": "lumina-pipeline",
+    "messages": [
+      {
+        "role": "user",
+        "content": "2024-01-15 10:30:22 ERROR 192.168.1.100 Connection refused to db-server\n2024-01-15 10:30:22 ERROR 192.168.1.100 Connection refused to db-server\n2024/01/15 10:31:05 WARN [EMAIL] Failed authentication attempt\n10:31:12 INFO heartbeat received"
+      }
+    ],
+    "max_tokens": 500
+  }'
 ```
 
-Windows (PowerShell):
-```powershell
-$content = Get-Content -Raw $env:TEMP\demo_logs.txt
-$body = @{
-    model = "lumina-pipeline"
-    messages = @(
-        @{role = "user"; content = $content}
-    )
-} | ConvertTo-Json -Compress
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/v1/chat/completions" -Method Post -ContentType "application/json" -Body $body
-```
-
-Expected: the categorizer's JSON output — cleaned logs organized by severity and category. Example:
+Output (truncated):
 ```json
 {
-  "id": "chatcmpl-...",
-  "choices": [{
-    "message": {
-      "content": "Cleaned logs:\n- 2024-01-15 08:23:11 [ERROR] Database connection timeout (john.doe@company.com)\n- 2024-01-15 08:23:12 [INFO] Heartbeat OK\n...\nCategorized:\n- CRITICAL: auth service unreachable\n- ERROR: payment gateway timeout\n..."
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "[{\"timestamp\": \"2024-01-15T10:30:22Z\", \"severity\": \"ERROR\", \"category\": \"db\", \"message\": \"Connection refused to db-server\"}, ...]"
+      }
     }
-  }]
+  ]
 }
 ```
 
-This is the money shot of the demo.
+### Check Pipeline Status
 
-**Step 5 — Check pipeline status**
-
-Linux/macOS:
 ```bash
-curl http://127.0.0.1:8000/api/v1/pipeline/status
+curl http://localhost:8000/health
 ```
 
-Windows:
-```powershell
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/pipeline/status"
-```
-
-Expected output:
+Output:
 ```json
-{
-  "pipeline": {"default_mode": "sequential", "max_parallel": 2},
-  "agents": {
-    "cleaner": {"port": 8001, "model_path": "..."},
-    "categorizer": {"port": 8002, "model_path": "..."}
-  },
-  "status": {
-    "cleaner": {"status": "idle", "port": 8001, "last_activity": 1234567890.0},
-    "categorizer": {"status": "idle", "port": 8002, "last_activity": 1234567895.0}
-  },
-  "is_running": true
-}
+{"status": "healthy", "service": "orchestrator"}
 ```
 
-**Step 6 — Show agent latency breakdown**
-
-Point to the latency fields in the status response. Each agent's contribution to total response time is tracked via last_activity timestamps. The difference between consecutive agent timestamps shows individual latency.
-
-**Step 7 — Stop**
-
-Linux/macOS: Press Ctrl+C in the terminal running pipeline_api.py. Clean shutdown message appears.
-
-Windows: Press Ctrl+C in the PowerShell window, or close the terminal. Clean shutdown message appears.
-
-### Demo talking point
-
-"Two local models working in sequence — the first cleans the dirty data, the second categorizes it — running entirely on this machine with zero cloud dependency."
+**Demo talking point:** "Two specialized models in sequence — cleaner normalizes the mess, categorizer structures it. One request, two models, structured output."
 
 ---
 
-## Troubleshooting
+## Quick Reference
 
-### Port already in use
+| Command | Platform | Description |
+|---|---|---|
+| `./start_api.sh` | Linux / macOS | API-only launcher |
+| `./start_lumina.sh` | Linux / macOS | Full stack (API + UI + OpenWebUI) |
+| `.\start_api.ps1` | Windows | API-only launcher |
+| `.\start_lumina.ps1` | Windows | Full stack |
+| `./pipeline/start_pipeline.sh` | Linux / macOS | Multi-agent pipeline |
+| `.\pipeline\start_pipeline.ps1` | Windows | Multi-agent pipeline |
+| `python3 scripts/ingest_docs.py <dir> --domain <legal\|hr\|ngo>` | All | Ingest documents for RAG |
+| `python3 scripts/query_docs.py "<question>" --domain <domain>` | All | Query RAG system |
+| `python3 scripts/model-router.py load <model1> <model2> --bin-path bin --scripts scripts --models-dir models` | All | Multi-model router |
 
-Linux:
+### Default Ports
+
+| Service | Port |
+|---|---|
+| API (inference) | 8090 |
+| API (management) | 8081 |
+| UI (Vite) | 5173 |
+| OpenWebUI | 8080 |
+| MLX backend | 8091 |
+| Pipeline cleaner | 8001 |
+| Pipeline categorizer | 8002 |
+| Pipeline orchestrator | 8000 |
+| Router proxy | 9000 |
+| Router instances | 9001, 9002 |
+
+### Stop Services
+
+**Linux / macOS:**
 ```bash
-fuser -k 8090/tcp
-```
-
-macOS:
-```bash
-lsof -ti:8090 | xargs kill
-```
-
-Windows:
-```powershell
-Get-Process -Id (Get-NetTCPConnection -LocalPort 8090 -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force
-```
-
-Then restart the relevant component.
-
-### Model not loading / server not starting
-
-Check the log:
-
-Linux:
-```bash
-tail -50 .lumina_run/llama_server.log
-```
-
-macOS:
-```bash
-tail -50 .lumina_run/mlx_backend.log
-```
-
-Windows:
-```powershell
-Get-Content .lumina_run\llama_server.log -Tail 50
-```
-
-Common causes: wrong model path, not enough RAM, wrong binary permissions.
-
-### mlx_lm model downloading on first run (macOS)
-
-This is normal. The model downloads to ~/.cache/huggingface/. Progress is shown in the terminal. Can take 2-10 minutes on first run.
-
-To pre-download before the demo:
-```bash
-python3 -c "from mlx_lm import load; load('mlx-community/MODEL-NAME')"
-```
-
-### curl returns connection refused
-
-The server is not ready yet. Wait a few seconds and retry.
-Check if the process is running:
-
-Linux:
-```bash
-ps aux | grep llama-server
-```
-
-macOS:
-```bash
-ps aux | grep mlx_backend
-```
-
-Windows:
-```powershell
-Get-Process | Where-Object { $_.ProcessName -like "*llama-server*" }
-```
-
-### RAG returns empty results
-
-Documents may not be ingested. Re-run the ingestion step:
-
-Linux/macOS:
-```bash
-python3 scripts/ingest_docs.py rag/documents/legal --domain legal
-```
-
-Windows:
-```powershell
-python scripts\ingest_docs.py rag\documents\legal --domain legal
-```
-
-Check similarity threshold in config.json — it may be too high (lower the `retrieval_threshold` from 0.3 to 0.5 or 0.7).
-
-### OpenWebUI shows blank response
-
-The API response schema is wrong. Check pipeline_api.py returns all required OpenAI fields. Restart the API after any code changes:
-
-Linux/macOS:
-```bash
-# Stop with Ctrl+C, then restart
-python3 pipeline_api.py
-```
-
-Windows:
-```powershell
-# Stop with Ctrl+C, then restart
-python pipeline_api.py
-```
-
----
-
-## Quick Reference — All Commands
-
-### Quick Start — Full Stack Launcher
-
-**Linux/macOS:**
-```bash
-./start_lumina.sh                    # Start everything (backend + API + UI)
+pkill -f 'llama-server' 2>/dev/null || true
+pkill -f 'api-server.js' 2>/dev/null || true
+pkill -f 'vite' 2>/dev/null || true
+pkill -f 'orchestrator' 2>/dev/null || true
 ```
 
 **Windows:**
 ```powershell
-.\start_lumina.ps1                   # Start everything (backend + API + UI)
+Get-Process -Name "llama-server" -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process -Name "node" -ErrorAction SilentlyContinue | Stop-Process -Force
 ```
-
-Access points after launch:
-- Lumina Core UI: `http://localhost:5173`
-- API Server: `http://127.0.0.1:8090`
-- Management API: `http://127.0.0.1:8081`
-
-### UC1 — Coder (Agentic AI Coding)
-
-**Linux/macOS:**
-```bash
-./start_api.sh                                    # start API server
-curl http://127.0.0.1:8090/v1/models              # verify ready
-Ctrl+C                                           # stop
-```
-
-**Windows:**
-```powershell
-.\start_api.ps1                                   # start API server
-Invoke-RestMethod http://127.0.0.1:8090/v1/models  # verify ready
-Ctrl+C                                           # stop
-```
-
-### UC2 — Router (Multi-Model)
-
-**Linux/macOS:**
-```bash
-python3 scripts/model-router.py load --bin-path ./bin --scripts ./scripts --models-dir ./models ./models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf ./models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf  # start router
-curl http://127.0.0.1:9001/v1/models              # verify instance 1
-fuser -k 9001/tcp (Linux) / lsof -ti:9001 | xargs kill (macOS)  # simulate failover
-Ctrl+C                                           # stop
-```
-
-**Windows:**
-```powershell
-python scripts\model-router.py load --bin-path .\bin --scripts .\scripts --models-dir .\models .\models\tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf .\models\tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf  # start router
-Invoke-RestMethod http://127.0.0.1:9001/v1/models  # verify instance 1
-Get-Process -Id (Get-NetTCPConnection -LocalPort 9001 -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force  # simulate failover
-Ctrl+C                                           # stop
-```
-
-### UC3 — RAG (Vertical RAG)
-
-**Linux/macOS:**
-```bash
-mkdir -p rag/documents/legal rag/documents/hr rag/documents/ngo
-python3 scripts/ingest_docs.py rag/documents/legal --domain legal    # ingest legal docs
-python3 scripts/ingest_docs.py rag/documents/hr --domain hr           # ingest HR docs
-python3 scripts/ingest_docs.py rag/documents/ngo --domain ngo         # ingest NGO docs
-./start_api.sh                                   # start LLM API (required for RAG)
-python3 scripts/query_docs.py "Your question" --domain legal          # query legal
-python3 scripts/query_docs.py "Your question" --domain hr             # query HR
-Ctrl+C                                           # stop
-```
-
-**Windows:**
-```powershell
-New-Item -ItemType Directory -Force -Path rag\documents\legal, rag\documents\hr, rag\documents\ngo
-python scripts\ingest_docs.py rag\documents\legal --domain legal     # ingest legal docs
-python scripts\ingest_docs.py rag\documents\hr --domain hr            # ingest HR docs
-python scripts\ingest_docs.py rag\documents\ngo --domain ngo          # ingest NGO docs
-.\start_api.ps1                                  # start LLM API (required for RAG)
-python scripts\query_docs.py "Your question" --domain legal          # query legal
-python scripts\query_docs.py "Your question" --domain hr              # query HR
-Ctrl+C                                           # stop
-```
-
-### UC4 — Pipeline (Multi-Agent)
-
-**Linux/macOS:**
-```bash
-python3 pipeline_api.py                          # start pipeline API
-cat > /tmp/demo_logs.txt << 'EOF'
-...dirty log data...
-EOF
-curl http://127.0.0.1:8000/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"lumina-pipeline\",\"messages\":[{\"role\":\"user\",\"content\":$(cat /tmp/demo_logs.txt | python3 -c \"import sys,json; print(json.dumps(sys.stdin.read()))\")}]}"  # run pipeline
-curl http://127.0.0.1:8000/api/v1/pipeline/status  # check status
-Ctrl+C                                           # stop
-```
-
-**Windows:**
-```powershell
-python pipeline_api.py                          # start pipeline API
-@"
-...dirty log data...
-"@ | Out-File -FilePath $env:TEMP\demo_logs.txt -Encoding UTF8
-$content = Get-Content -Raw $env:TEMP\demo_logs.txt
-$body = @{model="lumina-pipeline";messages=@{role="user";content=$content}} | ConvertTo-Json -Compress
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/v1/chat/completions" -Method Post -ContentType "application/json" -Body $body  # run pipeline
-Invoke-RestMethod http://127.0.0.1:8000/api/v1/pipeline/status  # check status
-Ctrl+C                                           # stop
-```
-
----
-
-DEMO_GUIDE.md written. Review it before your demo.

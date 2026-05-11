@@ -24,7 +24,7 @@
   "_comment_kv": "KV cache quantization type: turbo, q8_0, q4_0, none \u2014 for llama.cpp only. TurboQuant requires --flash-attn.",
   "kv_cache_quant": "f16",
   "_comment_kv_quant": "Native KV cache quantization: turbo (TurboQuant build), q8_0, q4_0, none.",
-  "kv_quant": "turbo",
+  "kv_quant": "none",
   "split_mode": "row",
   "use_mlock": true,
   "_comment_numa": "numa_mode: distribute (multi-socket) or none (single socket). Auto-detected by system_optimizer.py.",
