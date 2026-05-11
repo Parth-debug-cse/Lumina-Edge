@@ -115,17 +115,17 @@
     "retry_on_error": true
   },
   "agents": {
-    "analyst": {
-      "name": "analyst",
+    "cleaner": {
+      "name": "cleaner",
       "port": 8001,
-      "model_path": "",
-      "description": "Analyzes and summarizes information"
+      "model_path": "models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+      "description": "Cleans and normalizes raw server logs"
     },
-    "writer": {
-      "name": "writer",
+    "categorizer": {
+      "name": "categorizer",
       "port": 8002,
-      "model_path": "",
-      "description": "Generates final output"
+      "model_path": "models/LFM2.5-1.2B-Thinking-Q4_K_M.gguf",
+      "description": "Categorizes cleaned log lines into structured JSON"
     }
   },
   "api": {

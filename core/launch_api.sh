@@ -1,0 +1,237 @@
+#!/bin/bash
+# ==============================================================================
+# launch_api.sh — Lumina Edge API Server Launcher for Linux/macOS
+# Reads all settings from config.json
+# ==============================================================================
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$ROOT_DIR"
+
+# Helper function to read from config.json
+get_config() {
+    local key="$1"
+    local default="$2"
+    if command -v python3 &>/dev/null && [[ -f "config.json" ]]; then
+        python3 -c "
+import json
+try:
+    v = json.load(open('config.json')).get('$key')
+    print(v if v is not None else $default)
+except Exception:
+    print($default)
+" 2>/dev/null || echo "$default"
+    else
+        echo "$default"
+    fi
+}
+
+# Parse arguments
+MODEL=""
+PORT=0
+GPU="vulkan"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --model) MODEL="$2"; shift 2 ;;
+        --port) PORT="$2"; shift 2 ;;
+        --gpu) GPU="$2"; shift 2 ;;
+        *) echo "Usage: $0 [--model path] [--port port] [--gpu vulkan|cuda|mlx]"; exit 1 ;;
+    esac
+done
+
+# Read configuration from config.json
+CONFIG_MODEL=$(get_config "model" "")
+CONFIG_PORT=$(get_config "api_port" 8090)
+CTX_SIZE=$(get_config "ctx_size" 16384)
+N_GPU_LAYERS=$(get_config "n_gpu_layers" 15)
+BATCH_SIZE=$(get_config "batch_size" 256)
+UBATCH_SIZE=$(get_config "ubatch_size" 256)
+FLASH_ATTN=$(get_config "flash_attn" "true")
+MIN_P=$(get_config "min_p" 0.05)
+TOP_K=$(get_config "top_k" 20)
+TOP_P=$(get_config "top_p" 0.9)
+REPEAT_PENALTY=$(get_config "repeat_penalty" 1.1)
+HTTP_THREADS=$(get_config "http_threads" 2)
+CONT_BATCHING=$(get_config "cont_batching" "true")
+KV_CACHE_QUANT=$(get_config "kv_cache_quant" "f16")
+USE_MLOCK=$(get_config "use_mlock" "true")
+NO_MMAP=$(get_config "no_mmap" "true")
+KV_QUANT=$(get_config "kv_quant" "turbo")
+
+# Use command-line parameters or fall back to config
+FINAL_MODEL="${MODEL:-$CONFIG_MODEL}"
+FINAL_PORT="${PORT:-$CONFIG_PORT}"
+
+# Determine if macOS (for MLX)
+IS_MAC=false
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    IS_MAC=true
+    GPU="mlx"
+fi
+
+echo "========================================"
+echo "Lumina Edge API Server Launcher"
+echo "========================================"
+
+# Validate model
+if [[ -z "$FINAL_MODEL" ]]; then
+    echo "ERROR: No model specified. Add 'model' field to config.json or use --model parameter"
+    exit 1
+fi
+
+MODEL_PATH="models/$FINAL_MODEL"
+if [[ ! -f "$MODEL_PATH" && ! -d "$MODEL_PATH" ]]; then
+    echo "ERROR: Model file not found: $MODEL_PATH"
+    echo ""
+    echo "Please download a model and place it in the models/ directory."
+    echo "Example models:"
+    echo "  - mistral-7b-instruct-v0.2.Q4_K_M.gguf"
+    echo "  - llama-2-7b-chat.Q4_K_M.gguf"
+    echo "  - phi-3-mini-4k-instruct.Q4_K_M.gguf"
+    echo ""
+    echo "Download from: https://huggingface.co/TheBloke"
+    exit 1
+fi
+
+echo "Model: $FINAL_MODEL"
+echo "Port: $FINAL_PORT"
+echo "GPU Backend: $GPU"
+echo "Context Size: $CTX_SIZE"
+echo "GPU Layers: $N_GPU_LAYERS"
+
+# Check if port is already in use
+if command -v ss &>/dev/null; then
+    if ss -tlnp 2>/dev/null | grep -q ":$FINAL_PORT "; then
+        echo "WARNING: Port $FINAL_PORT is already in use!"
+        echo "Run: ss -tlnp | grep ':$FINAL_PORT' to see which process is using it"
+    fi
+elif command -v netstat &>/dev/null; then
+    if netstat -tlnp 2>/dev/null | grep -q ":$FINAL_PORT "; then
+        echo "WARNING: Port $FINAL_PORT is already in use!"
+    fi
+fi
+
+# Ensure logs directory exists
+mkdir -p logs
+LOG_FILE="logs/api_server.log"
+
+# Build llama-server command arguments
+ARGS=(
+    "-m" "$MODEL_PATH"
+    "--port" "$FINAL_PORT"
+    "--host" "127.0.0.1"
+    "--ctx-size" "$CTX_SIZE"
+    "--n-gpu-layers" "$N_GPU_LAYERS"
+    "--batch-size" "$BATCH_SIZE"
+    "--ubatch-size" "$UBATCH_SIZE"
+    "--min-p" "$MIN_P"
+    "--top-k" "$TOP_K"
+    "--top-p" "$TOP_P"
+    "--repeat-penalty" "$REPEAT_PENALTY"
+    "--threads-http" "$HTTP_THREADS"
+)
+
+# Add boolean flags
+if [[ "$FLASH_ATTN" == "true" ]]; then
+    ARGS+=("--flash-attn")
+fi
+if [[ "$USE_MLOCK" == "true" ]]; then
+    ARGS+=("--mlock")
+fi
+if [[ "$NO_MMAP" == "true" ]]; then
+    ARGS+=("--no-mmap")
+fi
+if [[ "$CONT_BATCHING" == "true" ]]; then
+    ARGS+=("--cont-batching")
+fi
+
+# Add KV quantization flags
+if [[ "$KV_QUANT" == "turbo" ]]; then
+    ARGS+=("--cache-type-k" "turbo4" "--cache-type-v" "turbo3")
+elif [[ "$KV_QUANT" == "q8_0" ]]; then
+    ARGS+=("--cache-type-k" "q8_0" "--cache-type-v" "q8_0")
+elif [[ "$KV_QUANT" == "q4_0" ]]; then
+    ARGS+=("--cache-type-k" "q4_0" "--cache-type-v" "q4_0")
+fi
+
+# Find llama-server binary
+if [[ "$IS_MAC" == "true" ]]; then
+    # On macOS, use MLX backend instead
+    echo ""
+    echo "Starting MLX backend (macOS)..."
+    python3 scripts/mlx_backend.py --mode api --model "$MODEL_PATH" --port "$FINAL_PORT" 2>&1 | tee "$LOG_FILE"
+else
+    BINARY_PATH="bin/llama-server"
+    if [[ ! -x "$BINARY_PATH" ]]; then
+        echo "ERROR: llama-server not found or not executable at $BINARY_PATH"
+        echo "Please ensure llama.cpp binaries are in bin/ directory."
+        exit 1
+    fi
+
+    echo ""
+    echo "Starting llama-server..."
+    echo "Binary: $BINARY_PATH"
+    echo "Log file: $LOG_FILE"
+    echo ""
+    echo "Command: $BINARY_PATH ${ARGS[*]}"
+    echo "========================================"
+    echo ""
+
+    # Start the server
+    "$BINARY_PATH" "${ARGS[@]}" >> "$LOG_FILE" 2>&1 &
+    SERVER_PID=$!
+
+    echo "Server started with PID: $SERVER_PID"
+    echo "Waiting for server to initialize..."
+
+    # Wait for server to be ready
+    MAX_WAIT=30
+    WAITED=0
+    READY=false
+
+    while [[ $WAITED -lt $MAX_WAIT ]]; do
+        sleep 1
+        ((WAITED++))
+
+        # Check if process is still running
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "ERROR: Server process exited unexpectedly!"
+            echo "Check log: $LOG_FILE"
+            exit 1
+        fi
+
+        # Try to connect to health endpoint
+        if curl -s "http://127.0.0.1:$FINAL_PORT/health" >/dev/null 2>&1; then
+            READY=true
+            break
+        fi
+
+        # Show progress
+        if ((WAITED % 5 == 0)); then
+            echo "  ... waiting ($WAITED/$MAX_WAIT seconds)"
+        fi
+    done
+
+    if [[ "$READY" == "true" ]]; then
+        echo ""
+        echo "✓ Server is ready!"
+        echo "  API URL: http://127.0.0.1:$FINAL_PORT"
+        echo "  Health: http://127.0.0.1:$FINAL_PORT/health"
+        echo ""
+        echo "To test the server, run:"
+        echo "  python3 scripts/check_server.py"
+        echo ""
+        echo "Press Ctrl+C to stop the server"
+
+        # Wait for user to press Ctrl+C
+        wait $SERVER_PID
+    else
+        echo "ERROR: Server failed to start within $MAX_WAIT seconds."
+        echo "Check log: $LOG_FILE"
+        kill $SERVER_PID 2>/dev/null
+        exit 1
+    fi
+fi

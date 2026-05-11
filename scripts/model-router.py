@@ -1026,8 +1026,13 @@ if __name__ == '__main__':
             print(f"✓ Set routing policy to: {args.policy}")
     
     elif args.command == 'dispatch':
-        # Load server from state or create new
-        server = MultiModelServer("/tmp/bin", "/tmp/scripts", "/tmp/models")  # Placeholder paths
+        script_dir = Path(__file__).parent.resolve()
+        project_root = script_dir.parent
+        server = MultiModelServer(
+            str(project_root / "bin"),
+            str(project_root / "scripts"),
+            str(project_root / "models")
+        )
         dispatcher = AgentDispatcher(server)
         
         if args.dispatch_cmd == 'single':
@@ -1052,8 +1057,13 @@ if __name__ == '__main__':
             print(json.dumps(result, indent=2))
     
     elif args.command == 'agent' and args.mode == 'interactive':
-        # Load server
-        server = MultiModelServer("/tmp/bin", "/tmp/scripts", "/tmp/models")  # Placeholder
+        script_dir = Path(__file__).parent.resolve()
+        project_root = script_dir.parent
+        server = MultiModelServer(
+            str(project_root / "bin"),
+            str(project_root / "scripts"),
+            str(project_root / "models")
+        )
         dispatcher = AgentDispatcher(server)
         
         print("🤖 Lumina Edge Agent Mode")

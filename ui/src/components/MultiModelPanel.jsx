@@ -298,6 +298,8 @@ export default function MultiModelPanel({ toast }) {
           background: rgba(0, 0, 0, 0.2);
           border-radius: 8px;
           border: 1px solid var(--border);
+          flex: 1;
+          overflow-y: auto;
         }
 
         .panel-header {

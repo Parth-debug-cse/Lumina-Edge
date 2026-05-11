@@ -220,7 +220,7 @@ export default function App() {
           </div>
         </div>
 
-        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
           {renderPanel()}
         </div>
       </div>
