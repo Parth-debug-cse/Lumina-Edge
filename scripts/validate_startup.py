@@ -71,45 +71,10 @@ def validate_all():
             except ImportError:
                 warnings.append("'requests' module not installed - cannot check server status")
             
-            # 6. VectorDB exists
-            vectordb_path = Path(config.get('vectordb_path', 'vectordb'))
-            if vectordb_path.exists():
-                print(f"✓ VectorDB directory exists: {vectordb_path}")
-                
-                # Check if populated
-                try:
-                    import chromadb
-                    client = chromadb.PersistentClient(path=str(vectordb_path))
-                    collections = client.list_collections()
-                    if collections:
-                        for coll in collections:
-                            count = coll.count()
-                            print(f"  - Collection '{coll.name}': {count} chunks")
-                    else:
-                        warnings.append("VectorDB exists but has no collections - run ingest_docs.py")
-                except ImportError:
-                    warnings.append("chromadb not installed - cannot check collections")
-                except Exception as e:
-                    warnings.append(f"Cannot read VectorDB: {e}")
-            else:
-                warnings.append("VectorDB not initialized - will be created on first ingestion")
-            
-            # 7. RAG settings
-            rag_enabled = config.get('rag_enabled', True)
-            if rag_enabled:
-                print(f"✓ RAG is enabled")
-            else:
-                print(f"  ℹ RAG is disabled in config")
-            
-            # 8. Dependencies check
+            # 6. Dependencies check
             print("\nChecking Python dependencies...")
             deps_to_check = [
                 ('requests', 'requests'),
-                ('chromadb', 'chromadb'),
-                ('sentence_transformers', 'sentence-transformers'),
-                ('tiktoken', 'tiktoken'),
-                ('pymupdf', 'pymupdf'),
-                ('docx', 'python-docx'),
             ]
             
             missing_deps = []

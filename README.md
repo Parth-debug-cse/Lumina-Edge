@@ -293,45 +293,6 @@ curl http://localhost:8090/v1/chat/completions \
 
 ---
 
-## Multi-Model Parallel Loading & Routing
-
-Load and run **multiple models in parallel**, with intelligent request routing between them. Useful for load balancing, A/B testing, or running specialized models per task type.
-
-### Routing Policies
-
-| Policy | Behavior | Best For |
-|--------|----------|----------|
-| **Round-Robin** | Distributes requests evenly across all models | Load balancing, testing consistency |
-| **Load-Balanced** | Routes to model with lowest inference count | Optimal throughput with mixed model sizes |
-| **First-Available** | Uses fastest ready model | Maximizing speed for simple queries |
-
-### Programmatic Usage
-
-```python
-import requests
-import subprocess
-
-subprocess.Popen([
-    'python', 'scripts/model-router.py', 'load',
-    'models/mistral-7b.gguf',
-    'models/tinyllama-1.1b.gguf',
-    '--bin-path', 'bin',
-    '--scripts', 'scripts',
-    '--models-dir', 'models'
-])
-
-# Query Model 1
-response = requests.post(
-    'http://127.0.0.1:8000/v1/chat/completions',
-    json={'model': 'local', 'messages': [{'role': 'user', 'content': 'Hello!'}], 'stream': False}
-)
-
-# Query Model 2
-response2 = requests.post('http://127.0.0.1:8001/v1/chat/completions', json=...)
-```
-
----
-
 ## Management API Reference
 
 All endpoints available on **port 8090** (inference + management) and **port 8081** (management only).
@@ -346,13 +307,6 @@ All endpoints available on **port 8090** (inference + management) and **port 808
 | `/api/save-config` | POST | Update configuration |
 | `/api/models/list` | GET | List available models |
 | `/api/models/convertible` | GET | List convertible model files |
-| `/api/router/status` | GET | Router status + all loaded models |
-| `/api/router/models` | GET | Loaded model details |
-| `/api/router/routes` | GET | Ready model endpoints |
-| `/api/router/load` | POST | Load a model into the router |
-| `/api/router/unload/:id` | DELETE | Unload a model (SIGTERM→SIGKILL escalation) |
-| `/api/router/unload-all` | DELETE | Unload all models |
-| `/api/router/policy` | POST | Set routing policy |
 | `/api/inference/profile` | POST | Profile inference speed (tok/s, latency) |
 | `/api/inference/diagnose` | GET | System-level inference diagnostics |
 | `/api/inference/report` | GET | Full diagnostics + profiling report |
@@ -473,7 +427,6 @@ A full system reboot also restores all services automatically.
 
 ### v1.1 — Developer Tooling *(Completed)*
 - [x] `config.json` for persistent hyperparameter settings (threads, context size, GPU layers, temperature)
-- [x] Multi-model parallel loading and routing
 - [x] HuggingFace multi-file shard support
 - [x] `--benchmark` flag for automated tokens/sec and memory profiling
 - [x] Structured JSON output mode for agent / tool-use pipelines
