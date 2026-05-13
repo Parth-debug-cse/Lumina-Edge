@@ -145,6 +145,9 @@ echo "GPU: $GPU"
 echo "Port: $PORT"
 
 # Handle MLX backend (macOS/Apple Silicon)
+# Tool calling: MLX handles Jinja chat templates natively — no --jinja flag needed.
+# Requires a model with tool_call support in its chat template.
+# Recommended: Phi-4-mini, Gemma3-4B, Llama-3.2-3B (GGUF).
 if [[ "$GPU" == "mlx" ]]; then
     echo "Backend: MLX (Apple Silicon)"
     echo "MLX Max Tokens: $(get_config mlx_max_tokens 2048)"
@@ -158,6 +161,8 @@ echo "Context Size: $CTX_SIZE"
 echo "GPU Layers: $N_GPU_LAYERS"
 
 # Build and execute command
+# Tool calling requires a model with a Jinja chat template that includes
+# tool_call support. Recommended: Phi-4-mini, Gemma3-4B, Llama-3.2-3B (GGUF).
 set -x
 ./bin/llama-server -m "$MODEL" \
     --port "$PORT" \
@@ -172,6 +177,7 @@ set -x
     --top-p "$TOP_P" \
     --repeat-penalty "$REPEAT_PENALTY" \
     --threads-http "$HTTP_THREADS" \
+    --jinja \
     $CONT_BATCH_FLAGS \
     $MLOCK_FLAG \
     $NO_MMAP_FLAG \

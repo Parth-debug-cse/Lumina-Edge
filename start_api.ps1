@@ -94,6 +94,8 @@ if (-not (Test-Path $LLAMA_SERVER)) {
     exit 1
 }
 
+# Tool calling requires a model with a Jinja chat template that includes
+# tool_call support. Recommended: Phi-4-mini, Gemma3-4B, Llama-3.2-3B (GGUF).
 $Arguments = @(
     "-m", $ModelPath,
     "--port", $FinalPort,
@@ -107,7 +109,8 @@ $Arguments = @(
     "--top-p", $TopP,
     "--top-k", $TopK,
     "--repeat-penalty", $RepeatPenalty,
-    "--min-p", $MinP
+    "--min-p", $MinP,
+    "--jinja"
 )
 
 if ($FlashAttn -eq $true) { $Arguments += "--flash-attn" }

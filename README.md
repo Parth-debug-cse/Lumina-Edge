@@ -7,9 +7,10 @@
 [![MLX](https://img.shields.io/badge/Apple_MLX-Native-000000?style=flat-square&logo=apple&logoColor=white)](https://github.com/Parth-debug-cse/Lumina-Edge)
 [![Vulkan](https://img.shields.io/badge/Vulkan-Supported-AC162C?style=flat-square&logo=vulkan&logoColor=white)](https://github.com/Parth-debug-cse/Lumina-Edge)
 [![CUDA](https://img.shields.io/badge/CUDA-535%2B-76B900?style=flat-square&logo=nvidia&logoColor=white)](https://github.com/Parth-debug-cse/Lumina-Edge)
+[![Goose](https://img.shields.io/badge/Goose-Agentic-7C3AED?style=flat-square&logo=go&logoColor=white)](https://github.com/block/goose)
 <br/>
 
-**[Quick Start](#-quick-start) · [API Docs](#-openai-compatible-api) · [Benchmarks](#-benchmarks) · [Roadmap](#-roadmap) · [Contributing](#-contributing)**
+**[Quick Start](#-quick-start) · [API Docs](#-openai-compatible-api) · [Goose Agent](#use-case-1---agentic-coding-assistant-with-goose) · [Benchmarks](#-benchmarks) · [Roadmap](#-roadmap) · [Contributing](#contributing)**
 
 </div>
 
@@ -450,6 +451,145 @@ A full system reboot also restores all services automatically.
 - [ ] Advanced scheduling for multi-GPU setups
 - [ ] Model ensemble routing (combine outputs from multiple models)
 - [ ] Python SDK wrapper for programmatic lifecycle control
+- [x] Goose agentic coding assistant integration (USE CASE 1)
+
+---
+
+## USE CASE 1 - Agentic Coding Assistant with Goose
+
+Integrate [Goose](https://github.com/block/goose) (by Block/AAIF) as an autonomous coding agent on top of Lumina Edge's local API. Goose connects to `http://localhost:8090/v1`, reads/writes files, runs shell commands, observes output, and self-corrects — all without any cloud API calls or API keys.
+
+### Architecture
+
+```
+┌────────────────────────────────────────────────────┐
+│  Goose (agentic coding layer)                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────┐ │
+│  │  Developer   │  │   Shell     │  │  File    │ │
+│  │  Extension   │  │  Extension  │  │  System  │ │
+│  └──────┬───────┘  └──────┬───────┘  └─────┬────┘ │
+│         └─────────────────┼─────────────────┘      │
+│                           │                        │
+│              OpenAI-compatible API call             │
+└───────────────────────────┼────────────────────────┘
+                            │
+                  ┌─────────▼─────────┐
+                  │  localhost:8090    │
+                  │  (Lumina Edge API) │
+                  ├────────────────────┤
+                  │  macOS: MLX        │
+                  │  Linux: llama.cpp  │
+                  │  Win:   llama.cpp  │
+                  └────────────────────┘
+```
+
+### Prerequisites
+
+- Lumina Edge installed and configured
+- At least one model in `models/` (GGUF for Linux/Win, MLX/safetensors for macOS)
+- Goose installed (use the install scripts below)
+
+### Installation
+
+**Option 1 — Install scripts (recommended):**
+
+```bash
+# macOS / Linux
+chmod +x install-goose.sh
+./install-goose.sh
+
+# Windows PowerShell
+.\install-goose.ps1
+```
+
+The installer:
+1. Downloads and installs Goose if not already present
+2. Creates `~/.config/goose/config.yaml` (or `%APPDATA%\Block\goose\config\config.yaml` on Windows) pointing at `http://localhost:8090/v1`
+3. Enables the **developer** builtin extension (shell + file system tools)
+4. Creates a custom provider JSON for Goose Desktop GUI support
+5. Optionally verifies the connection if Lumina Edge is already running
+
+**Option 2 — Manual config:**
+
+```yaml
+# ~/.config/goose/config.yaml  (macOS/Linux)
+# %APPDATA%\Block\goose\config\config.yaml  (Windows)
+GOOSE_PROVIDER: "openai"
+GOOSE_MODE: "auto"
+GOOSE_MAX_TURNS: 1000
+OPENAI_API_KEY: "lumina-edge"
+OPENAI_HOST: "http://localhost:8090/v1"
+
+extensions:
+  developer:
+    bundled: true
+    enabled: true
+    name: developer
+    timeout: 300
+    type: builtin
+```
+
+### Usage
+
+**Single-command launcher (starts Lumina + Goose):**
+
+```bash
+# macOS / Linux
+./start-goose.sh
+
+# Windows PowerShell
+.\start-goose.ps1
+```
+
+The launcher:
+1. Auto-detects your platform (MLX on macOS, llama-server on Linux/Win)
+2. Auto-detects the first available model in `models/`
+3. Starts the Lumina Edge API on port 8090
+4. Waits for the server to be ready
+5. Sets `OPENAI_API_KEY`, `OPENAI_HOST`, and `GOOSE_PROVIDER` env vars
+6. Launches `goose session start`
+
+**Or run Goose independently (Lumina must already be running):**
+
+```bash
+export OPENAI_API_KEY="lumina-edge"
+export OPENAI_HOST="http://localhost:8090/v1"
+goose session start
+```
+
+### What Goose Can Do
+
+With the developer extension enabled, Goose can autonomously:
+- **Read and write files** across the codebase
+- **Execute shell commands** (build, test, lint, git)
+- **Observe command output** and self-correct
+- **Loop until the task is complete** — no manual intervention
+
+### Platform Rules (automatically enforced by all scripts)
+
+| Platform | Backend | Script type | Config path |
+|----------|---------|-------------|-------------|
+| macOS    | MLX (`mlx_lm`) | `.sh` | `~/.config/goose/config.yaml` |
+| Linux    | llama.cpp + Vulkan | `.sh` | `~/.config/goose/config.yaml` |
+| Windows  | llama.cpp | `.ps1` | `%APPDATA%\Block\goose\config\config.yaml` |
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `.goosehints` | Project context injected as Goose system prompt automatically |
+| `install-goose.sh` | macOS/Linux installer |
+| `install-goose.ps1` | Windows installer |
+| `start-goose.sh` | macOS/Linux launcher (Lumina + Goose) |
+| `start-goose.ps1` | Windows launcher (Lumina + Goose) |
+
+### Verify Configuration
+
+```bash
+goose info -v
+```
+
+This shows the active provider, model, extensions, and all settings.
 
 ---
 

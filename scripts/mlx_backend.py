@@ -11,6 +11,7 @@ import argparse
 import time
 import subprocess
 import platform
+import gc
 
 # ==============================================================================
 # PRE-IMPORT SETUP: Metal env vars and memory limit (must be before mlx import)
@@ -525,6 +526,26 @@ def launch_api_direct(model_path, port):
         print(f'[MLX Direct] ERROR: Model loading failed: {e}', flush=True)
         # Continue with server running - health endpoint will report not ready
 
+    # Memory check after model load
+    _MAX_TOKENS_CEILING = 2048
+    if MODEL_LOADED:
+        try:
+            if hasattr(mx, 'metal') and hasattr(mx.metal, 'get_active_memory'):
+                mem_used = mx.metal.get_active_memory() / (1024**3)
+            elif hasattr(mx, 'metal') and hasattr(mx.metal, 'get_peak_memory'):
+                mem_used = mx.metal.get_peak_memory() / (1024**3)
+            else:
+                import psutil
+                mem_used = psutil.Process().memory_info().rss / (1024**3)
+            print(f'[MLX Direct] Memory used after load: {mem_used:.1f} GB', flush=True)
+            if mem_used > 6.0:
+                print('[MLX Direct] ⚠️ WARNING: Memory usage >6GB! Close other applications to avoid OOM.', flush=True)
+        except Exception as e:
+            print(f'[MLX Direct] Memory check skipped: {e}', flush=True)
+            mem_used = 0.0
+    else:
+        mem_used = 0.0
+
     # Get MLX-specific config values
     mlx_config = {
         'top_p': float(config.get('top_p', 0.9)),
@@ -534,9 +555,32 @@ def launch_api_direct(model_path, port):
         'stop_tokens': _parse_stop_tokens(config.get('mlx_stop_tokens', [])),
     }
 
+    # 1.5B-OPTIMIZATION: detect small model and tune defaults
+    model_name_lower = os.path.basename(abs_model_path).lower()
+    IS_1_5B = '1.5b' in model_name_lower
+    if IS_1_5B:
+        mlx_config['max_tokens'] = min(mlx_config['max_tokens'], 256)
+        _MAX_TOKENS_CEILING = 256
+        print('[MLX Direct] 1.5B model detected: max_tokens=256, temperature=0.1', flush=True)
+
     class MLXHandler(http.server.BaseHTTPRequestHandler):
+        # Use HTTP/1.1 for keep-alive (required for SSE streaming)
+        protocol_version = 'HTTP/1.1'
+
+        def handle_one_request(self):
+            try:
+                super().handle_one_request()
+            except ConnectionResetError:
+                pass
+            except BrokenPipeError:
+                pass
+            except Exception as e:
+                if 'Connection reset' in str(e) or 'broken pipe' in str(e).lower():
+                    pass
+                else:
+                    raise
+
         def log_message(self, format, *args):
-            # Suppress default HTTP request logging — too noisy
             pass
         
         def do_GET(self):
@@ -567,16 +611,50 @@ def launch_api_direct(model_path, port):
             elif self.path == '/health':
                 health_status = {
                     "status": "ok" if MODEL_LOADED else "error",
-                    "model_loaded": MODEL_LOADED
+                    "model_loaded": MODEL_LOADED,
+                    "model": os.path.basename(abs_model_path) if MODEL_LOADED else None,
+                    "uptime": int(time.time() - _server_start_time)
                 }
                 if MODEL_LOAD_ERROR:
                     health_status["error"] = MODEL_LOAD_ERROR
                 self._send_json(200 if MODEL_LOADED else 503, json.dumps(health_status))
+            elif self.path == '/health/memory':
+                try:
+                    if hasattr(mx, 'metal') and hasattr(mx.metal, 'get_active_memory'):
+                        current_mem = mx.metal.get_active_memory() / (1024**3)
+                    elif hasattr(mx, 'metal') and hasattr(mx.metal, 'get_peak_memory'):
+                        current_mem = mx.metal.get_peak_memory() / (1024**3)
+                    else:
+                        import psutil
+                        current_mem = psutil.Process().memory_info().rss / (1024**3)
+                except Exception:
+                    current_mem = 0.0
+                mem_status = {
+                    "memory_used_gb": round(current_mem, 1),
+                    "memory_total_gb": 8.0,
+                    "model_loaded": MODEL_LOADED,
+                    "model": os.path.basename(abs_model_path) if MODEL_LOADED else None
+                }
+                self._send_json(200, json.dumps(mem_status))
             else:
                 self._send_json(404, json.dumps({"error": "not found"}))
         
         def do_POST(self):
-            if '/chat/completions' not in self.path:
+            try:
+                self._handle_post()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f'[MLX] Unhandled error in do_POST: {e}', flush=True)
+                try:
+                    self._send_json(500, json.dumps({"error": f"Internal server error: {e}"}))
+                except Exception:
+                    pass
+                gc.collect()
+
+        def _handle_post(self):
+            # Accept standard /v1/chat/completions, /chat/completions, or bare /v1 path.
+            if not any(p in self.path for p in ['/chat/completions', '/v1']):
                 self._send_json(404, json.dumps({"error": "not found"}))
                 return
             
@@ -596,14 +674,127 @@ def launch_api_direct(model_path, port):
             except Exception as e:
                 self._send_json(400, json.dumps({"error": f"Invalid request: {e}"}))
                 return
-            
+
+            # Log request summary for debugging
+            req_model = request.get('model', '?')
+            req_msgs = len(request.get('messages', []))
+            req_tools = len(request.get('tools', []))
+            print(f'[MLX] Request: model={req_model} msgs={req_msgs} tools={req_tools}', flush=True)
+            for i, m in enumerate(request.get('messages', [])[:3]):
+                r = m.get('role', '?')
+                ct = type(m.get('content', '')).__name__
+                cl = len(str(m.get('content', '')))
+                print(f'[MLX]   msg[{i}] role={r} content_type={ct} content_len={cl}', flush=True)
+
             messages = request.get('messages', [])
-            temperature = float(request.get('temperature', config.get('temperature', 0.7)))
+            tools = request.get('tools', [])
+            tool_choice = request.get('tool_choice', 'auto')
+
+            # Store last user message for tool call fixing
+            self._last_user_msg = ''
+            for m in reversed(messages):
+                if m.get('role') == 'user':
+                    c = m.get('content', '')
+                    self._last_user_msg = c if isinstance(c, str) else ' '.join(p.get('text','') if isinstance(p,dict) else str(p) for p in c) if isinstance(c, list) else str(c)
+                    break
+
+            # 1.5B-OPTIMIZATION: apply low temperature default for small models
+            if IS_1_5B:
+                temperature = float(request.get('temperature', 0.1))
+            else:
+                temperature = float(request.get('temperature', config.get('temperature', 0.7)))
+
             max_tokens = int(request.get('max_tokens', mlx_config['max_tokens']))
+            # Clamp to memory-safe ceiling (prevents KV cache OOM on 8GB systems)
+            if max_tokens > _MAX_TOKENS_CEILING:
+                print(f'[MLX Direct] Clamping max_tokens from {max_tokens} to {_MAX_TOKENS_CEILING} (memory safety)', flush=True)
+                max_tokens = _MAX_TOKENS_CEILING
             stream = request.get('stream', True)
             top_p = float(request.get('top_p', mlx_config['top_p']))
             repetition_penalty = float(request.get('repetition_penalty', mlx_config['repetition_penalty']))
             
+            # 1.5B-OPTIMIZATION: inject system pre-prompt for small models
+            if IS_1_5B:
+                small_pre = "You are a precise assistant. Keep responses short. When asked to run a command, use the shell tool immediately without explaining first."
+                sys_idx = next((i for i, m in enumerate(messages) if m.get('role') == 'system'), None)
+                if sys_idx is not None:
+                    existing = messages[sys_idx]['content']
+                    if isinstance(existing, list):
+                        existing = ' '.join(p.get('text','') if isinstance(p,dict) else str(p) for p in existing)
+                    elif not isinstance(existing, str):
+                        existing = str(existing)
+                    messages[sys_idx] = {'role': 'system', 'content': f"{small_pre}\n\n{existing}"}
+                else:
+                    messages.insert(0, {'role': 'system', 'content': small_pre})
+
+            # If tools are provided, inject tool definitions into the system message
+            if tools:
+
+                # 1.5B-OPTIMIZATION: add imperative tool instruction for small models
+                if IS_1_5B:
+                    tool_block_extra = (
+                        "\n\nIMPORTANT: If the user asks you to run a command or execute something, you "
+                        "MUST call the function immediately. Do NOT create a to-do list or plan. "
+                        "Call the function NOW."
+                        "\n\nCRITICAL: The only function available is 'shell' with a 'command' argument. "
+                        "Never invent new function names. Use exactly 'shell'."
+                    )
+                else:
+                    tool_block_extra = ""
+                fn_lines = []
+                for t in tools:
+                    fn = t.get('function', t) if isinstance(t, dict) else t
+                    if not isinstance(fn, dict):
+                        continue
+                    name = fn.get('name', 'unknown')
+                    params = fn.get('parameters', {})
+                    if 'description' in fn and isinstance(fn['description'], str) and len(fn['description']) > 300:
+                        fn['description'] = fn['description'][:300] + '...'
+                    fn_lines.append(f"{name}:\n  {json.dumps(params, indent=2)}")
+
+                tool_block = (
+                    "You are a helpful assistant with access to functions. Use them if required.\n\n"
+                    "Available functions:\n"
+                    f"<functions>\n{chr(10).join(fn_lines)}\n</functions>\n\n"
+                    "To call a function, respond with a JSON object inside <tool_call> tags:\n"
+                    "<tool_call>\n"
+                    '{"name": "<function-name>", "arguments": <args-json-object>}\n'
+                    "</tool_call>\n\n"
+                    "If you decide to call a function, ONLY output the <tool_call> block and nothing\n"
+                    "else. Do NOT output any other text before or after the tool call."
+                    f"{tool_block_extra}"
+                )
+
+                sys_idx = next((i for i, m in enumerate(messages) if m.get('role') == 'system'), None)
+                if sys_idx is not None:
+                    existing = messages[sys_idx]['content']
+                    if isinstance(existing, list):
+                        existing = ' '.join(p.get('text', '') if isinstance(p, dict) else str(p) for p in existing)
+                    elif not isinstance(existing, str):
+                        existing = str(existing)
+                    messages[sys_idx] = {'role': 'system', 'content': f"{tool_block}\n\n{existing}"}
+                else:
+                    messages.insert(0, {'role': 'system', 'content': tool_block})
+
+                sys_msg = messages[sys_idx if sys_idx is not None else 0]['content']
+                print(f'[MLX Tool Injection] System message:\n{sys_msg}\n---END TOOL SYSTEM---', flush=True)
+            
+            # Normalize all message content to strings (required by apply_chat_template)
+            for m in messages:
+                c = m.get('content')
+                if isinstance(c, list):
+                    parts = []
+                    for p in c:
+                        if isinstance(p, dict):
+                            parts.append(p.get('text', json.dumps(p)))
+                        else:
+                            parts.append(str(p))
+                    m['content'] = ' '.join(parts)
+                elif c is None:
+                    m['content'] = ''
+                elif not isinstance(c, str):
+                    m['content'] = str(c)
+
             # Format prompt using chat template
             try:
                 prompt = tokenizer.apply_chat_template(
@@ -614,11 +805,253 @@ def launch_api_direct(model_path, port):
                 return
             
             if stream:
-                self._stream_response(prompt, temperature, max_tokens, top_p, repetition_penalty)
+                self._stream_response(prompt, temperature, max_tokens, top_p, repetition_penalty, tools)
             else:
-                self._blocking_response(prompt, temperature, max_tokens, top_p, repetition_penalty)
+                self._blocking_response(prompt, temperature, max_tokens, top_p, repetition_penalty, tools)
         
-        def _stream_response(self, prompt, temperature, max_tokens, top_p, repetition_penalty):
+        def _fix_tool_call(self, hallucinated_name, raw_args, user_msg, valid_tools):
+            """Attempt to fix a hallucinated tool call into a valid one.
+
+            Returns a properly formatted tool call dict, or None if unfixable.
+            """
+            user_msg_lower = user_msg.lower() if user_msg else ''
+
+            # Try to find a "shell" tool in valid tools
+            has_shell = any(
+                (t.get('function', t) if isinstance(t, dict) else t).get('name') == 'shell'
+                for t in (valid_tools or [])
+            )
+
+            fixed_name = None
+            fixed_args = None
+
+            # Rule 1: user message mentions git and hallucinated name contains git
+            if ('git' in user_msg_lower or 'run git' in user_msg_lower) and 'git' in hallucinated_name.lower():
+                import re as _re
+                cmd = _re.sub(r'^.*?\bgit\b', '', user_msg, flags=_re.IGNORECASE | _re.DOTALL).strip()
+                if not cmd:
+                    cmd = 'status'
+                fixed_name = 'shell'
+                fixed_args = {"command": f"git {cmd}"}
+                print(f'[MLX] Fixed hallucinated tool call \'{hallucinated_name}\' -> shell with command: git {cmd}', flush=True)
+
+            # Rule 2: user asks to "run" or "execute" and a shell tool exists
+            if not fixed_name and has_shell:
+                run_match = None
+                import re as _re2
+                for prefix in ['run ', 'execute ', 'run command ']:
+                    if prefix in user_msg_lower:
+                        cmd = user_msg[user_msg_lower.index(prefix) + len(prefix):].strip()
+                        if cmd:
+                            run_match = cmd
+                            break
+                if run_match:
+                    fixed_name = 'shell'
+                    fixed_args = {"command": run_match}
+                    print(f'[MLX] Fixed hallucinated tool call \'{hallucinated_name}\' -> shell with command: {run_match}', flush=True)
+
+            # Rule 3: only one valid tool available, call it with user message
+            if not fixed_name and valid_tools and len(valid_tools) == 1:
+                only_tool = (valid_tools[0].get('function', valid_tools[0]) if isinstance(valid_tools[0], dict) else valid_tools[0])
+                only_name = only_tool.get('name', '') if isinstance(only_tool, dict) else ''
+                if only_name:
+                    fixed_name = only_name
+                    try:
+                        import json as _json
+                        params = only_tool.get('parameters', {}) if isinstance(only_tool, dict) else {}
+                        first_prop = next(iter(params.get('properties', {}).keys()), 'command')
+                        fixed_args = {first_prop: user_msg}
+                    except Exception:
+                        fixed_args = {"command": user_msg}
+                    print(f'[MLX] Fixed hallucinated tool call \'{hallucinated_name}\' -> {fixed_name} with command: {user_msg}', flush=True)
+
+            if fixed_name and fixed_args:
+                return {
+                    "id": f"call_{int(time.time()*1000)}_fixed",
+                    "type": "function",
+                    "function": {"name": fixed_name, "arguments": json.dumps(fixed_args)}
+                }
+            return None
+
+        def _parse_tool_calls(self, text, tools_list=None):
+            """Parse tool calls from model output into OpenAI tool_calls format.
+
+            Tries 4 strategies + checklist fallback, then attempts to fix
+            hallucinated function names via _fix_tool_call.
+            """
+            import re
+            text = text.rstrip()
+            text = re.sub(r'(<\|im_end\|>\s*)+$', '', text)
+            text = text.strip()
+
+            if not text:
+                return None
+
+            # Build set of valid tool names from the request
+            valid_names = set()
+            valid_tools_list = tools_list or []
+            if valid_tools_list:
+                for t in valid_tools_list:
+                    fn = t.get('function', t) if isinstance(t, dict) else t
+                    if isinstance(fn, dict):
+                        n = fn.get('name')
+                        if n:
+                            valid_names.add(n)
+
+            # Collect any candidate that has a valid-looking JSON structure
+            # even if the name doesn't match (for hallucination fixing)
+            hallucinated_candidates = []
+
+            def _validate_or_collect(candidate):
+                """If valid, return formatted call. Otherwise collect for fixing."""
+                if not isinstance(candidate, dict):
+                    return None
+                name = candidate.get('name', candidate.get('function'))
+                if not isinstance(name, str) or not name:
+                    return None
+                args = candidate.get('arguments', {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except (json.JSONDecodeError, TypeError):
+                        return None
+                if not isinstance(args, dict):
+                    return None
+                formatted = {
+                    "id": f"call_{int(time.time()*1000)}_{hash(name) % 10000}",
+                    "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)}
+                }
+                if valid_names and name not in valid_names:
+                    hallucinated_candidates.append((name, args, formatted))
+                    return None
+                return formatted
+
+            # Strategy 1: <tool_call>...</tool_call> tags
+            m = re.search(r'<tool_call>\s*(\{.*?\})\s*</tool_call>', text, re.DOTALL)
+            if m:
+                try:
+                    parsed = json.loads(m.group(1).strip())
+                    result = _validate_or_collect(parsed)
+                    if result:
+                        name_s = result["function"]["name"]; print(f"[MLX Tool Parse] Strategy 1 matched: {name_s}", flush=True)
+                        return [result]
+                except json.JSONDecodeError:
+                    pass
+
+            # Strategy 2: scan all {..} objects in order
+            brace_starts = [i for i, c in enumerate(text) if c == '{']
+            for start_pos in brace_starts:
+                depth = 0
+                for i in range(start_pos, len(text)):
+                    if text[i] == '{':
+                        depth += 1
+                    elif text[i] == '}':
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                candidate = json.loads(text[start_pos:i+1])
+                                result = _validate_or_collect(candidate)
+                                if result:
+                                    name_s = result["function"]["name"]; print(f"[MLX Tool Parse] Strategy 2 matched: {name_s}", flush=True)
+                                    return [result]
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                            break
+
+            # Strategy 3: find any JSON with a name that matches a requested tool
+            if valid_names:
+                for start_pos in brace_starts:
+                    depth = 0
+                    for i in range(start_pos, len(text)):
+                        if text[i] == '{':
+                            depth += 1
+                        elif text[i] == '}':
+                            depth -= 1
+                            if depth == 0:
+                                try:
+                                    candidate = json.loads(text[start_pos:i+1])
+                                    n = candidate.get('name', candidate.get('function'))
+                                    if isinstance(n, str) and n in valid_names:
+                                        result = _validate_or_collect(candidate)
+                                        if result:
+                                            name_s = result["function"]["name"]; print(f"[MLX Tool Parse] Strategy 3 matched: {name_s}", flush=True)
+                                            return [result]
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+                                break
+
+            # Strategy 4: entire response is one JSON object
+            try:
+                full = json.loads(text)
+                result = _validate_or_collect(full)
+                if result:
+                    name_s = result["function"]["name"]; print(f"[MLX Tool Parse] Strategy 4 matched: {name_s}", flush=True)
+                    return [result]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+            # Strategy 5: checklist fallback
+            lines = [l.strip() for l in text.split('\n') if l.strip()]
+            for line in lines:
+                task = None
+                if re.match(r'^-\s*\[\s*[ xX]?\s*\]\s+', line):
+                    task = re.sub(r'^-\s*\[\s*[ xX]?\s*\]\s+', '', line)
+                elif re.match(r'^-\s+', line):
+                    task = re.sub(r'^-\s+', '', line)
+                elif re.match(r'^\d+[.)]\s+', line):
+                    task = re.sub(r'^\d+[.)]\s+', '', line)
+                if task and valid_tools_list:
+                    for t in valid_tools_list:
+                        fn = t.get('function', t) if isinstance(t, dict) else t
+                        if not isinstance(fn, dict):
+                            continue
+                        fname = fn.get('name', '')
+                        if fname and fname.lower() in task.lower():
+                            print(f'[MLX Tool Parse] Strategy 5 (checklist) matched: {fname}', flush=True)
+                            return [{
+                                "id": f"call_{int(time.time()*1000)}_checklist",
+                                "type": "function",
+                                "function": {"name": fname, "arguments": json.dumps({"task": task})}
+                            }]
+
+            # Hallucination fix: try to recover any collected hallucinated calls
+            if hallucinated_candidates:
+                for hall_name, hall_args, hall_formatted in hallucinated_candidates:
+                    user_msg = getattr(self, '_last_user_msg', '')
+                    fixed = self._fix_tool_call(hall_name, hall_args, user_msg, valid_tools_list)
+                    if fixed:
+                        return [fixed]
+
+            print(f'[MLX Tool Parse] All strategies failed. Raw output (first 300 chars): {text[:300]}', flush=True)
+            print(f'[MLX Tool Parse] Valid tool names: {valid_names}', flush=True)
+            return None
+
+        def _build_tool_call_chunk(self, chunk_base, tool_calls):
+            """Build a streaming chunk with tool_call delta."""
+            return {
+                **chunk_base,
+                "id": f"chatcmpl-{int(time.time()*1000)}",
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "index": i,
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {
+                                "name": tc["function"]["name"],
+                                "arguments": tc["function"]["arguments"]
+                            }
+                        } for i, tc in enumerate(tool_calls)]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            }
+
+        def _stream_response(self, prompt, temperature, max_tokens, top_p, repetition_penalty, has_tools=False):
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Cache-Control', 'no-cache')
@@ -644,10 +1077,27 @@ def launch_api_direct(model_path, port):
                 gen_kwargs['model'] = model
                 gen_kwargs['tokenizer'] = tokenizer
 
+                full_text = ""
+                gen_start = time.time()
+                gen_timeout = 60
                 for result in mlx_lm.stream_generate(**gen_kwargs):
+                    if time.time() - gen_start > gen_timeout:
+                        print(f'[MLX] Generation timed out after {gen_timeout}s', flush=True)
+                        error_chunk = {**chunk_base, "id": f"chatcmpl-{int(time.time()*1000)}",
+                            "choices": [{"index": 0, "delta": {},
+                            "finish_reason": "stop"}]}
+                        try:
+                            self.wfile.write(f"data: {json.dumps(error_chunk)}\n\n".encode('utf-8'))
+                            self.wfile.write(b"data: [DONE]\n\n")
+                            self.wfile.flush()
+                        except Exception:
+                            pass
+                        gc.collect()
+                        return
                     token_text = result.text if hasattr(result, 'text') else str(result)
                     if not token_text:
                         continue
+                    full_text += token_text
                     
                     chunk = {
                         **chunk_base,
@@ -665,22 +1115,45 @@ def launch_api_direct(model_path, port):
                     except (BrokenPipeError, ConnectionResetError):
                         break
                 
-                # Send final chunk with finish_reason for OpenAI compatibility
+                # Validate: empty or whitespace-only response
+                if not full_text or not full_text.strip():
+                    print('[MLX] Empty response from model, sending fallback', flush=True)
+                    err_chunk = {**chunk_base, "id": f"chatcmpl-{int(time.time()*1000)}",
+                        "choices": [{"index": 0, "delta": {"content": "I encountered an error generating a response. Please try again."},
+                        "finish_reason": "stop"}]}
+                    try:
+                        self.wfile.write(f"data: {json.dumps(err_chunk)}\n\n".encode('utf-8'))
+                        self.wfile.write(b"data: [DONE]\n\n")
+                        self.wfile.flush()
+                    except Exception:
+                        pass
+                    gc.collect()
+                    return
+                
+                # Check for tool calls in the generated text
+                tool_calls = self._parse_tool_calls(full_text, has_tools) if has_tools else None
+                finish_reason = "tool_calls" if tool_calls else "stop"
+                
+                # Send final chunk
                 try:
-                    final_chunk = {
-                        **chunk_base,
-                        "id": f"chatcmpl-{int(time.time()*1000)}",
-                        "choices": [{
-                            "index": 0,
-                            "delta": {},
-                            "finish_reason": "stop"
-                        }]
-                    }
+                    if tool_calls:
+                        final_chunk = self._build_tool_call_chunk(chunk_base, tool_calls)
+                    else:
+                        final_chunk = {
+                            **chunk_base,
+                            "id": f"chatcmpl-{int(time.time()*1000)}",
+                            "choices": [{
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": finish_reason
+                            }]
+                        }
                     self.wfile.write(f"data: {json.dumps(final_chunk)}\n\n".encode('utf-8'))
                     self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()
                 except Exception:
                     pass
+                gc.collect()
                 return
                     
             except Exception as e:
@@ -690,8 +1163,9 @@ def launch_api_direct(model_path, port):
                     self.wfile.flush()
                 except Exception:
                     pass
+                gc.collect()
         
-        def _blocking_response(self, prompt, temperature, max_tokens, top_p, repetition_penalty):
+        def _blocking_response(self, prompt, temperature, max_tokens, top_p, repetition_penalty, has_tools=False):
             full_text = ""
             try:
                 # Use get_mlx_generation_kwargs with runtime overrides
@@ -705,8 +1179,41 @@ def launch_api_direct(model_path, port):
                 gen_kwargs['model'] = model
                 gen_kwargs['tokenizer'] = tokenizer
 
+                gen_start = time.time()
+                gen_timeout = 60
                 for result in mlx_lm.stream_generate(**gen_kwargs):
+                    if time.time() - gen_start > gen_timeout:
+                        print(f'[MLX] Generation timed out after {gen_timeout}s', flush=True)
+                        response = {
+                            "id": f"chatcmpl-{int(time.time()*1000)}",
+                            "object": "chat.completion",
+                            "created": int(time.time()),
+                            "model": os.path.basename(abs_model_path),
+                            "choices": [{"index": 0, "message": {"role": "assistant", "content": "I encountered an error generating a response. Please try again."}, "finish_reason": "stop"}],
+                            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                        }
+                        self._send_json(200, json.dumps(response))
+                        gc.collect()
+                        return
                     full_text += result.text if hasattr(result, 'text') else str(result)
+
+                # Validate: empty or whitespace-only response
+                if not full_text or not full_text.strip():
+                    print('[MLX] Empty response from model, sending fallback', flush=True)
+                    response = {
+                        "id": f"chatcmpl-{int(time.time()*1000)}",
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": os.path.basename(abs_model_path),
+                        "choices": [{"index": 0, "message": {"role": "assistant", "content": "I encountered an error generating a response. Please try again."}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                    }
+                    self._send_json(200, json.dumps(response))
+                    gc.collect()
+                    return
+                
+                # Check for tool calls in the generated text
+                tool_calls = self._parse_tool_calls(full_text, has_tools) if has_tools else None
                 
                 # Count tokens using actual tokenizer (P0-3 fix)
                 try:
@@ -720,25 +1227,50 @@ def launch_api_direct(model_path, port):
                     completion_tokens = len(full_text) // 4
                     total_tokens = prompt_tokens + completion_tokens
                 
-                response = {
-                    "id": f"chatcmpl-{int(time.time()*1000)}",
-                    "object": "chat.completion",
-                    "created": int(time.time()),
-                    "model": os.path.basename(abs_model_path),
-                    "choices": [{
-                        "index": 0,
-                        "message": {"role": "assistant", "content": full_text},
-                        "finish_reason": "stop"
-                    }],
-                    "usage": {
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "total_tokens": total_tokens
+                if tool_calls:
+                    # OpenAI format: content MUST be null when tool_calls are present
+                    response = {
+                        "id": f"chatcmpl-{int(time.time()*1000)}",
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": os.path.basename(abs_model_path),
+                        "choices": [{
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": tool_calls
+                            },
+                            "finish_reason": "tool_calls"
+                        }],
+                        "usage": {
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": total_tokens
+                        }
                     }
-                }
+                else:
+                    response = {
+                        "id": f"chatcmpl-{int(time.time()*1000)}",
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": os.path.basename(abs_model_path),
+                        "choices": [{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": full_text},
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": total_tokens
+                        }
+                    }
                 self._send_json(200, json.dumps(response))
+                gc.collect()
             except Exception as e:
                 self._send_json(500, json.dumps({"error": str(e)}))
+                gc.collect()
         
         def do_OPTIONS(self):
             self.send_response(200)
@@ -756,6 +1288,9 @@ def launch_api_direct(model_path, port):
             self.end_headers()
             self.wfile.write(encoded)
     
+    # Record server start time for /health uptime
+    _server_start_time = time.time()
+
     # Start the server
     socketserver.TCPServer.allow_reuse_address = True
     try:

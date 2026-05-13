@@ -200,6 +200,8 @@ function Start-Backend {
     $BACKEND_LOG = Join-Path $RUNDIR "llama_server.log"
     Write-Log "  llama-server → port $API_PORT"
 
+    # Tool calling requires a model with a Jinja chat template that includes
+    # tool_call support. Recommended: Phi-4-mini, Gemma3-4B, Llama-3.2-3B (GGUF).
     $Arguments = @(
         "-m", $MODEL_PATH,
         "--port", $API_PORT,
@@ -213,7 +215,8 @@ function Start-Backend {
         "--top-p", $TOP_P,
         "--top-k", $TOP_K,
         "--repeat-penalty", $REPEAT_PENALTY,
-        "--min-p", $MIN_P
+        "--min-p", $MIN_P,
+        "--jinja"
     )
     if ($FLASH_ATTN -eq $true) {
         $Arguments += "--flash-attn"

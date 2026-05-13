@@ -74,3 +74,4 @@ Thumbs.db
 # Package files
 *.egg-info/
 .eggs/
+.aider*

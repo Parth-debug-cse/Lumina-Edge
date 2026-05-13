@@ -103,6 +103,8 @@ if (-not (Test-Path $LogsDir)) {
 $LogFile = Join-Path $LogsDir "api_server.log"
 
 # Build llama-server command arguments
+# Tool calling requires a model with a Jinja chat template that includes
+# tool_call support. Recommended: Phi-4-mini, Gemma3-4B, Llama-3.2-3B (GGUF).
 $Arguments = @(
     "-m", "models\$FinalModel",
     "--port", $FinalPort,
@@ -115,7 +117,8 @@ $Arguments = @(
     "--top-k", $TopK,
     "--top-p", $TopP,
     "--repeat-penalty", $RepeatPenalty,
-    "--threads-http", $HttpThreads
+    "--threads-http", $HttpThreads,
+    "--jinja"
 )
 
 # Add boolean flags
