@@ -110,6 +110,8 @@ $Arguments = @(
     "--top-k", $TopK,
     "--repeat-penalty", $RepeatPenalty,
     "--min-p", $MinP,
+    "--cache-type-k", "q4",
+    "--cache-type-v", "q4",
     "--jinja"
 )
 

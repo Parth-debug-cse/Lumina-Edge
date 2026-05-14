@@ -22,18 +22,23 @@ def validate_all():
             config = json.load(open('config.json'))
             print("✓ config.json found and valid")
             
-            # 2. Model exists
-            model_name = config.get('model', '')
+            # 2. Model exists — check both 'model' and 'startup.default_model'
+            model_name = config.get('model', '') or config.get('startup', {}).get('default_model', '')
             if not model_name:
-                errors.append("'model' field is empty in config.json")
+                errors.append("'model' (and 'startup.default_model') is empty in config.json")
             else:
                 model_path = Path('models') / model_name
                 if model_path.exists():
                     size_gb = model_path.stat().st_size / (1024**3)
                     print(f"✓ Model exists: {model_path.name} ({size_gb:.2f} GB)")
                 else:
-                    errors.append(f"Model not found: {model_path}")
-                    print(f"  ℹ Download models from: https://huggingface.co/TheBloke")
+                    # Also try as an absolute/relative path
+                    if Path(model_name).exists():
+                        size_gb = Path(model_name).stat().st_size / (1024**3)
+                        print(f"✓ Model exists: {model_name} ({size_gb:.2f} GB)")
+                    else:
+                        errors.append(f"Model not found: {model_path}")
+                        print(f"  ℹ Download models from: https://huggingface.co/TheBloke")
             
             # 3. API port
             api_port = config.get('api_port', 8090)
@@ -66,8 +71,12 @@ def validate_all():
                         warnings.append(f"API server returned status {response.status_code}")
                 except requests.exceptions.ConnectionError:
                     warnings.append(f"API server not running on port {api_port}")
-                    print(f"  ⚠ Server not running. Start with:")
-                    print(f"    powershell -ExecutionPolicy Bypass -File core\\launch_api.ps1")
+                    if os.name == 'nt':
+                        print(f"  ⚠ Server not running. Start with:")
+                        print(f"    powershell -ExecutionPolicy Bypass -File core\\launch_api.ps1")
+                    else:
+                        print(f"  ⚠ Server not running. Start with:")
+                        print(f"    bash core/launch_api.sh  or  ./start_api.sh")
             except ImportError:
                 warnings.append("'requests' module not installed - cannot check server status")
             

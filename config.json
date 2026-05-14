@@ -1,12 +1,11 @@
 {
   "_comment_model": "Model filename (relative to models/) or full path. Can also be set via startup.default_model.",
-<<<<<<< HEAD
-  "model": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
-  "api_port": 8080,
-=======
   "model": "Qwen2.5-1.5B-Instruct-4bit",
   "api_port": 8090,
->>>>>>> a889cb9 (added aider agentic ai)
+  "_comment_backend_port": "Port for the backend inference server (llama-server on Linux/Win, MLX on macOS). API gateway proxies to this.",
+  "backend_port": 8091,
+  "_comment_ui_port": "Port for the Lumina Core Vite dev server.",
+  "ui_port": 5173,
   "_comment_api_port_secondary": "Secondary management-only port (no inference). Reserved for future use.",
   "api_port_secondary": 8081,
   "_comment_ctx_size": "Context window size in tokens. Minimum 4096 enforced. Higher values allow longer conversations but increase RAM/VRAM usage. Auto-tuned by system_optimizer.py.",
@@ -81,29 +80,6 @@
     "key_bits": 8,
     "value_bits": 4
   },
-<<<<<<< HEAD
-"_comment_reserved": "--- Reserved / Future Use ---",
-  "_comment_reserved_startup": "startup: Reserved for startup pipeline control.",
-  "startup": {
-    "optimize_on_launch": false,
-    "auto_load_model": false,
-    "default_model": null
-  },
-  "pipeline": {
-    "default_mode": "sequential",
-    "max_parallel": 2,
-    "timeout": 300,
-    "retry_on_error": true
-  },
-  "api": {
-    "host": "0.0.0.0",
-    "port": 8000
-  },
-  "use_case": "default",
-  "system_prompt_preset": "presets/default.txt",
-  "parallel_slots": 1
-}
-=======
   "_comment_reserved": "--- Reserved / Future Use ---",
   "_comment_reserved_multi_model": "multi_model: Reserved \u2014 not currently active.",
   "multi_model": {
@@ -128,7 +104,6 @@
         "priority": 1,
         "weight": 1
       }
->>>>>>> a889cb9 (added aider agentic ai)
     ]
   },
   "_comment_reserved_startup": "startup: Reserved for startup pipeline control.",
@@ -176,10 +151,6 @@
   "retrieval_top_k_legal": 5,
   "retrieval_top_k_hr": 3,
   "retrieval_top_k_ngo": 4,
-<<<<<<< HEAD
-  "retrieval_threshold": 2.0,
-=======
   "retrieval_threshold": 0.3,
->>>>>>> a889cb9 (added aider agentic ai)
   "parallel_slots": 1
 }

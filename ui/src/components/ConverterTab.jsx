@@ -261,7 +261,7 @@ export default function ConverterTab({ systemInfo, apiLoadModel, toast, autoConv
           <button
             className="btn btn-primary"
             onClick={handleConvert}
-            disabled={converting || !selectedFile || (isMac && selectedFile && !selectedFile.name.endsWith('.safetensors'))}
+            disabled={converting || !selectedFile}
           >
             {converting ? (isMac ? 'Quantizing…' : 'Converting…') : (isMac ? 'Quantize' : 'Convert')}
           </button>
@@ -287,12 +287,6 @@ export default function ConverterTab({ systemInfo, apiLoadModel, toast, autoConv
             <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Output</div>
             <div style={{ padding: '12px', background: 'rgba(255,255,255,0.05)', borderRadius: 'var(--r-sm)' }}>{outputFile}</div>
             <button className="btn btn-primary" onClick={handleLoad}>Load Model</button>
-          </div>
-        )}
-        
-        {isMac && selectedFile && !selectedFile.name.endsWith('.safetensors') && (
-          <div style={{ marginTop: 12, padding: '10px', background: 'rgba(255,100,100,0.1)', borderRadius: 'var(--r-sm)', fontSize: '0.8rem', color: 'var(--color-orange)' }}>
-            ⚠️ Only .safetensors files can be quantized on Mac. This file cannot be quantized.
           </div>
         )}
       </div>

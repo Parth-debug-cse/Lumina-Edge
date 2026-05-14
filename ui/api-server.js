@@ -165,6 +165,7 @@ if (!fs.existsSync(modelsDir)) {
 
 // State maps
 const conversionJobs = new Map(); // file -> status
+const downloadJobs = new Map(); // filename -> { status, error, progress }
 const routerModels = new Map(); // id -> model info
 let routingPolicy = 'round-robin';
 let nextPort = 8000;
@@ -1350,7 +1351,7 @@ const ctxSize = (() => {
 const batchSize = parseInt(config.batch_size) || 256;
 const ubatchSize = parseInt(config.ubatch_size) || 256;
 const nGpuLayers = parseInt(config.n_gpu_layers) ?? 0;
-const kvCacheType = config.kv_cache_quant || 'q8_0';
+const kvCacheType = config.kv_cache_quant || 'q4';
 const splitMode = config.split_mode || 'row';
 const httpThreads = parseInt(config.http_threads) || 2;
 const useMlock = config.use_mlock === true;
@@ -1714,7 +1715,35 @@ apiRouter.post('/download-model', async (req, res) => {
   downloadInBackground(url, outputPath, filename, autoConvert);
 });
 
+// Get download status for a specific file
+apiRouter.get('/download-status', (req, res) => {
+  const { filename } = req.query;
+  if (!filename) return res.status(400).json({ error: 'filename required' });
+  
+  const job = downloadJobs.get(filename);
+  if (!job) {
+    // Check if file exists (download completed successfully)
+    const outputPath = path.join(modelsDir, filename);
+    if (fs.existsSync(outputPath)) {
+      return res.json({ status: 'complete', progress: 100, error: null });
+    }
+    return res.json({ status: 'unknown' });
+  }
+  res.json(job);
+});
+
+// Get all download jobs
+apiRouter.get('/download-jobs', (req, res) => {
+  const jobs = Array.from(downloadJobs.entries()).map(([filename, job]) => ({
+    filename,
+    ...job
+  }));
+  res.json({ jobs });
+});
+
 async function downloadInBackground(url, outputPath, filename, autoConvert) {
+  downloadJobs.set(filename, { status: 'downloading', progress: 0, error: null });
+  
   try {
     console.log(`[Download] Starting: ${filename}`);
     
@@ -1751,12 +1780,14 @@ async function downloadInBackground(url, outputPath, filename, autoConvert) {
     
     const stats = fs.statSync(outputPath);
     console.log(`[Download] ✓ Complete: ${filename} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
+    downloadJobs.set(filename, { status: 'complete', progress: 100, error: null });
 
     if (autoConvert && isConvertibleFile(filename)) {
       createConversionJob(filename);
     }
   } catch (err) {
     console.error(`[Download] ✗ Failed: ${filename}`, err.message);
+    downloadJobs.set(filename, { status: 'error', progress: 0, error: err.message });
     fs.unlink(outputPath, () => {});
   }
 }
@@ -2019,7 +2050,7 @@ const ctxSize = parseInt(cfg.ctx_size) || 4096;
 const batchSize = parseInt(cfg.batch_size) || 256;
 const ubatchSize = parseInt(cfg.ubatch_size) || 256;
 const nGpuLayers = parseInt(cfg.n_gpu_layers) ?? 0;
-const kvCacheType = cfg.kv_cache_quant || 'q8_0';
+const kvCacheType = cfg.kv_cache_quant || 'q4';
 const splitMode = cfg.split_mode || 'row';
 const httpThreads = parseInt(cfg.http_threads) || 2;
 const useMlock = cfg.use_mlock === true;

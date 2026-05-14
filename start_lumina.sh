@@ -13,14 +13,10 @@ UI_DIR="$ROOT/ui"
 API_PORT="${LUMINA_API_PORT:-8090}"
 MLX_PORT="${LUMINA_MLX_PORT:-8091}"
 UI_PORT="${LUMINA_UI_PORT:-5173}"
-<<<<<<< HEAD
 OW_PORT="${LUMINA_OW_PORT:-8080}"
 export LUMINA_API_PORT="$API_PORT"
 export LUMINA_MLX_PORT="$MLX_PORT"
 export LUMINA_OW_PORT="$OW_PORT"
-=======
-OW_PORT="${LUMINA_OW_PORT:-3000}"
->>>>>>> a889cb9 (added aider agentic ai)
 
 MODEL_PATH="${LUMINA_MODEL:-}"
 
@@ -117,6 +113,11 @@ stop_existing() {
         pkill -f 'vite' 2>/dev/null || true
     fi
     sleep 1
+}
+
+cleanup_components() {
+    log "Shutting down started components..."
+    stop_existing
 }
 
 get_config() {
@@ -294,6 +295,8 @@ start_backend() {
             --top-k "$TOP_K" \
             --repeat-penalty "$REPEAT_PENALTY" \
             --min-p "$MIN_P" \
+            --cache-type-k q4 \
+            --cache-type-v q4 \
             --jinja \
             $FLASH_ATTN_FLAG \
             >> "$BACKEND_LOG" 2>&1 &
@@ -325,23 +328,29 @@ start_api_server() {
 
     # Pass MLX port via env so api-server.js knows where direct backend is
     API_LOG="$RUNDIR/api_server.log"
+    local _prev_dir
+    _prev_dir="$(pwd)"
     cd "$UI_DIR"
 
-    MLX_PORT="${LUMINA_MLX_PORT:-8091}" \
+    local SECONDARY_PORT
+    SECONDARY_PORT=$(get_config api_port_secondary 8081)
+
     LUMINA_API_PORT="$API_PORT" \
     LUMINA_MLX_PORT="$MLX_PORT" \
+    LUMINA_API_PORT_SECONDARY="$SECONDARY_PORT" \
     node api-server.js >> "$API_LOG" 2>&1 &
     local api_pid=$!
     echo "$api_pid api_server" >> "$PID_FILE"
     log "  API server PID: $api_pid"
+    cd "$_prev_dir"
 
-    # Wait for the Node API server (secondary port 8081 first, then primary)
+    # Wait for the Node API server (secondary port first, then primary)
     log "  Waiting for API server..."
     for i in $(seq 1 30); do
-        if curl -s --max-time 2 "http://127.0.0.1:8081/api/health" 2>/dev/null | grep -q 'ok'; then
+        if curl -s --max-time 2 "http://127.0.0.1:$SECONDARY_PORT/api/health" 2>/dev/null | grep -q 'ok'; then
             mlx_models=$(curl -s --max-time 3 "http://127.0.0.1:$MLX_PORT/v1/models" 2>/dev/null)
             if echo "$mlx_models" | grep -q '"data"'; then
-                log_ok "API gateway ready (primary: $API_PORT, mgmt: 8081, MLX connected)"
+                log_ok "API gateway ready (primary: $API_PORT, mgmt: $SECONDARY_PORT, MLX connected)"
                 return 0
             fi
         fi
@@ -367,10 +376,14 @@ start_ui() {
     log "Starting Lumina Core UI..."
 
     UI_LOG="$RUNDIR/vite.log"
+    local _prev_dir
+    _prev_dir="$(pwd)"
     cd "$UI_DIR"
 
     npm run dev >> "$UI_LOG" 2>&1 &
     local ui_pid=$!
+    cd "$_prev_dir"
+
     echo "$ui_pid vite" >> "$PID_FILE"
     log "  Vite PID: $ui_pid"
 
@@ -406,52 +419,6 @@ setup_openwebui() {
         fi
     fi
 
-<<<<<<< HEAD
-    # On macOS, auto-start OpenWebUI via Docker if available (MLX has no built-in web UI)
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        if command -v docker &>/dev/null; then
-            log "  Auto-starting OpenWebUI via Docker (macOS)..."
-            docker run -d \
-                -p "$OW_PORT":8080 \
-                -v open-webui:/app/backend/data \
-                --name open-webui \
-                --add-host=host.docker.internal:host-gateway \
-                -e OLLAMA_BASE_URL="http://host.docker.internal:$API_PORT/v1" \
-                -e OPENAI_API_BASE_URL="http://host.docker.internal:$API_PORT/v1" \
-                -e OPENAI_API_KEY="lumina-openai-key" \
-                openwebui/openwebui:latest >> "$RUNDIR/openwebui.log" 2>&1 || true
-
-            log "  Waiting for OpenWebUI container..."
-            for i in $(seq 1 30); do
-                if curl -s --max-time 3 "http://127.0.0.1:$OW_PORT/" 2>/dev/null | grep -q 'html'; then
-                    log_ok "OpenWebUI ready at http://127.0.0.1:$OW_PORT"
-                    log "  Configure: Settings → Connections → API Base URL → http://host.docker.internal:$API_PORT/v1"
-                    return 0
-                fi
-                sleep 1
-            done
-
-            log_err "OpenWebUI container failed to start. Check $RUNDIR/openwebui.log"
-            return 0
-        else
-            log "  Docker not found. Install Docker to use OpenWebUI on macOS:"
-            log "    https://docs.docker.com/desktop/install/mac-install/"
-            return 0
-        fi
-    fi
-
-    # Check local installation (Linux fallback)
-    if command -v openwebui &>/dev/null; then
-        log "  OpenWebUI CLI found"
-    elif [[ -d "/Applications/OpenWebUI.app" ]]; then
-        log "  OpenWebUI app found at /Applications/OpenWebUI.app"
-    elif [[ -d "$HOME/open-webui" ]]; then
-        log "  OpenWebUI found at $HOME/open-webui"
-    else
-        log "  OpenWebUI not detected (not installed locally or via Docker)"
-        log "  Install via Docker: docker run -d -p $OW_PORT:8080 --add-host=host.docker.internal:host-gateway openwebui/openwebui:latest"
-        return 0
-=======
     # Check if already running via Docker
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'openwebui'; then
         log "  OpenWebUI container already running"
@@ -459,7 +426,6 @@ setup_openwebui() {
             log_ok "OpenWebUI ready at http://127.0.0.1:$OW_PORT"
             return 0
         fi
->>>>>>> a889cb9 (added aider agentic ai)
     fi
 
     # Stop any existing openwebui container
@@ -545,9 +511,23 @@ print_summary() {
 }
 
 # ==============================================================================
+# Resolve ports: env var > config.json > built-in default
+# ==============================================================================
+resolve_ports() {
+    API_PORT="${LUMINA_API_PORT:-$(get_config api_port 8090)}"
+    MLX_PORT="${LUMINA_MLX_PORT:-$(get_config backend_port 8091)}"
+    UI_PORT="${LUMINA_UI_PORT:-$(get_config ui_port 5173)}"
+    OW_PORT="${LUMINA_OW_PORT:-$(get_config ow_port 8080)}"
+    export LUMINA_API_PORT="$API_PORT"
+    export LUMINA_MLX_PORT="$MLX_PORT"
+    export LUMINA_OW_PORT="$OW_PORT"
+}
+
+# ==============================================================================
 # MAIN
 # ==============================================================================
 main() {
+    resolve_ports
     echo "" > "$RUNDIR/startup.log"
     log "============================================================"
     log "  Lumina Edge Launcher"
@@ -557,17 +537,21 @@ main() {
     log "  Model:    ${MODEL_PATH:-not set}"
     log ""
 
+    trap cleanup_components INT TERM
+
     stop_existing
 
     optimize_system || log_err "Optimizer had warnings (non-fatal)"
 
-    check_model || exit 1
+    check_model || { cleanup_components; exit 1; }
 
-    start_backend || exit 1
+    start_backend || { cleanup_components; exit 1; }
 
-    start_api_server || exit 1
+    start_api_server || { cleanup_components; exit 1; }
 
-    start_ui || exit 1
+    start_ui || { cleanup_components; exit 1; }
+
+    trap - INT TERM
 
     setup_openwebui
 

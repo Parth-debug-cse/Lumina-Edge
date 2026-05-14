@@ -122,26 +122,17 @@ if not _supports_sampler:
 def _get_kv_kwargs(mlx_kv_quant_config=None, mlx_kv_quant_native=None, mlx_max_kv_size=None):
     """Get KV quantization and cache kwargs based on mlx_lm support and config.
     
-    Native KV quantization (mlx_kv_quant_native) takes precedence over asymmetric (mlx_kv_quant)
-    if both are enabled.
+    Default: kv_bits=4 (4-bit KV cache quantization for both K and V).
+    Native KV quantization (mlx_kv_quant_native) takes precedence if enabled.
     """
-    kwargs = {}
+    kwargs = {'kv_bits': 4}
     
-    # F: Native KV quantization takes precedence
+    # F: Native KV quantization takes precedence over default
     if mlx_kv_quant_native and mlx_kv_quant_native.get('enabled', False):
         if _supports_kv_sym:
             kwargs['kv_bits'] = mlx_kv_quant_native.get('kv_bits', 4)
             kwargs['kv_group_size'] = mlx_kv_quant_native.get('kv_group_size', 64)
             kwargs['quantized_kv_start'] = mlx_kv_quant_native.get('quantized_kv_start', 0)
-    elif mlx_kv_quant_config:
-        # Use asymmetric path
-        key_bits = mlx_kv_quant_config.get('key_bits', 8)
-        value_bits = mlx_kv_quant_config.get('value_bits', 4)
-        if _supports_kv_asym:
-            kwargs['key_bits'] = key_bits
-            kwargs['value_bits'] = value_bits
-        elif _supports_kv_sym:
-            kwargs['kv_bits'] = key_bits
     
     # A: max_kv_size - only pass if set and supported
     if mlx_max_kv_size is not None and _supports_max_kv:

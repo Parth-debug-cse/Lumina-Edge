@@ -82,7 +82,12 @@ if [[ -z "$FINAL_MODEL" ]]; then
     exit 1
 fi
 
-MODEL_PATH="models/$FINAL_MODEL"
+# Avoid double-prefix: if FINAL_MODEL already starts with models/ use it as-is
+if [[ "$FINAL_MODEL" == models/* || "$FINAL_MODEL" == ./* || "$FINAL_MODEL" == /* ]]; then
+    MODEL_PATH="$FINAL_MODEL"
+else
+    MODEL_PATH="models/$FINAL_MODEL"
+fi
 if [[ ! -f "$MODEL_PATH" && ! -d "$MODEL_PATH" ]]; then
     echo "ERROR: Model file not found: $MODEL_PATH"
     echo ""
@@ -149,20 +154,53 @@ if [[ "$CONT_BATCHING" == "true" ]]; then
 fi
 
 # Add KV quantization flags
-if [[ "$KV_QUANT" == "turbo" ]]; then
-    ARGS+=("--cache-type-k" "turbo4" "--cache-type-v" "turbo3")
-elif [[ "$KV_QUANT" == "q8_0" ]]; then
-    ARGS+=("--cache-type-k" "q8_0" "--cache-type-v" "q8_0")
-elif [[ "$KV_QUANT" == "q4_0" ]]; then
-    ARGS+=("--cache-type-k" "q4_0" "--cache-type-v" "q4_0")
-fi
+ARGS+=("--cache-type-k" "q4" "--cache-type-v" "q4")
 
 # Find llama-server binary
 if [[ "$IS_MAC" == "true" ]]; then
     # On macOS, use MLX backend instead
     echo ""
     echo "Starting MLX backend (macOS)..."
-    python3 scripts/mlx_backend.py --mode api --model "$MODEL_PATH" --port "$FINAL_PORT" 2>&1 | tee "$LOG_FILE"
+    echo "Log file: $LOG_FILE"
+    mkdir -p "$(dirname "$LOG_FILE")"
+
+    python3 scripts/mlx_backend.py --mode api --model "$MODEL_PATH" --port "$FINAL_PORT" >> "$LOG_FILE" 2>&1 &
+    MLX_PID=$!
+    echo "MLX backend PID: $MLX_PID"
+
+    MAX_WAIT=30
+    WAITED=0
+    READY=false
+    while [[ $WAITED -lt $MAX_WAIT ]]; do
+        sleep 1
+        ((WAITED++))
+        if ! kill -0 $MLX_PID 2>/dev/null; then
+            echo "ERROR: MLX backend exited unexpectedly!"
+            echo "Check log: $LOG_FILE"
+            exit 1
+        fi
+        if curl -s "http://127.0.0.1:$FINAL_PORT/health" >/dev/null 2>&1; then
+            READY=true
+            break
+        fi
+        if ((WAITED % 5 == 0)); then
+            echo "  ... waiting ($WAITED/$MAX_WAIT seconds)"
+        fi
+    done
+
+    if [[ "$READY" == "true" ]]; then
+        echo ""
+        echo "✓ MLX backend ready on port $FINAL_PORT"
+        echo "  Health: http://127.0.0.1:$FINAL_PORT/health"
+        echo ""
+        echo "Press Ctrl+C to stop the server"
+        wait $MLX_PID
+    else
+        echo "ERROR: MLX backend failed to start within $MAX_WAIT seconds."
+        echo "Check log: $LOG_FILE"
+        kill $MLX_PID 2>/dev/null
+        exit 1
+    fi
 else
     BINARY_PATH="bin/llama-server"
     if [[ ! -x "$BINARY_PATH" ]]; then

@@ -209,7 +209,7 @@ if "%CONT_BATCHING%"=="true" (
 
 rem Tool calling requires a model with a Jinja chat template that includes
 rem tool_call support. Recommended: Phi-4-mini, Gemma3-4B, Llama-3.2-3B (GGUF).
-start /B "" "%LLAMA_SERVER%" -m "%MODEL_PATH%" --port "%API_PORT%" --host 127.0.0.1 --ctx-size "%CTX_SIZE%" --n-gpu-layers "%N_GPU_LAYERS%" --batch-size "%BATCH_SIZE%" --ubatch-size "%UBATCH_SIZE%" --threads-http "%HTTP_THREADS%" --temperature "%TEMPERATURE%" --top-p "%TOP_P%" --top-k "%TOP_K%" --repeat-penalty "%REPEAT_PENALTY%" --min-p "%MIN_P%" --cache-type-k "%KV_QUANT%" --cache-type-v "%KV_QUANT%" --jinja %FLASH_FLAG% %CB_FLAG% > "%BACKEND_LOG%" 2>&1
+start /B "" "%LLAMA_SERVER%" -m "%MODEL_PATH%" --port "%API_PORT%" --host 127.0.0.1 --ctx-size "%CTX_SIZE%" --n-gpu-layers "%N_GPU_LAYERS%" --batch-size "%BATCH_SIZE%" --ubatch-size "%UBATCH_SIZE%" --threads-http "%HTTP_THREADS%" --temperature "%TEMPERATURE%" --top-p "%TOP_P%" --top-k "%TOP_K%" --repeat-penalty "%REPEAT_PENALTY%" --min-p "%MIN_P%" --cache-type-k q4 --cache-type-v q4 --jinja %FLASH_FLAG% %CB_FLAG% > "%BACKEND_LOG%" 2>&1
 
 REM Get PID of the started process (approximation)
 for /f "tokens=2" %%a in ('tasklist /FI "IMAGENAME eq llama-server.exe" /FO csv ^| find "llama-server.exe"') do (

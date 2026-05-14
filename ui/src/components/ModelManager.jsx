@@ -4,7 +4,7 @@ import {
   getSessions, exportAsJSON, exportAsMarkdown,
   deleteSession,
 } from '../utils/storage.js'
-import { downloadModel, optimizeSystem, loadModel as apiLoadModel, fetchHFFiles, getSystemInfo, fetchConfig, saveConfig, getRouterStatus, unloadAllModels } from '../utils/api.js'
+import { downloadModel, optimizeSystem, loadModel as apiLoadModel, fetchHFFiles, getSystemInfo, fetchConfig, saveConfig, getRouterStatus, unloadAllModels, getDownloadStatus } from '../utils/api.js'
 import ConverterTab from './ConverterTab.jsx'
 
 // Helper to detect model format
@@ -405,13 +405,7 @@ export default function ModelManager({ localModels = [], toast }) {
 function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, onAddTag, onRemoveTag, onToggleAdding, onLoaded, toast, systemInfo, routerStatus }) {
   const [loading, setLoading] = useState(false)
   const [converting, setConverting] = useState(false)
-  const [hasConfig, setHasConfig] = useState(null)
   const format = getModelFormat(model.name, model.isDirectory)
-  const isMac = systemInfo?.isMacAppleSilicon
-  // Mac supports safetensors directly via MLX backend and MLX directories
-  // Linux/Windows need GGUF format for llama.cpp
-  const isReadyToRun = isMac ? (format.type === 'SafeTensors' || format.type === 'MLX') : format.type === 'GGUF'
-  const needsConversion = !isReadyToRun
 
   // Check if this model is currently loaded
   const isLoaded = routerStatus?.models?.some(m => 
@@ -422,19 +416,6 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
     (m.status === 'ready' || m.status === 'loading') && 
     (m.name === model.name || m.model_name === model.name)
   )
-
-  // Check for config.json on Mac (only needed for individual SafeTensors files, not MLX directories)
-  useEffect(() => {
-    if (isMac && format.type === 'SafeTensors' && !model.isDirectory) {
-      // Check if config.json exists in models directory
-      fetch(`/api/model-exists?path=models/config.json`).then(r => r.json()).then(data => {
-        setHasConfig(data.exists)
-      }).catch(() => setHasConfig(false))
-    } else {
-      // MLX directories already have config.json by definition
-      setHasConfig(true)
-    }
-  }, [isMac, format.type, model.name, model.isDirectory])
 
   const handleConvert = async () => {
     if (converting) return
@@ -525,7 +506,7 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
           <span className="badge" style={{ background: format.color, color: '#1C1917', fontSize: '0.65rem', padding: '2px 6px' }}>
             {format.label}
           </span>
-          {!isReadyToRun && !isMac && (
+          {format.type !== 'GGUF' && format.type !== 'MLX' && (
             <span className="badge" style={{ background: 'var(--color-orange)', color: '#1C1917', fontSize: '0.65rem', padding: '2px 6px' }}>
               ⚠ Convert
             </span>
@@ -575,10 +556,10 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
         </div>
       )}
 
-      {!isReadyToRun && !isMac && (
+      {format.type !== 'GGUF' && format.type !== 'MLX' && (
         <div style={{ marginTop: 8, padding: '8px', background: 'rgba(255,255,255,0.03)', borderRadius: 'var(--r-sm)' }}>
           <div style={{ fontSize: '0.75rem', color: 'var(--color-orange)', marginBottom: 8 }}>
-            ⚠️ Needs GGUF format for Windows/Linux
+            This format can be converted to GGUF for inference
           </div>
           <button
             className="btn btn-primary btn-sm"
@@ -590,25 +571,8 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
           </button>
         </div>
       )}
-      
-      {isMac && !isReadyToRun && format.type === 'SafeTensors' && (
-        <div style={{ marginTop: 8, padding: '8px', background: 'rgba(255,100,100,0.05)', borderRadius: 'var(--r-sm)', fontSize: '0.75rem', color: 'var(--color-orange)' }}>
-          ⚠️ Mac requires .safetensors format<br/>
-          <span style={{ color: 'var(--text-muted)' }}
-            >Download a safetensors model or use the Converter tab</span>
-        </div>
-      )}
 
-      {isMac && isReadyToRun && hasConfig === false && format.type === 'SafeTensors' && !model.isDirectory && (
-        <div style={{ marginTop: 8, padding: '8px', background: 'rgba(255,100,100,0.05)', borderRadius: 'var(--r-sm)', fontSize: '0.75rem', color: 'var(--color-orange)' }}>
-          ⚠️ Missing config.json<br/>
-          <span style={{ color: 'var(--text-muted)' }}
-            >MLX needs config.json with model architecture. Download the full HuggingFace model directory.</span>
-        </div>
-      )}
-
-      {isReadyToRun && (
-        <div style={{ marginTop: 8 }}>
+      <div style={{ marginTop: 8 }}>
           <button
             className="btn btn-primary"
             style={{ width: '100%', background: 'var(--color-green)', borderColor: 'var(--color-green)', fontSize: '0.9rem', padding: '8px 12px' }}
@@ -621,7 +585,6 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
             Click to load and start using this model
           </div>
         </div>
-      )}
     </div>
   )
 }
@@ -629,26 +592,12 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
 function DownloadCard({ model, toast, autoConvertOnDownload, systemInfo }) {
   const [downloading, setDownloading] = useState(false)
   const q = QUALITY_BADGE[model.quality] || QUALITY_BADGE['medium']
-  const isMac = systemInfo?.isMacAppleSilicon
   
   const handleDownload = async () => {
     if (downloading) return
     
-    // Check if Mac and file is not safetensors
-    if (isMac && !model.filename.endsWith('.safetensors')) {
-      const confirmed = window.confirm(
-        `⚠️ Mac Only Supports SafeTensors\n\n` +
-        `The file "${model.filename}" is not in .safetensors format.\n\n` +
-        `On Mac with MLX backend, only .safetensors files can be loaded directly. ` +
-        `Other formats like .gguf are not supported on Mac.\n\n` +
-        `Do you want to download it anyway? (It won't be usable on Mac)`
-      )
-      if (!confirmed) return
-    }
-    
     setDownloading(true)
 
-    
     try {
       toast(`Starting download of ${model.name}...`, 'info')
       const result = await downloadModel(model.url, model.filename, autoConvertOnDownload)
@@ -660,7 +609,31 @@ function DownloadCard({ model, toast, autoConvertOnDownload, systemInfo }) {
       } else if (result.status === 'exists') {
         toast(`Model already exists in models/ folder`, 'info')
       } else if (result.status === 'started') {
-        toast(`✓ ${model.name} is downloading in the background. Check the console for progress.`, 'success')
+        // Poll for download status to catch errors
+        let pollCount = 0
+        const maxPolls = 15 // Poll for 30 seconds (15 * 2s)
+        const pollInterval = 2000
+        
+        const checkDownload = async () => {
+          if (pollCount >= maxPolls) {
+            toast(`✓ ${model.name} is downloading. This may take several minutes.`, 'success')
+            return
+          }
+          
+          const status = await getDownloadStatus(model.filename)
+          console.log(`[Download] Status check:`, status)
+          
+          if (status.status === 'error') {
+            toast(`Download failed: ${status.error || 'Unknown error'}`, 'error')
+          } else if (status.status === 'complete') {
+            toast(`✓ ${model.name} downloaded successfully!`, 'success')
+          } else if (status.status === 'downloading') {
+            pollCount++
+            setTimeout(checkDownload, pollInterval)
+          }
+        }
+        
+        setTimeout(checkDownload, pollInterval)
       } else {
         toast(`${model.name} download initiated`, 'success')
       }
@@ -746,22 +719,6 @@ function CustomHFLinkPanel({ hfLink, setHfLink, hfFiles, setHfFiles, hfLoading, 
     setDownloading(true)
     try {
       const filename = selectedFile.name.split('/').pop()
-      const fileExtension = filename.split('.').pop().toLowerCase()
-
-      // Check format on Mac - only safetensors supported
-      if (systemInfo?.isMacAppleSilicon && fileExtension !== 'safetensors') {
-        const shouldDownload = window.confirm(
-          `⚠️ Mac Only Supports SafeTensors\n\n` +
-          `The file "${filename}" is not in .safetensors format.\n\n` +
-          `On Mac with MLX backend, only .safetensors files can be loaded directly. ` +
-          `Other formats like .gguf are not supported on Mac.\n\n` +
-          `Do you want to download it anyway? (It won't be usable on Mac)`
-        )
-        if (!shouldDownload) {
-          setDownloading(false)
-          return
-        }
-      }
 
       // Construct direct download URL using HF CDN
       const repoId = hfFiles.repo
@@ -776,7 +733,30 @@ function CustomHFLinkPanel({ hfLink, setHfLink, hfFiles, setHfFiles, hfLoading, 
       } else if (result.status === 'exists') {
         toast(`Model already exists in models/ folder`, 'info')
       } else if (result.status === 'started') {
-        toast(`✓ ${filename} is downloading. Check console for progress.`, 'success')
+        // Poll for download status to catch errors
+        let pollCount = 0
+        const maxPolls = 15
+        const pollInterval = 2000
+        
+        const checkDownload = async () => {
+          if (pollCount >= maxPolls) {
+            toast(`✓ ${filename} is downloading. This may take several minutes.`, 'success')
+            return
+          }
+          
+          const status = await getDownloadStatus(filename)
+          
+          if (status.status === 'error') {
+            toast(`Download failed: ${status.error || 'Unknown error'}`, 'error')
+          } else if (status.status === 'complete') {
+            toast(`✓ ${filename} downloaded successfully!`, 'success')
+          } else if (status.status === 'downloading') {
+            pollCount++
+            setTimeout(checkDownload, pollInterval)
+          }
+        }
+        
+        setTimeout(checkDownload, pollInterval)
       }
     } catch (err) {
       toast(`Error: ${err.message}`, 'error')
@@ -807,6 +787,13 @@ function CustomHFLinkPanel({ hfLink, setHfLink, hfFiles, setHfFiles, hfLoading, 
           downloadRepo: true
         })
       })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        toast(`Download failed: ${errorText || `Server error ${response.status}`}`, 'error')
+        setDownloadingRepo(false)
+        return
+      }
 
       const result = await response.json()
 

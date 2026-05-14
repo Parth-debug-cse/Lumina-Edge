@@ -44,7 +44,9 @@ def start_server(bin_dir: str, model_path: str, port: int, gpu_layers: int,
         '--n-gpu-layers', str(gpu_layers),
         '--threads', str(threads),
         '--flash-attn',
-        '--mlock'
+        '--mlock',
+        '--cache-type-k', 'q4',
+        '--cache-type-v', 'q4'
     ]
 
     log_file = os.path.join(tempfile.gettempdir(), f"lumina_bench_{port}.log")

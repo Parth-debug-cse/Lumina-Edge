@@ -189,6 +189,24 @@ export async function downloadModel(url, filename, autoConvert = false) {
   }
 }
 
+/**
+ * Get download status for a specific file.
+ * Returns { status: 'downloading'|'complete'|'error'|'unknown', progress, error }
+ */
+export async function getDownloadStatus(filename) {
+  try {
+    const res = await fetch(`/api/download-status?filename=${encodeURIComponent(filename)}`)
+    if (!res.ok) {
+      const errorText = await res.text()
+      return { status: 'error', error: `Server error: ${res.status}: ${errorText}` }
+    }
+    return await res.json()
+  } catch (err) {
+    console.error('[API] getDownloadStatus error:', err)
+    return { status: 'error', error: err.message }
+  }
+}
+
 export async function getConvertibleModels() {
   try {
     const res = await fetch('/api/models/convertible')

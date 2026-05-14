@@ -128,13 +128,7 @@ if ($NoMmap) { $Arguments += "--no-mmap" }
 if ($ContBatching) { $Arguments += "--cont-batching" }
 
 # Add KV quantization flags
-if ($KvQuant -eq "turbo") {
-    $Arguments += @("--flash-attn", "--cache-type-k", "turbo4", "--cache-type-v", "turbo3")
-} elseif ($KvQuant -eq "q8_0") {
-    $Arguments += @("--cache-type-k", "q8_0", "--cache-type-v", "q8_0")
-} elseif ($KvQuant -eq "q4_0") {
-    $Arguments += @("--cache-type-k", "q4_0", "--cache-type-v", "q4_0")
-}
+$Arguments += @("--cache-type-k", "q4", "--cache-type-v", "q4")
 
 # Add MoE flags
 if ($MoeModel) {
