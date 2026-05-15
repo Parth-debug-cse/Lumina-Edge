@@ -58,16 +58,10 @@ export default function MultiModelPanel({ toast }) {
       </div>
 
       {models.length === 0 ? (
-        <div style={{ 
-          padding: 40, 
-          textAlign: 'center', 
-          color: 'var(--text-muted)',
-          background: 'rgba(255,255,255,0.03)',
-          borderRadius: 8
-        }}>
-          <div style={{ fontSize: '2rem', marginBottom: 12 }}>📦</div>
-          <div>No models loaded</div>
-          <div style={{ fontSize: '0.8rem', marginTop: 8 }}>
+        <div className="empty-state" style={{ padding: 40 }}>
+          <div className="empty-icon" style={{ fontFamily: 'var(--font-mono)' }}>{'[ ]'}</div>
+          <div className="empty-title">No models loaded</div>
+          <div className="empty-body">
             Go to Models tab to load a model
           </div>
         </div>

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Copy, Play } from 'lucide-react'
 
 const LANGUAGES = ['Python', 'JavaScript', 'cURL', 'PowerShell']
 
@@ -90,11 +91,11 @@ export default function ApiDocs({ toast }) {
     <div className="api-docs">
       <div className="api-status">
         <span className="api-dot" />
-        Server Running — http://localhost:8090/v1
+        Server Running &nbsp;&nbsp; http://localhost:8090/v1
       </div>
 
       <div>
-        <div className="api-section-title">{'> Quick Start'}</div>
+        <div className="api-section-title">&gt; Quick Start</div>
         <div style={{ marginTop: 8 }}>
           <div className="api-lang-tabs">
             {LANGUAGES.map(l => (
@@ -103,7 +104,7 @@ export default function ApiDocs({ toast }) {
                 className={`api-lang-tab ${lang === l ? 'active' : ''}`}
                 onClick={() => setLang(l)}
               >
-                {l === 'PowerShell' ? 'PS' : l}
+                {l}
               </button>
             ))}
           </div>
@@ -111,7 +112,7 @@ export default function ApiDocs({ toast }) {
             <div className="code-block-header">
               <span className="code-block-lang">{lang}</span>
               <button className="code-block-copy" onClick={handleCopy}>
-                {copied ? '✓ Copied' : '[Copy]'}
+                {copied ? '> Copied' : '> Copy'}
               </button>
             </div>
             <pre>
@@ -122,7 +123,7 @@ export default function ApiDocs({ toast }) {
       </div>
 
       <div>
-        <div className="api-section-title">{'> Endpoints Reference'}</div>
+        <div className="api-section-title">&gt; Endpoints Reference</div>
         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
           <div className="api-endpoint">
             <span className="api-method post">POST</span>
@@ -163,10 +164,10 @@ export default function ApiDocs({ toast }) {
       </div>
 
       <div>
-        <div className="api-section-title">{'> Test Connection'}</div>
+        <div className="api-section-title">&gt; Test Connection</div>
         <div style={{ marginTop: 8 }}>
           <button className="btn btn-primary btn-sm" onClick={handleTest}>
-            ▶ Test API
+            <Play size={12} /> Test API
           </button>
           <span style={{ marginLeft: 10, fontSize: '0.68rem', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
             Sends a health check to the server

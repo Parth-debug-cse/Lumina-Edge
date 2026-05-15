@@ -21,25 +21,29 @@
   --red: #ef4444;
   --red-dim: rgba(239, 68, 68, 0.12);
   --yellow:  #f59e0b;
+  --amber:   #f59e0b;
+  --blue:    #3b82f6;
 
   /* Borders */
-  --border:       rgba(61, 55, 51, 0.6);
-  --border-accent:rgba(217, 119, 87, 0.4);
+  --border:       #262626;
+  --border-subtle:#262626;
+  --border-strong:#404040;
+  --border-accent:rgba(16, 185, 129, 0.4);
 
-  /* Surfaces (used by DiagnosticsPanel) */
-  --surface-1:    #1C1917;
-  --surface-2:    #292524;
-  --surface-3:    #3D3733;
+  /* Surfaces */
+  --surface-1:    #1a1a1a;
+  --surface-2:    #262626;
+  --surface-3:    #333333;
 
-  /* Component color aliases (used inline by components) */
-  --color-green:  #4ADE80;
+  /* Component color aliases */
+  --color-green:  #10b981;
   --color-cyan:   #06b6d4;
   --color-purple: #8B5CF6;
   --color-red:    #ef4444;
   --color-yellow: #f59e0b;
   --color-orange: #f97316;
   --color-blue:   #3b82f6;
-  --text:         #F5F0EB;
+  --text:         #e5e5e5;
 
   --r-sm: 4px;
   --r-md: 6px;
@@ -149,6 +153,13 @@ body {
   border-color: var(--border-accent);
   color: var(--accent);
   font-weight: 600;
+}
+.nav-item .nav-item-lucide {
+  width: 16px; height: 16px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.nav-item.active .nav-item-lucide {
+  color: var(--accent);
 }
 .nav-item-icon { font-size: 0.9rem; flex-shrink: 0; width: 18px; text-align: center; }
 .nav-badge {
@@ -1205,3 +1216,29 @@ input[type="range"] {
 .monospace {
   font-family: var(--font-mono);
 }
+
+/* ========================================================
+   SCANLINE EFFECT (optional)
+   ======================================================== */
+.scanlines {
+  pointer-events: none;
+  position: fixed; inset: 0; z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.08) 2px,
+    rgba(0,0,0,0.08) 4px
+  );
+}
+
+/* ========================================================
+   TERMINAL THEME EXTENSIONS
+   ======================================================== */
+.terminal-prefix::before {
+  content: '> ';
+  color: var(--accent);
+  font-family: var(--font-mono);
+}
+
+

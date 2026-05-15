@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { Send, Square, Copy, Plus } from 'lucide-react'
 import { streamChat } from '../utils/api.js'
 
 function formatTime(date) {
@@ -15,12 +16,17 @@ function countTokens(text) {
   return Math.ceil(text.length / 4)
 }
 
+const EMOJI_PREFIX = {
+  system: '>',
+  user: '>',
+  assistant: '>',
+}
+
 export default function ChatInterface({ serverModel, routerStatus, localModels, toast }) {
   const [messages, setMessages] = useState([{ role: 'system', content: 'You are a helpful AI assistant running on Lumina Edge.' }])
   const [input, setInput] = useState('')
   const [generating, setGenerating] = useState(false)
   const [selectedModel, setSelectedModel] = useState('')
-  const [showModelDropdown, setShowModelDropdown] = useState(false)
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
 
@@ -100,14 +106,9 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
       e.preventDefault()
       handleSend()
     }
-    if (e.key === 'Enter' && e.shiftKey) {
-      return
-    }
   }
 
-  const handleStop = () => {
-    setGenerating(false)
-  }
+  const handleStop = () => setGenerating(false)
 
   const copyMessage = (content) => {
     navigator.clipboard.writeText(content)
@@ -137,7 +138,9 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
         </div>
 
         <div className="chat-actions">
-          <button className="chat-action-btn" title="New chat" onClick={() => setMessages([{ role: 'system', content: 'You are a helpful AI assistant running on Lumina Edge.' }])}>+</button>
+          <button className="chat-action-btn" title="New chat" onClick={() => setMessages([{ role: 'system', content: 'You are a helpful AI assistant running on Lumina Edge.' }])}>
+            <Plus size={16} />
+          </button>
         </div>
       </div>
 
@@ -163,7 +166,9 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
                   </span>
                   <div className="msg-actions">
                     {msg.content && !msg.streaming && (
-                      <button className="msg-action-btn" onClick={() => copyMessage(msg.content)}>copy</button>
+                      <button className="msg-action-btn" onClick={() => copyMessage(msg.content)}>
+                        <Copy size={10} /> copy
+                      </button>
                     )}
                   </div>
                 </div>
@@ -173,7 +178,7 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
         ))}
         {generating && (
           <button className="stop-btn" onClick={handleStop}>
-            ■ Stop
+            <Square size={12} /> Stop
           </button>
         )}
         <div ref={messagesEndRef} />
@@ -196,7 +201,7 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
             onClick={handleSend}
             disabled={!input.trim() || generating}
           >
-            ›
+            <Send size={16} />
           </button>
         </div>
         <div className="chat-input-hints">

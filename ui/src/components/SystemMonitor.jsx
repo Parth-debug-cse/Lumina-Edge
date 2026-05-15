@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { X, RotateCw, Zap } from 'lucide-react'
 import { getSystemResources } from '../utils/api.js'
 
 function Sparkline({ data, color = '#10b981' }) {
@@ -95,7 +96,7 @@ export default function SystemMonitor({ onClose, toast }) {
       <div className="monitor-overlay">
         <div className="monitor-header">
           <span className="monitor-title">{'> System Monitor'}</span>
-          <button className="monitor-close" onClick={onClose}>✕</button>
+          <button className="monitor-close" onClick={onClose}><X size={14} /></button>
         </div>
 
         <div className="monitor-body">
@@ -176,12 +177,12 @@ export default function SystemMonitor({ onClose, toast }) {
           </div>
 
           {/* Actions */}
-          <div className="monitor-actions">
-            <button className="btn btn-secondary btn-sm" onClick={fetchResources} disabled={loading}>
-              {loading ? '⏳' : '↻'} Refresh
+          <div className="monitor-actions" style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+            <button className="btn btn-secondary btn-sm" style={{ color: 'var(--amber)', borderColor: 'var(--amber)' }} onClick={handleOptimize}>
+              <Zap size={12} /> Run Optimization
             </button>
-            <button className="btn btn-secondary btn-sm" onClick={handleOptimize}>
-              ⚡ Run Optimization
+            <button className="btn btn-secondary btn-sm" onClick={fetchResources} disabled={loading}>
+              <RotateCw size={12} /> Refresh
             </button>
           </div>
         </div>
