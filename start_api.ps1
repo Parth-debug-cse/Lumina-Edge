@@ -1,4 +1,4 @@
-# ==============================================================================
+﻿# ==============================================================================
 # start_api.ps1 — Lumina Edge API Server Launcher (Windows PowerShell)
 # All settings read from config.json. No UI launched — API only.
 # Usage: .\start_api.ps1 [-Model "models\model.gguf"] [-Port 8090]
