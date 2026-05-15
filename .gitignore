@@ -84,5 +84,8 @@ lumina_screen/chroma_store/
 lumina_screen/page_hit.txt
 lumina_screen/processed.json
 lumina_screen/resumes/test_*.pdf
+lumina_screen/resumes/final_test_*.pdf
+lumina_screen/resumes/final_verification_*.pdf
+resumes/
 .lumina_run/
 open-webui-data/
