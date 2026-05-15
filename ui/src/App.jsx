@@ -7,32 +7,28 @@ import DiagnosticsPanel from './components/DiagnosticsPanel.jsx'
 import LuminaScreenPanel from './components/LuminaScreenPanel.jsx'
 import { checkServerHealth } from './utils/api.js'
 
-// ============================================================
-// Navigation items
-// ============================================================
 const NAV = [
-  { id: 'chat',       icon: '💬', label: 'Chat', external: true },
+  { id: 'chat',       icon: '💬', label: 'Chat' },
   { id: 'models',     icon: '📦', label: 'Models' },
   { id: 'diagnostics',icon: '📊', label: 'Diagnostics' },
   { id: 'router',     icon: '🔄', label: 'Router' },
   { id: 'screen',     icon: '🎯', label: 'Screen' },
   { id: 'history',    icon: '📋', label: 'History' },
+  { id: 'api',        icon: '📡', label: 'API' },
   { id: 'settings',   icon: '⚙',  label: 'Settings' },
 ]
 
 const PANEL_TITLES = {
-  chat:        { title: 'Chat',              sub: 'Open WebUI for conversations' },
+  chat:        { title: 'Chat',              sub: 'Chat with loaded models' },
   models:      { title: 'Model Manager',     sub: 'Browse, tag, and download GGUF models' },
   diagnostics: { title: 'Diagnostics',       sub: 'Resources, profiling, memory optimization, GPU benchmarks' },
   router:      { title: 'Multi-Model Router',sub: 'Load and route between multiple models' },
   screen:      { title: 'Lumina Screen',     sub: 'Resume screening pipeline — watch, parse, match, notify' },
   history:     { title: 'Session History',   sub: 'Browse and export past conversations' },
+  api:         { title: 'API Documentation', sub: 'OpenAI-compatible endpoints reference' },
   settings:    { title: 'Settings',          sub: 'Configure hyperparameters and server options' },
 }
 
-// ============================================================
-// Toast system
-// ============================================================
 let _toastId = 0
 function useToasts() {
   const [toasts, setToasts] = useState([])
@@ -44,32 +40,15 @@ function useToasts() {
   return { toasts, addToast }
 }
 
-// ============================================================
-// App root
-// ============================================================
 export default function App() {
   const [activePanel, setActivePanel] = useState('chat')
-  const [serverStatus, setServerStatus] = useState('checking') // 'online' | 'offline' | 'checking'
+  const [serverStatus, setServerStatus] = useState('checking')
   const [serverModel, setServerModel]   = useState('')
   const [localModels, setLocalModels]   = useState([]) // populated from server models list
   const API_PORT = import.meta.env.VITE_LUMINA_API_PORT || 8090;
 const [chatUrl, setChatUrl]           = useState(`http://localhost:${API_PORT}`)
   const { toasts, addToast } = useToasts()
 
-  // ---- Fetch chat URL (platform-aware) ----
-  const fetchChatUrl = useCallback(async () => {
-    try {
-      const res = await fetch('/api/chat-url')
-      if (res.ok) {
-        const data = await res.json()
-        if (data.url) setChatUrl(data.url)
-      }
-    } catch {
-      // Silently fallback to default
-    }
-  }, [])
-
-  // ---- Fetch local models ----
   const fetchLocalModels = useCallback(async () => {
     try {
       const res = await fetch('/api/models/list')
@@ -77,23 +56,18 @@ const [chatUrl, setChatUrl]           = useState(`http://localhost:${API_PORT}`)
         const data = await res.json()
         setLocalModels(data)
       }
-    } catch (err) {
-      // Silently handle fetch error
-    }
+    } catch {}
   }, [])
 
-  // ---- Server health polling ----
   const pollHealth = useCallback(async () => {
     const result = await checkServerHealth()
     setServerStatus(result.status)
     if (result.model) setServerModel(result.model)
-    // Do NOT call fetchLocalModels here
   }, [])
 
   useEffect(() => {
-    pollHealth(); // immediate check on mount
-    fetchLocalModels(); // fetch once on mount
-    fetchChatUrl(); // detect platform-appropriate chat UI
+    pollHealth()
+    fetchLocalModels()
 
     let rapidCount = 0;
     let slowInterval = null;
@@ -110,12 +84,10 @@ const [chatUrl, setChatUrl]           = useState(`http://localhost:${API_PORT}`)
       clearInterval(rapidInterval);
       if (slowInterval) clearInterval(slowInterval);
     };
-  }, [pollHealth, fetchLocalModels, fetchChatUrl]);
+  }, [pollHealth, fetchLocalModels]);
 
-  // ---- Panel title ----
   const pt = PANEL_TITLES[activePanel] || PANEL_TITLES.chat
 
-  // ---- Render current panel ----
   const renderPanel = () => {
     switch (activePanel) {
       case 'models':    return <ModelManager      localModels={localModels}   toast={addToast} onModelsRefresh={fetchLocalModels} />
@@ -130,29 +102,24 @@ const [chatUrl, setChatUrl]           = useState(`http://localhost:${API_PORT}`)
 
   return (
     <>
-      <div className="bg-noise" />
-
-      {/* Sidebar */}
       <aside className="sidebar">
-        {/* Logo */}
         <div className="sidebar-logo">
           <div className="logo-mark">
-            <div className="logo-icon">✦</div>
+            <div className="logo-icon">{'>_'}</div>
             <div className="logo-text">
               <span className="logo-name">Lumina Edge</span>
-              <span className="logo-version">v1.2  ·  Local AI</span>
+              <span className="logo-version">v1.2 · local AI</span>
             </div>
           </div>
         </div>
 
-        {/* Nav */}
         <nav className="sidebar-nav">
           <div className="nav-section-label">Navigation</div>
           {NAV.map(item => (
             <div
               key={item.id}
               className={`nav-item${activePanel === item.id ? ' active' : ''}`}
-              onClick={() => item.external ? window.open(chatUrl, '_blank') : setActivePanel(item.id)}
+              onClick={() => setActivePanel(item.id)}
               id={`nav-${item.id}`}
             >
               <span className="nav-item-icon">{item.icon}</span>
@@ -161,41 +128,39 @@ const [chatUrl, setChatUrl]           = useState(`http://localhost:${API_PORT}`)
           ))}
         </nav>
 
-        {/* Footer — server status */}
         <div className="sidebar-footer">
           <div className="server-status">
             <div className={`status-dot ${serverStatus}`} />
             <div>
-              <div style={{ fontWeight: 600, fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                {serverStatus === 'offline' ? '🔴 Offline' :
-                 serverStatus === 'checking' ? '🟠 Starting...' :
-                 serverModel && serverModel !== 'none' ? '🟢 Model Loaded' : '🟡 API Ready'}
+              <div style={{ fontWeight: 500, fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
+                {serverStatus === 'offline' ? 'Offline' :
+                 serverStatus === 'checking' ? 'Starting...' :
+                 serverModel && serverModel !== 'none' ? 'Model Loaded' : 'API Ready'}
               </div>
               {serverStatus === 'offline' && (
-                <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                <div style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', marginTop: 1 }}>
                   Restart the app
                 </div>
               )}
               {serverStatus === 'checking' && (
-                <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                <div style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', marginTop: 1 }}>
                   Initializing...
                 </div>
               )}
               {serverStatus === 'online' && serverModel && serverModel !== 'none' && (
-                <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: 2, fontFamily: "'JetBrains Mono', monospace", maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', marginTop: 1, fontFamily: 'var(--font-mono)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {serverModel}
                 </div>
               )}
               {serverStatus === 'online' && (!serverModel || serverModel === 'none') && (
-                <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                <div style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', marginTop: 1 }}>
                   Load a model to chat
                 </div>
               )}
             </div>
           </div>
 
-          {/* Quick links */}
-          <div style={{ marginTop: 10, display: 'flex', gap: 6 }}>
+          <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
             <button
               className="btn btn-ghost btn-sm"
               style={{ flex: 1, justifyContent: 'center', fontSize: '0.65rem' }}
@@ -205,12 +170,11 @@ const [chatUrl, setChatUrl]           = useState(`http://localhost:${API_PORT}`)
         </div>
       </aside>
 
-      {/* Main */}
       <div className="main-area">
         <div className="panel-header">
           <div>
-            <h1>{pt.title}</h1>
-            <div className="panel-header-sub">{pt.sub}</div>
+            <h1>{'> '}{pt.title}</h1>
+            <div className="panel-header-sub">{'> '}{pt.sub}</div>
           </div>
           <div className="panel-header-actions">
             {serverStatus === 'online' && (
@@ -230,17 +194,47 @@ const [chatUrl, setChatUrl]           = useState(`http://localhost:${API_PORT}`)
         </div>
       </div>
 
+      {/* Status Bar */}
+      <div className="status-bar">
+        <div className="status-bar-item" title="RAM Usage">
+          💾 {localModels.length > 0 ? `${(localModels.length * 1.5).toFixed(1)} GB` : '—'}
+        </div>
+        <div className="status-bar-divider" />
+        <div className={`status-bar-item ${serverStatus === 'online' ? 'green' : serverStatus === 'offline' ? 'red' : ''}`}>
+          ⚡ {serverStatus === 'online' ? 'Online' : serverStatus === 'offline' ? 'Offline' : 'Connecting...'}
+        </div>
+        <div className="status-bar-divider" />
+        <div className="status-bar-item" title="Context usage">
+          📊 {serverModel && serverModel !== 'none' ? 'Model loaded' : 'No model'}
+        </div>
+        <div className="status-bar-spacer" />
+        <div
+          className="status-bar-item clickable"
+          onClick={() => setShowMonitor(true)}
+        >
+          📈 Monitor
+        </div>
+      </div>
+
       {/* Toasts */}
       <div className="toast-container">
         {toasts.map(t => (
           <div key={t.id} className={`toast ${t.type}`}>
-            <span style={{ fontSize: '1rem' }}>
-              {t.type === 'success' ? '✓' : t.type === 'error' ? '✗' : 'ℹ'}
+            <span style={{ fontSize: '0.9rem' }}>
+              {t.type === 'success' ? '✓' : t.type === 'error' ? '✗' : '>'}
             </span>
             {t.message}
           </div>
         ))}
       </div>
+
+      {/* System Monitor Overlay */}
+      {showMonitor && (
+        <SystemMonitor
+          onClose={() => setShowMonitor(false)}
+          toast={addToast}
+        />
+      )}
     </>
   )
 }
