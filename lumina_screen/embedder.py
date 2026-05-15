@@ -20,11 +20,16 @@ CHUNK_OVERLAP = 50
 # Module-level model singleton — avoids re-downloading / re-loading on every
 # Embedder() construction and keeps startup deterministic.
 _MODEL_NAME = "all-MiniLM-L6-v2"
+_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", _MODEL_NAME)
 _model_singleton = None
 
 
 def _get_model():
-    """Return the cached SentenceTransformer model, loading it on first call."""
+    """Return the cached SentenceTransformer model, loading it on first call.
+
+    The model is stored under lumina_screen/models/all-MiniLM-L6-v2/ so it is
+    never re-downloaded from HuggingFace after the first successful download.
+    """
     global _model_singleton
     if _model_singleton is None:
         if _SentenceTransformer is None:
@@ -33,12 +38,21 @@ def _get_model():
                 "Run: pip install sentence-transformers"
             )
         try:
-            _model_singleton = _SentenceTransformer(_MODEL_NAME)
+            if os.path.isdir(_MODEL_DIR):
+                # Load from local cache — no network needed.
+                _model_singleton = _SentenceTransformer(_MODEL_DIR)
+            else:
+                # First run: download from HuggingFace, then persist locally.
+                print(f"[Lumina Screen] Downloading model '{_MODEL_NAME}' (one-time)...")
+                tmp = _SentenceTransformer(_MODEL_NAME)
+                os.makedirs(_MODEL_DIR, exist_ok=True)
+                tmp.save(_MODEL_DIR)
+                _model_singleton = tmp
+                print(f"[Lumina Screen] Model saved to: {_MODEL_DIR}")
         except Exception as e:
             raise RuntimeError(
-                f"Failed to load SentenceTransformer model '{_MODEL_NAME}': {e}\n"
-                "Ensure you have an internet connection on first run, or that the "
-                "model is already cached locally."
+                f"Failed to load or download SentenceTransformer model '{_MODEL_NAME}': {e}\n"
+                "Ensure you have an internet connection on first run."
             ) from e
     return _model_singleton
 

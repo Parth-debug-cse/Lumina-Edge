@@ -26,7 +26,7 @@ export default function LuminaScreenPanel({ toast }) {
   const pollingRef = useRef(null)
 
   useEffect(() => {
-    fetchStatus()
+    fetchStatus(true)
     return () => {
       if (pollingRef.current) clearInterval(pollingRef.current)
     }
@@ -42,14 +42,14 @@ export default function LuminaScreenPanel({ toast }) {
     }
   }, [pipelineStatus])
 
-  const fetchStatus = async () => {
+  const fetchStatus = async (isInitialLoad = false) => {
     setLoadingStatus(true)
     try {
       const data = await api.getLuminaScreenStatus()
       setPipelineStatus(data.status || 'idle')
       if (data.hits) setHits(data.hits)
-      if (data.config) setConfig(prev => ({ ...prev, ...data.config }))
-      if (data.jd_text !== undefined && data.jd_text !== null) {
+      if (isInitialLoad && data.config) setConfig(prev => ({ ...prev, ...data.config }))
+      if (isInitialLoad && data.jd_text !== undefined && data.jd_text !== null) {
         setJdText(data.jd_text)
       }
     } catch (err) {
