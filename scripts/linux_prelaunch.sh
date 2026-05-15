@@ -92,9 +92,9 @@ export ANV_QUEUE_THREAD_DISABLE=0
 
 # Check if Vulkan is available for Intel
 if command -v vulkaninfo &>/dev/null; then
-    VULKAN_DEVICE=$(vulkaninfo 2>/dev/null | grep "deviceName" | head -1 | awk -F'=' '{print $2}' | xargs)
-    if [ -n "$VULKAN_DEVICE" ]; then
-        echo "[GPU] ✓ Vulkan device: $VULKAN_DEVICE"
+    gpu_name=$(vulkaninfo 2>/dev/null | grep "deviceName" | head -1 | awk -F'=' '{print $2}' | xargs) || gpu_name="unknown"
+    if [ -n "$gpu_name" ]; then
+        echo "[GPU] ✓ Vulkan device: $gpu_name"
     else
         echo "[GPU] ⚠ Vulkan available but no device detected"
     fi

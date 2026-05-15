@@ -6,20 +6,32 @@
 # ==============================================================================
 
 cd "$(dirname "$0")"
+ROOT="$(pwd)"
 
 # Helper to read from config.json with fallback
 get_config() {
     local key="$1"
     local default="$2"
-    if command -v python3 &>/dev/null && [[ -f "config.json" ]]; then
+    if command -v python3 &>/dev/null && [[ -f "$ROOT/config.json" ]]; then
         python3 -c "
-import json
+import json,sys
+root=sys.argv[1]
+key=sys.argv[2]
+default=sys.argv[3]
 try:
-    v = json.load(open('config.json')).get('$key')
-    print(v if v is not None else $default)
+    cfg=json.load(open(root+'/config.json'))
+    parts=key.split('.')
+    v=cfg
+    for p in parts:
+        if isinstance(v,dict) and p in v:
+            v=v[p]
+        else:
+            v=None
+            break
+    print(v if v is not None else default)
 except Exception:
-    print($default)
-" 2>/dev/null || echo "$default"
+    print(default)
+" "$ROOT" "$key" "$default" 2>/dev/null || echo "$default"
     else
         echo "$default"
     fi
@@ -39,6 +51,9 @@ while [[ $# -gt 0 ]]; do
             ;;
         --port)
             OVERRIDE_PORT="$2"; shift 2
+            ;;
+        --mlx-port)
+            OVERRIDE_MLX_PORT="$2"; shift 2
             ;;
         --gpu)
             GPU="$2"; shift 2
@@ -87,18 +102,20 @@ TOP_P=$(get_config top_p 0.9)
 REPEAT_PENALTY=$(get_config repeat_penalty 1.1)
 HTTP_THREADS=$(get_config http_threads 2)
 CONT_BATCHING=$(get_config cont_batching true)
-KV_CACHE_QUANT=$(get_config kv_cache_quant 'f16')
+KV_CACHE_QUANT=$(get_config kv_cache_quant 'q4_0')
 USE_MLOCK=$(get_config use_mlock true)
 NO_MMAP=$(get_config no_mmap 'true')
 MOE_MODEL=$(get_config moe_model 'false')
 MOE_OVERRIDE=$(get_config moe_override_tensor '""')
-KV_QUANT=$(get_config kv_quant 'turbo')
+KV_QUANT=$(get_config kv_quant 'q4_0')
+KV_CACHE_TYPE_K=$(get_config kv_cache_type_k 'q4_0')
+KV_CACHE_TYPE_V=$(get_config kv_cache_type_v 'q4_0')
 
 # Convert boolean to on/off for flash-attn
 if [[ "$FLASH_ATTN" == "true" ]]; then
-    FLASH_ATTN_FLAG="--flash-attn on"
+    FLASH_ATTN_FLAG="--flash-attn"
 else
-    FLASH_ATTN_FLAG="--flash-attn off"
+    FLASH_ATTN_FLAG=""
 fi
 
 # Convert boolean flags
@@ -123,8 +140,8 @@ if [[ "$NO_MMAP" == "true" ]]; then
     NO_MMAP_FLAG="--no-mmap"
 fi
 
-# KV cache quantization (llama.cpp only)
-KV_QUANT_FLAGS="--cache-type-k q4 --cache-type-v q4"
+# KV cache quantization (llama.cpp only) — read from config with q4_0 default
+KV_QUANT_FLAGS="--cache-type-k $KV_CACHE_TYPE_K --cache-type-v $KV_CACHE_TYPE_V"
 
 CONT_BATCH_FLAGS=""
 if [[ "$CONT_BATCHING" == "true" ]]; then
@@ -230,7 +247,7 @@ API_LOG="$RUNDIR/api_server.log"
 cd "$UI_DIR"
 
 LUMINA_API_PORT="$PORT" \
-LUMINA_MLX_PORT="$PORT" \
+LUMINA_MLX_PORT="${OVERRIDE_MLX_PORT:-$(get_config backend_port 8091)}" \
 LUMINA_API_PORT_SECONDARY="$API_PORT_SECONDARY" \
 node api-server.js >> "$API_LOG" 2>&1 &
 API_PID=$!

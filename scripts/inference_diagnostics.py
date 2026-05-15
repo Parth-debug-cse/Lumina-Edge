@@ -346,6 +346,7 @@ if __name__ == '__main__':
     # Full report
     report_parser = subparsers.add_parser('report', help='Full diagnostics + profiling report')
     report_parser.add_argument('--port', type=int, default=8000, help='Model server port')
+    report_parser.add_argument('--prompt', type=str, default="Hello, how are you?", help='Prompt for inference profiling')
     report_parser.add_argument('--max-tokens', type=int, default=64, help='Max tokens for profiling')
     report_parser.add_argument('--runs', type=int, default=3, help='Number of profiling runs')
     
@@ -386,7 +387,7 @@ if __name__ == '__main__':
         # Inference profiling
         if check_server_health(args.port):
             print(f"\n🔬 Inference Profiling (port {args.port}):")
-            profile = profile_inference(args.port, max_tokens=args.max_tokens, num_runs=args.runs)
+            profile = profile_inference(args.port, prompt=args.prompt, max_tokens=args.max_tokens, num_runs=args.runs)
             if not profile.get('error'):
                 print(f"  Avg: {profile['avg_tokens_per_sec']} tok/s, {profile['avg_ms_per_token']} ms/token")
             else:

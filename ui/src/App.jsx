@@ -4,9 +4,7 @@ import SettingsPanel  from './components/SettingsPanel.jsx'
 import SessionHistory from './components/SessionHistory.jsx'
 import MultiModelPanel from './components/MultiModelPanel.jsx'
 import DiagnosticsPanel from './components/DiagnosticsPanel.jsx'
-import ChatInterface from './components/ChatInterface.jsx'
-import ApiDocs from './components/ApiDocs.jsx'
-import SystemMonitor from './components/SystemMonitor.jsx'
+import LuminaScreenPanel from './components/LuminaScreenPanel.jsx'
 import { checkServerHealth } from './utils/api.js'
 
 const NAV = [
@@ -14,6 +12,7 @@ const NAV = [
   { id: 'models',     icon: '📦', label: 'Models' },
   { id: 'diagnostics',icon: '📊', label: 'Diagnostics' },
   { id: 'router',     icon: '🔄', label: 'Router' },
+  { id: 'screen',     icon: '🎯', label: 'Screen' },
   { id: 'history',    icon: '📋', label: 'History' },
   { id: 'api',        icon: '📡', label: 'API' },
   { id: 'settings',   icon: '⚙',  label: 'Settings' },
@@ -24,6 +23,7 @@ const PANEL_TITLES = {
   models:      { title: 'Model Manager',     sub: 'Browse, tag, and download GGUF models' },
   diagnostics: { title: 'Diagnostics',       sub: 'Resources, profiling, memory optimization, GPU benchmarks' },
   router:      { title: 'Multi-Model Router',sub: 'Load and route between multiple models' },
+  screen:      { title: 'Lumina Screen',     sub: 'Resume screening pipeline — watch, parse, match, notify' },
   history:     { title: 'Session History',   sub: 'Browse and export past conversations' },
   api:         { title: 'API Documentation', sub: 'OpenAI-compatible endpoints reference' },
   settings:    { title: 'Settings',          sub: 'Configure hyperparameters and server options' },
@@ -44,8 +44,9 @@ export default function App() {
   const [activePanel, setActivePanel] = useState('chat')
   const [serverStatus, setServerStatus] = useState('checking')
   const [serverModel, setServerModel]   = useState('')
-  const [localModels, setLocalModels]   = useState([])
-  const [showMonitor, setShowMonitor]   = useState(false)
+  const [localModels, setLocalModels]   = useState([]) // populated from server models list
+  const API_PORT = import.meta.env.VITE_LUMINA_API_PORT || 8090;
+const [chatUrl, setChatUrl]           = useState(`http://localhost:${API_PORT}`)
   const { toasts, addToast } = useToasts()
 
   const fetchLocalModels = useCallback(async () => {
@@ -89,14 +90,13 @@ export default function App() {
 
   const renderPanel = () => {
     switch (activePanel) {
-      case 'chat':        return <ChatInterface serverModel={serverModel} routerStatus={null} localModels={localModels} toast={addToast} />
-      case 'models':      return <ModelManager   localModels={localModels}   toast={addToast} />
+      case 'models':    return <ModelManager      localModels={localModels}   toast={addToast} onModelsRefresh={fetchLocalModels} />
       case 'diagnostics': return <DiagnosticsPanel localModels={localModels} toast={addToast} />
-      case 'router':      return <MultiModelPanel                            toast={addToast} />
-      case 'history':     return <SessionHistory                             toast={addToast} />
-      case 'api':         return <ApiDocs                                    toast={addToast} />
-      case 'settings':    return <SettingsPanel                              toast={addToast} />
-      default:            return null
+      case 'router':    return <MultiModelPanel                               toast={addToast} />
+      case 'screen':    return <LuminaScreenPanel                             toast={addToast} />
+      case 'history':   return <SessionHistory                                toast={addToast} />
+      case 'settings':  return <SettingsPanel                                 toast={addToast} />
+      default:          return null
     }
   }
 
@@ -163,8 +163,8 @@ export default function App() {
           <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
             <button
               className="btn btn-ghost btn-sm"
-              style={{ flex: 1, justifyContent: 'center', fontSize: '0.6rem' }}
-              onClick={pollHealth}
+              style={{ flex: 1, justifyContent: 'center', fontSize: '0.65rem' }}
+              onClick={() => { pollHealth(); fetchLocalModels(); }}
             >↺ Refresh</button>
           </div>
         </div>

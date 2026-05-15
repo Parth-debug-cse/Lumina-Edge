@@ -2,7 +2,8 @@
 // Lumina Edge UI — utility: API / llama-server client
 // ============================================================
 
-const BASE_URL = 'http://127.0.0.1:8090/v1'
+const API_PORT = import.meta.env.VITE_LUMINA_API_PORT || 8090;
+const BASE_URL = `http://127.0.0.1:${API_PORT}/v1`
 
 let _directPort = null;
 
@@ -868,5 +869,111 @@ export async function unloadAllModels() {
     return await res.json()
   } catch (err) {
     throw new Error(`Failed to unload all models: ${err.message}`)
+  }
+}
+
+// ============================================================
+// LUMINA SCREEN — RESUME SCREENING PIPELINE
+// ============================================================
+
+/**
+ * Get Lumina Screen status and recent hits
+ * @returns {Promise<Object>} - { status, hits }
+ */
+export async function getLuminaScreenStatus() {
+  try {
+    const res = await fetch('/api/lumina-screen/status')
+    if (!res.ok) throw new Error(`Status error ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    return { status: 'idle', hits: [], error: err.message }
+  }
+}
+
+/**
+ * Start the Lumina Screen pipeline
+ * @returns {Promise<Object>} - { status }
+ */
+export async function startLuminaScreen() {
+  try {
+    const res = await fetch('/api/lumina-screen/start', { method: 'POST' })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Start error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    return { error: err.message }
+  }
+}
+
+/**
+ * Stop the Lumina Screen pipeline
+ * @returns {Promise<Object>} - { status }
+ */
+export async function stopLuminaScreen() {
+  try {
+    const res = await fetch('/api/lumina-screen/stop', { method: 'POST' })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Stop error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    return { error: err.message }
+  }
+}
+
+/**
+ * Save Lumina Screen config and JD text
+ * @param {Object} config - { resume_folder?, poll_interval_ms?, match_threshold?, jd_text? }
+ * @returns {Promise<Object>} - { status }
+ */
+export async function saveLuminaScreenConfig(config) {
+  try {
+    const res = await fetch('/api/lumina-screen/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Config save error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    return { error: err.message }
+  }
+}
+
+/**
+ * Fetch parsed hits from page_hit.txt
+ * @returns {Promise<Array>} - [{ timestamp, name, filename, score, email, phone }]
+ */
+export async function getLuminaScreenHits() {
+  try {
+    const res = await fetch('/api/lumina-screen/hits')
+    if (!res.ok) throw new Error(`Hits error ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    return []
+  }
+}
+
+/**
+ * Clear the dedup state (processed.json) so all existing resumes will be re-scanned
+ * on the next pipeline start.
+ * @returns {Promise<Object>} - { status, message }
+ */
+export async function rescanLuminaScreen() {
+  try {
+    const res = await fetch('/api/lumina-screen/rescan', { method: 'POST' })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Rescan error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    return { error: err.message }
   }
 }

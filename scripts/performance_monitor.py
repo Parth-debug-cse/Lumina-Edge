@@ -68,7 +68,7 @@ class PerformanceMonitor:
                                           capture_output=True, text=True, timeout=2)
                     if result.returncode == 0:
                         gpu_memory_gb = float(result.stdout.strip()) / 1024
-                except:
+                except Exception:
                     pass
                 
                 # Calculate tokens/sec
@@ -87,7 +87,7 @@ class PerformanceMonitor:
                     f.write(log_entry)
                 
                 # Print live status
-                if elapsed > 0:
+                if self.start_time is not None and elapsed > 0:
                     print(f"\r⚡ TPS: {tokens_per_sec:.1f} | CPU: {cpu_percent:.1f}% | RAM: {memory_gb:.1f}GB", end='', flush=True)
                 
                 time.sleep(self.update_interval)

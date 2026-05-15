@@ -25,12 +25,20 @@ function Get-ConfigValue {
     
     try {
         $config = Get-Content "config.json" -Raw | ConvertFrom-Json
-        $value = $config.$Key
-        if ($null -eq $value) { return $Default }
-        return $value
-    } catch {
-        return $Default
-    }
+        $value = $config
+        $Key.Split('.') | ForEach-Object {
+            # BUG PS1-1 FIX: Use $null -ne instead of PowerShell truthiness.
+            # The old check ($value.$_) treats 0, $false, and "" as falsy and
+            # silently falls through to the default, ignoring the configured value.
+            if ($null -ne $value -and $null -ne $value.$_) {
+                $value = $value.$_
+            } else {
+                $value = $null
+            }
+        }
+        if ($null -ne $value) { return $value }
+    } catch {}
+    return $Default
 }
 
 # Read configuration from config.json
@@ -47,12 +55,14 @@ $TopP = Get-ConfigValue -Key "top_p" -Default 0.9
 $RepeatPenalty = Get-ConfigValue -Key "repeat_penalty" -Default 1.1
 $HttpThreads = Get-ConfigValue -Key "http_threads" -Default 2
 $ContBatching = Get-ConfigValue -Key "cont_batching" -Default $true
-$KvCacheQuant = Get-ConfigValue -Key "kv_cache_quant" -Default "f16"
+$KvCacheQuant = Get-ConfigValue -Key "kv_cache_quant" -Default "q4_0"
 $UseMlock = Get-ConfigValue -Key "use_mlock" -Default $true
 $NoMmap = Get-ConfigValue -Key "no_mmap" -Default $true
 $MoeModel = Get-ConfigValue -Key "moe_model" -Default $false
 $MoeOverride = Get-ConfigValue -Key "moe_override_tensor" -Default ""
-$KvQuant = Get-ConfigValue -Key "kv_quant" -Default "turbo"
+$KvQuant = Get-ConfigValue -Key "kv_quant" -Default "q4_0"
+$KvCacheTypeK = Get-ConfigValue -Key "kv_cache_type_k" -Default "q4_0"
+$KvCacheTypeV = Get-ConfigValue -Key "kv_cache_type_v" -Default "q4_0"
 
 # Use command-line parameters or fall back to config
 $FinalModel = if ($Model) { $Model } else { $ConfigModel }
@@ -68,7 +78,18 @@ if (-not $FinalModel) {
     exit 1
 }
 
-$ModelPath = Join-Path $RootDir "models" $FinalModel
+# BUG PS1-2 FIX: Only prepend models\ if the path is not already absolute and
+# does not already start with 'models\'. The original code always called
+# Join-Path $RootDir "models" $FinalModel, producing double paths like
+# C:\...\models\models\foo.gguf for paths that were already prefixed.
+if ([System.IO.Path]::IsPathRooted($FinalModel) -or
+    $FinalModel -match '^models[\\/]' -or
+    $FinalModel -match '^\.[\\/]' -or
+    $FinalModel -match '^\.\.' ) {
+    $ModelPath = $FinalModel
+} else {
+    $ModelPath = Join-Path $RootDir "models" $FinalModel
+}
 if (-not (Test-Path $ModelPath)) {
     Write-Error "ERROR: Model file not found: $ModelPath"
     Write-Host "`nPlease download a GGUF model and place it in the models/ directory." -ForegroundColor Yellow
@@ -105,8 +126,14 @@ $LogFile = Join-Path $LogsDir "api_server.log"
 # Build llama-server command arguments
 # Tool calling requires a model with a Jinja chat template that includes
 # tool_call support. Recommended: Phi-4-mini, Gemma3-4B, Llama-3.2-3B (GGUF).
+if ($FinalModel -match '^[a-zA-Z]:\\|^\\|^\.\.\\|^\.\\') {
+    $ModelArg = $FinalModel
+} else {
+    $ModelArg = "models\$FinalModel"
+}
+
 $Arguments = @(
-    "-m", "models\$FinalModel",
+    "-m", $ModelArg,
     "--port", $FinalPort,
     "--host", "127.0.0.1",
     "--ctx-size", $CtxSize,
@@ -127,8 +154,8 @@ if ($UseMlock) { $Arguments += "--mlock" }
 if ($NoMmap) { $Arguments += "--no-mmap" }
 if ($ContBatching) { $Arguments += "--cont-batching" }
 
-# Add KV quantization flags
-$Arguments += @("--cache-type-k", "q4", "--cache-type-v", "q4")
+# Add KV quantization flags from config (default q4_0)
+$Arguments += @("--cache-type-k", $KvCacheTypeK, "--cache-type-v", $KvCacheTypeV)
 
 # Add MoE flags
 if ($MoeModel) {
@@ -169,7 +196,11 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 # Start the server
 $Process = $null
 try {
-    $Process = Start-Process -FilePath $BinaryPath -ArgumentList $Arguments -RedirectStandardOutput $LogFile -RedirectStandardError $LogFile -WindowStyle Hidden -PassThru
+    # BUG PS1-4 FIX: Start-Process throws InvalidOperationException when
+    # -RedirectStandardOutput and -RedirectStandardError both point to the
+    # same file. Redirect stderr to a separate log file to avoid this crash.
+    $ErrorLogFile = "$LogFile.err"
+    $Process = Start-Process -FilePath $BinaryPath -ArgumentList $Arguments -RedirectStandardOutput $LogFile -RedirectStandardError $ErrorLogFile -WindowStyle Hidden -PassThru
     
     Write-Host "Server started with PID: $($Process.Id)" -ForegroundColor Green
     Write-Host "Waiting for server to initialize..." -ForegroundColor Yellow

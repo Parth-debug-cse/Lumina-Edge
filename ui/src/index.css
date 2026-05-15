@@ -20,26 +20,26 @@
   --green-dim: rgba(16, 185, 129, 0.12);
   --red: #ef4444;
   --red-dim: rgba(239, 68, 68, 0.12);
-  --yellow: #f59e0b;
-  --blue: #3b82f6;
-  --cyan: #06b6d4;
+  --yellow:  #f59e0b;
 
-  --border: #262626;
-  --border-accent: rgba(16, 185, 129, 0.4);
-  --border-strong: #404040;
+  /* Borders */
+  --border:       rgba(61, 55, 51, 0.6);
+  --border-accent:rgba(217, 119, 87, 0.4);
 
-  --surface-1: #0d0d0d;
-  --surface-2: #1a1a1a;
-  --surface-3: #262626;
+  /* Surfaces (used by DiagnosticsPanel) */
+  --surface-1:    #1C1917;
+  --surface-2:    #292524;
+  --surface-3:    #3D3733;
 
-  --color-green: #10b981;
-  --color-cyan: #06b6d4;
-  --color-purple: #a78bfa;
-  --color-red: #ef4444;
+  /* Component color aliases (used inline by components) */
+  --color-green:  #4ADE80;
+  --color-cyan:   #06b6d4;
+  --color-purple: #8B5CF6;
+  --color-red:    #ef4444;
   --color-yellow: #f59e0b;
-  --color-orange: #f59e0b;
-  --color-blue: #3b82f6;
-  --text: #e5e5e5;
+  --color-orange: #f97316;
+  --color-blue:   #3b82f6;
+  --text:         #F5F0EB;
 
   --r-sm: 4px;
   --r-md: 6px;

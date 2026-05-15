@@ -87,7 +87,7 @@ class SystemOptimizer:
                     elif 'Thread(s) per core:' in line:
                         threads_per_core = int(line.split(':')[1].strip())
                         logical_cores = physical_cores * threads_per_core
-            except:
+            except Exception:
                 pass
                 
             cpu_info = {
@@ -119,7 +119,7 @@ class SystemOptimizer:
             try:
                 freq = int(subprocess.check_output(['sysctl', '-n', 'hw.cpufrequency'], text=True).strip())
                 frequency_mhz = freq // 1000000  # Convert to MHz
-            except:
+            except Exception:
                 frequency_mhz = 0
                 
             # Get cache sizes
@@ -128,7 +128,7 @@ class SystemOptimizer:
                 try:
                     size = subprocess.check_output(['sysctl', '-n', f'hw.{cache.lower()}cachesize'], text=True).strip()
                     cache_sizes[cache] = int(size)
-                except:
+                except Exception:
                     pass
                     
             cpu_info = {
@@ -166,7 +166,7 @@ class SystemOptimizer:
                 'manufacturer': processor.Manufacturer
             }
             
-        except:
+        except Exception:
             # Fallback to psutil
             cpu_info = {
                 'physical_cores': psutil.cpu_count(logical=False),
@@ -195,7 +195,7 @@ class SystemOptimizer:
                 'min_mhz': freq_info.min,
                 'max_mhz': freq_info.max
             }
-        except:
+        except Exception:
             return {}
             
     def _get_cache_sizes(self):
@@ -210,9 +210,9 @@ class SystemOptimizer:
                             if f'{cache}d cache:' in line.lower():
                                 cache_size = line.split(':')[1].strip().split()[0]
                                 cache_sizes[cache] = cache_size
-                    except:
+                    except Exception:
                         pass
-        except:
+        except Exception:
             pass
         return cache_sizes
         
@@ -226,7 +226,7 @@ class SystemOptimizer:
                         if line.startswith('flags'):
                             features = line.split(':')[1].strip().split()
                             break
-        except:
+        except Exception:
             pass
         return features
         
@@ -236,7 +236,7 @@ class SystemOptimizer:
             if platform.system() == "Linux":
                 governor = subprocess.check_output(['cpupower', 'frequency-info', '-g'], text=True).strip()
                 return governor
-        except:
+        except Exception:
             pass
         return "unknown"
         
@@ -270,7 +270,7 @@ class SystemOptimizer:
                         'memory_free_mb': int(parts[2].strip()),
                         'cuda_available': True
                     })
-        except:
+        except Exception:
             pass
             
         # AMD GPU detection
@@ -286,7 +286,7 @@ class SystemOptimizer:
                             'memory_total_mb': 0,  # Would need additional detection
                             'vulkan_available': True
                         })
-        except:
+        except Exception:
             pass
             
         # Intel iGPU detection — shared memory, Vulkan-capable
@@ -346,7 +346,7 @@ class SystemOptimizer:
                 'used_gb': disk_usage.used / (1024**3),
                 'percentage': (disk_usage.used / disk_usage.total) * 100
             }
-        except:
+        except Exception:
             pass
             
         self.system_info['storage'] = storage
@@ -367,7 +367,7 @@ class SystemOptimizer:
                 'interfaces': interfaces,
                 'active_connections': connections
             }
-        except:
+        except Exception:
             pass
             
         self.system_info['network'] = network
@@ -575,10 +575,11 @@ class SystemOptimizer:
                 with open(config_path, 'r') as f:
                     existing_config = json.load(f)
                     
-            # Update with optimized values (only for keys that aren't explicitly set by user)
+            # Update with optimized values
             for key, value in self.optimized_config.items():
-                if key not in existing_config or str(existing_config[key]).startswith('auto'):
-                    existing_config[key] = value
+                old = existing_config.get(key, '<unset>')
+                existing_config[key] = value
+                print(f'[Optimizer]  {key}: {old} → {value}')
                     
             # Save updated config
             with open(config_path, 'w') as f:
@@ -635,7 +636,6 @@ class SystemOptimizer:
 def main():
     """Main function"""
     optimizer = SystemOptimizer()
-    optimizer.optimize_config()
     
     if len(sys.argv) > 1 and sys.argv[1] == '--print-info':
         optimizer.print_system_info()
