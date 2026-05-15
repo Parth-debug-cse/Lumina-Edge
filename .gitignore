@@ -79,3 +79,10 @@ Thumbs.db
 # Environment files
 .env
 .env.*
+# Lumina Screen runtime / generated artifacts
+lumina_screen/chroma_store/
+lumina_screen/page_hit.txt
+lumina_screen/processed.json
+lumina_screen/resumes/test_*.pdf
+.lumina_run/
+open-webui-data/
