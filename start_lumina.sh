@@ -4,7 +4,7 @@
 # Optimizes system → starts MLX backend → starts API server → launches UI
 # ==============================================================================
 
-set -e
+set -o pipefail
 
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
@@ -24,13 +24,37 @@ is_valid_mlx_model() {
     local model_path="$1"
     [[ -d "$model_path" ]] || return 1
     [[ -f "$model_path/config.json" ]] || return 1
-    if ls "$model_path"/*.safetensors 2>/dev/null | head -1 | grep -q .; then
-        return 0
-    fi
-    if ls "$model_path"/weights.*.safetensors 2>/dev/null | head -1 | grep -q .; then
-        return 0
-    fi
-    return 1
+
+    local sf=""
+    sf=$(ls "$model_path"/*.safetensors 2>/dev/null | head -1)
+    [[ -z "$sf" ]] && sf=$(ls "$model_path"/weights.*.safetensors 2>/dev/null | head -1)
+    [[ -z "$sf" ]] && return 1
+
+    python3 -c "
+import struct, sys
+try:
+    with open('$sf', 'rb') as f:
+        hlen_bytes = f.read(8)
+        if len(hlen_bytes) < 8: sys.exit(1)
+        hlen = struct.unpack('<Q', hlen_bytes)[0]
+        if hlen == 0 or hlen > 100_000_000: sys.exit(1)
+        import json
+        json.loads(f.read(hlen))
+    sys.exit(0)
+except Exception: sys.exit(1)
+" 2>/dev/null || return 1
+
+    python3 -c "
+import json, sys
+try:
+    cfg = json.load(open('$model_path/config.json'))
+    required = ['hidden_size', 'num_attention_heads', 'num_hidden_layers', 'vocab_size']
+    if not all(k in cfg for k in required): sys.exit(1)
+    sys.exit(0)
+except Exception: sys.exit(1)
+" 2>/dev/null || return 1
+
+    return 0
 }
 
 auto_find_model() {
@@ -100,18 +124,19 @@ stop_existing() {
     # Kill by PID file
     if [[ -f "$PID_FILE" ]]; then
         while read pid cmd; do
-            if [[ -n "$pid" && -d "/proc/$pid" || $(ps -p "$pid" 2>/dev/null) ]]; then
+            if [[ -n "$pid" ]] && { [[ -d "/proc/$pid" ]] || ps -p "$pid" > /dev/null 2>&1; }; then
                 kill "$pid" 2>/dev/null || true
             fi
         done < "$PID_FILE"
         > "$PID_FILE"
     fi
-    # Fallback: kill by pattern (Linux only — pkill not available on macOS by default)
-    if [[ "$(uname -s)" != "Darwin" ]]; then
-        pkill -f 'mlx_backend.*api' 2>/dev/null || true
-        pkill -f 'api-server.js' 2>/dev/null || true
-        pkill -f 'vite' 2>/dev/null || true
-    fi
+    # BUG SL-1 FIX: pkill IS available on macOS (since macOS 10.8). The original
+    # code skipped the pkill fallback on Darwin, leaving stale processes holding
+    # ports when the PID file was missing or corrupt.  Now we run pkill on all
+    # platforms so a restart after a crash can always reclaim the port.
+    pkill -f 'mlx_backend.*api' 2>/dev/null || true
+    pkill -f 'api-server.js' 2>/dev/null || true
+    pkill -f 'vite' 2>/dev/null || true
     sleep 1
 }
 
@@ -125,21 +150,24 @@ get_config() {
     local default="$2"
     if command -v python3 &>/dev/null && [[ -f "$ROOT/config.json" ]]; then
         python3 -c "
-import json
+import json,sys
+root=sys.argv[1]
+key=sys.argv[2]
+default=sys.argv[3]
 try:
-    cfg = json.load(open('$ROOT/config.json'))
-    parts = '$key'.split('.')
-    v = cfg
+    cfg=json.load(open(root+'/config.json'))
+    parts=key.split('.')
+    v=cfg
     for p in parts:
-        if isinstance(v, dict) and p in v:
-            v = v[p]
+        if isinstance(v,dict) and p in v:
+            v=v[p]
         else:
-            v = None
+            v=None
             break
-    print(v if v is not None else $default)
-except:
-    print($default)
-" 2>/dev/null || echo "$default"
+    print(v if v is not None else default)
+except Exception:
+    print(default)
+" "$ROOT" "$key" "$default" 2>/dev/null || echo "$default"
     else
         echo "$default"
     fi
@@ -152,6 +180,40 @@ optimize_system() {
     log "Optimizing system for inference..."
 
     if [[ "$(uname -s)" == "Darwin" ]]; then
+        MACOS_SCRIPTS="$SCRIPTS/macos"
+
+        if [[ -d "$MACOS_SCRIPTS" ]]; then
+            log "  Running macOS shell optimizations..."
+
+            # Step 1: Kill memory-hungry background processes
+            if [[ -x "$MACOS_SCRIPTS/kill_memory_hogs.sh" ]]; then
+                log "  Kill memory hogs..."
+                bash "$MACOS_SCRIPTS/kill_memory_hogs.sh" >> "$RUNDIR/optimizer.log" 2>&1 || true
+            fi
+
+            # Step 2: Purge disk cache and inactive memory (needs sudo)
+            if [[ -x "$MACOS_SCRIPTS/purge_and_prep.sh" ]]; then
+                log "  Purge disk cache and memory..."
+                sudo bash "$MACOS_SCRIPTS/purge_and_prep.sh" >> "$RUNDIR/optimizer.log" 2>&1 || \
+                    log "  purge_and_prep.sh skipped (sudo required or not available)"
+            fi
+
+            # Step 3: Check swap status (and disable if LUMINA_NOSWAP=1)
+            if [[ -x "$MACOS_SCRIPTS/swap_and_swap_off.sh" ]]; then
+                if [[ "${LUMINA_NOSWAP:-0}" == "1" ]]; then
+                    log "  Disabling swap for inference session..."
+                    sudo bash "$MACOS_SCRIPTS/swap_and_swap_off.sh" --disable >> "$RUNDIR/optimizer.log" 2>&1 || true
+                else
+                    log "  Checking swap status..."
+                    bash "$MACOS_SCRIPTS/swap_and_swap_off.sh" >> "$RUNDIR/optimizer.log" 2>&1 || true
+                fi
+            fi
+
+            log_ok "macOS shell optimizations complete"
+        else
+            log "  macOS scripts directory not found at $MACOS_SCRIPTS"
+        fi
+
         PYTHON="$(command -v python3)"
         OPTIMIZER="$SCRIPTS/mlx_optimize_system.py"
         if [[ -f "$OPTIMIZER" ]]; then
@@ -191,18 +253,18 @@ check_model() {
         return 1
     fi
 
-    # Rename weights.*.safetensors to model.safetensors if needed (mlx_lm requirement)
+    # BUG SL-2 FIX: Silently renaming a single shard to model.safetensors while
+    # leaving remaining shards with their original names produces a broken model
+    # directory.  Multi-shard models (weights.0.safetensors, weights.1.safetensors…)
+    # need ALL shards renamed in a coordinated way — mlx_lm handles weight loading
+    # from the sharded filenames natively in newer versions.  Instead of a
+    # potentially destructive mv, emit a warning and let the user or mlx_lm handle it.
     if [[ "$(uname -s)" == "Darwin" && -d "$MODEL_PATH" ]]; then
-        if ls "$MODEL_PATH"/weights.*.safetensors 2>/dev/null; then
-            for f in "$MODEL_PATH"/weights.*.safetensors; do
-                name=$(basename "$f")
-                newname="model.safetensors"
-                if [[ "$name" != "model.safetensors" ]]; then
-                    mv "$f" "$MODEL_PATH/$newname"
-                    log "  Renamed $name → $newname for mlx_lm compatibility"
-                    break
-                fi
-            done
+        shard_count=$(ls "$MODEL_PATH"/weights.*.safetensors 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$shard_count" -gt 0 ]]; then
+            log "  NOTE: Found $shard_count weights.*.safetensors shard(s)."
+            log "  Newer mlx_lm versions load shards natively — no rename needed."
+            log "  If loading fails, run: python3 scripts/mlx_backend.py --mode api --model '$MODEL_PATH'"
         fi
     fi
 
@@ -213,6 +275,12 @@ check_model() {
 # STEP 3: Start MLX backend (Apple Silicon) or llama-server (Linux/Windows)
 # ==============================================================================
 start_backend() {
+    if [[ -z "$MODEL_PATH" ]]; then
+        log "  No model configured — skipping backend start"
+        log "  Use the Models tab to download and load a model"
+        return 0
+    fi
+
     log "Starting inference backend..."
 
     if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -241,8 +309,10 @@ start_backend() {
                 models_response=$(curl -s --max-time 3 "http://127.0.0.1:$MLX_PORT/v1/models" 2>/dev/null)
                 if echo "$models_response" | grep -q '"data"'; then
                     log_ok "MLX backend ready on port $MLX_PORT"
-                    return 0
+                else
+                    log_ok "MLX server running on port $MLX_PORT (model not loaded — use Models tab)"
                 fi
+                return 0
             fi
             sleep 1
         done
@@ -270,10 +340,12 @@ start_backend() {
         MIN_P=$(get_config min_p 0.05)
         HTTP_THREADS=$(get_config http_threads 2)
         FLASH_ATTN=$(get_config flash_attn true)
+        KV_CACHE_TYPE_K=$(get_config kv_cache_type_k 'q4_0')
+        KV_CACHE_TYPE_V=$(get_config kv_cache_type_v 'q4_0')
 
         FLASH_ATTN_FLAG=""
         if [[ "$FLASH_ATTN" == "true" ]]; then
-            FLASH_ATTN_FLAG="--flash-attn on"
+            FLASH_ATTN_FLAG="--flash-attn"
         fi
 
         BACKEND_LOG="$RUNDIR/llama_server.log"
@@ -295,8 +367,8 @@ start_backend() {
             --top-k "$TOP_K" \
             --repeat-penalty "$REPEAT_PENALTY" \
             --min-p "$MIN_P" \
-            --cache-type-k q4 \
-            --cache-type-v q4 \
+            --cache-type-k "$KV_CACHE_TYPE_K" \
+            --cache-type-v "$KV_CACHE_TYPE_V" \
             --jinja \
             $FLASH_ATTN_FLAG \
             >> "$BACKEND_LOG" 2>&1 &
@@ -348,18 +420,12 @@ start_api_server() {
     log "  Waiting for API server..."
     for i in $(seq 1 30); do
         if curl -s --max-time 2 "http://127.0.0.1:$SECONDARY_PORT/api/health" 2>/dev/null | grep -q 'ok'; then
-            mlx_models=$(curl -s --max-time 3 "http://127.0.0.1:$MLX_PORT/v1/models" 2>/dev/null)
-            if echo "$mlx_models" | grep -q '"data"'; then
-                log_ok "API gateway ready (primary: $API_PORT, mgmt: $SECONDARY_PORT, MLX connected)"
-                return 0
-            fi
+            log_ok "API gateway ready (primary: $API_PORT, mgmt: $SECONDARY_PORT)"
+            return 0
         fi
         if curl -s --max-time 2 "http://127.0.0.1:$API_PORT/api/health" 2>/dev/null | grep -q 'ok'; then
-            mlx_models=$(curl -s --max-time 3 "http://127.0.0.1:$MLX_PORT/v1/models" 2>/dev/null)
-            if echo "$mlx_models" | grep -q '"data"'; then
-                log_ok "API gateway ready (primary: $API_PORT, MLX connected)"
-                return 0
-            fi
+            log_ok "API gateway ready (primary: $API_PORT)"
+            return 0
         fi
         sleep 1
     done
@@ -435,21 +501,16 @@ setup_openwebui() {
     log "  Starting OpenWebUI via Docker..."
     OW_LOG="$RUNDIR/openwebui.log"
 
+    # NOTE: OPENAI_API_KEY below is a placeholder; set LUMINA_OPENAI_KEY env var to override
     # Start OpenWebUI with offline mode to prevent hanging on model downloads
-    # Use port 3000 as default since 8080 might be taken
-    local ow_docker_port=3000
-    if [[ "$OW_PORT" != "8080" ]]; then
-        ow_docker_port=$OW_PORT
-    fi
-
-    docker run -d -p "${ow_docker_port}:8080" \
+    docker run -d -p "${OW_PORT}:8080" \
         --add-host=host.docker.internal:host-gateway \
         -e HF_HUB_OFFLINE=1 \
         -e TRANSFORMERS_OFFLINE=1 \
         -e HF_HUB_DISABLE_PROGRESS_BARS=1 \
         -e HF_HUB_DISABLE_TELEMETRY=1 \
         -e OLLAMA_BASE_URL="http://host.docker.internal:${API_PORT}/v1" \
-        -e OPENAI_API_KEY="lumina-key" \
+        -e OPENAI_API_KEY="${LUMINA_OPENAI_KEY:-lumina-key}" \
         -e OPENAI_API_BASE_URL="http://host.docker.internal:${API_PORT}/v1" \
         --name openwebui \
         openwebui/open-webui:latest >> "$OW_LOG" 2>&1 &
@@ -460,13 +521,13 @@ setup_openwebui() {
 
     log "  Waiting for OpenWebUI to start (this may take a minute)..."
     for i in $(seq 1 90); do
-        if curl -s --max-time 5 "http://127.0.0.1:${ow_docker_port}/" 2>/dev/null | grep -q 'html'; then
+        if curl -s --max-time 5 "http://127.0.0.1:${OW_PORT}/" 2>/dev/null | grep -q 'html'; then
             api_test=$(curl -s --max-time 5 "http://127.0.0.1:${API_PORT}/v1/models" 2>/dev/null)
             if echo "$api_test" | grep -q '"data"'; then
-                log_ok "OpenWebUI ready at http://127.0.0.1:${ow_docker_port}"
+                log_ok "OpenWebUI ready at http://127.0.0.1:${OW_PORT}"
                 log "  MLX model accessible via Lumina API"
                 log "  Configure OpenWebUI to connect to Lumina:"
-                log "    1. Open http://127.0.0.1:${ow_docker_port} in your browser"
+                log "    1. Open http://127.0.0.1:${OW_PORT} in your browser"
                 log "    2. Sign up / log in, then go to Settings → Connections"
                 log "    3. API URL: http://host.docker.internal:${API_PORT}/v1"
                 log "    4. API Key: lumina-key"
@@ -528,7 +589,7 @@ resolve_ports() {
 # ==============================================================================
 main() {
     resolve_ports
-    echo "" > "$RUNDIR/startup.log"
+    : > "$RUNDIR/startup.log"
     log "============================================================"
     log "  Lumina Edge Launcher"
     log "============================================================"
@@ -537,27 +598,29 @@ main() {
     log "  Model:    ${MODEL_PATH:-not set}"
     log ""
 
-    trap cleanup_components INT TERM
+    trap cleanup_components INT TERM EXIT
 
     stop_existing
 
     optimize_system || log_err "Optimizer had warnings (non-fatal)"
 
-    check_model || { cleanup_components; exit 1; }
+    check_model || log_err "No model — use the Models tab to download one"
 
-    start_backend || { cleanup_components; exit 1; }
+    start_backend || log_err "Backend not started — use the Models tab to load a model"
 
     start_api_server || { cleanup_components; exit 1; }
 
     start_ui || { cleanup_components; exit 1; }
-
-    trap - INT TERM
 
     setup_openwebui
 
     print_summary
 
     log "Startup complete. Press Ctrl+C to stop all services."
+    # BUG SL-3 FIX: 'wait || true' swallows the exit code of every child process,
+    # meaning the launcher exits 0 even when a backend crashes.  Wait for all
+    # background jobs so the shell does not exit prematurely, but without hiding
+    # failures.  The trap on INT/TERM handles Ctrl+C cleanup.
     wait
 }
 

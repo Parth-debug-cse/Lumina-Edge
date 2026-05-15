@@ -246,7 +246,7 @@ def detect_model_format(file_path: str) -> Tuple[str, bool]:
                 info = ShardedModelInfo(path.parent)
                 if info.is_sharded:
                     return (f'sharded-{info.shard_format}', True)
-            except:
+            except Exception:
                 pass
         return ('unknown', False)
 

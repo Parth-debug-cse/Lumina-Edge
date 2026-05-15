@@ -344,8 +344,14 @@ export default function DiagnosticsPanel({ localModels = [], toast }) {
             </div>
             {profileResult.runs?.map((r, i) => (
               <div key={i} style={{ ...STAT_CARD, marginTop: 4, display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>Run {r.run}</span>
-                <span style={{ color: 'var(--text-primary)', fontSize: '0.75rem' }}>{r.completion_tokens} tokens in {r.total_time_s}s = <strong style={{ color: 'var(--accent)' }}>{r.tokens_per_sec} tok/s</strong></span>
+                {r.error ? (
+                  <span style={{ color: 'red' }}>Run {r.run}: {r.error}</span>
+                ) : (
+                  <>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>Run {r.run}</span>
+                    <span style={{ color: 'var(--text-primary)', fontSize: '0.75rem' }}>{r.completion_tokens} tokens in {r.total_time_s}s = <strong style={{ color: 'var(--accent)' }}>{r.tokens_per_sec} tok/s</strong></span>
+                  </>
+                )}
               </div>
             ))}
           </div>

@@ -6,6 +6,9 @@ import os
 import sys
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+
 def validate_all():
     errors = []
     warnings = []
@@ -15,11 +18,13 @@ def validate_all():
     print("=" * 60)
     
     # 1. Config exists
-    if not Path('config.json').exists():
+    config_path = PROJECT_ROOT / 'config.json'
+    if not config_path.exists():
         errors.append("config.json not found")
     else:
         try:
-            config = json.load(open('config.json'))
+            with open(config_path) as f:
+                config = json.load(f)
             print("✓ config.json found and valid")
             
             # 2. Model exists — check both 'model' and 'startup.default_model'
@@ -27,7 +32,7 @@ def validate_all():
             if not model_name:
                 errors.append("'model' (and 'startup.default_model') is empty in config.json")
             else:
-                model_path = Path('models') / model_name
+                model_path = PROJECT_ROOT / 'models' / model_name
                 if model_path.exists():
                     size_gb = model_path.stat().st_size / (1024**3)
                     print(f"✓ Model exists: {model_path.name} ({size_gb:.2f} GB)")
@@ -46,11 +51,11 @@ def validate_all():
             
             # 4. llama-server binary
             if os.name == 'nt':  # Windows
-                binary = Path('bin/llama-server.exe')
-                alt_binary = Path('llama-server.exe')
+                binary = PROJECT_ROOT / 'bin/llama-server.exe'
+                alt_binary = PROJECT_ROOT / 'llama-server.exe'
             else:
-                binary = Path('bin/llama-server')
-                alt_binary = Path('llama-server')
+                binary = PROJECT_ROOT / 'bin/llama-server'
+                alt_binary = PROJECT_ROOT / 'llama-server'
             
             if binary.exists():
                 print(f"✓ llama-server binary found: {binary}")

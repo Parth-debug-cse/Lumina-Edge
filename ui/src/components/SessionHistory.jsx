@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import {
-  getSessions, deleteSession,
+  getSessions, deleteSession, exportAsJSON, exportAsMarkdown,
 } from '../utils/storage.js'
 import ExportButtons from './ExportButtons.jsx'
 
@@ -85,7 +85,7 @@ export default function SessionHistory({ toast }) {
                   <div className="history-actions" style={{ flexDirection: 'column', gap: 4 }}>
                     <button className="btn btn-ghost btn-sm btn-icon" title="Export JSON"
                       onClick={e => { e.stopPropagation(); exportAsJSON(s); toast('Exported JSON', 'success') }}>
-                      {}
+                      J↓
                     </button>
                     <button className="btn btn-ghost btn-sm btn-icon" title="Export Markdown"
                       onClick={e => { e.stopPropagation(); exportAsMarkdown(s); toast('Exported Markdown', 'success') }}>

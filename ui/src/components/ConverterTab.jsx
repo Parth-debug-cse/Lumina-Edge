@@ -60,12 +60,8 @@ export default function ConverterTab({ systemInfo, apiLoadModel, toast, autoConv
           clearInterval(intervalRef.current)
           intervalRef.current = null
           setConverting(false)
-          if (statusResult.status === 'complete' || (statusResult.status === 'quantizing' && statusResult.progress === 100)) {
-            toast(`${isQuantize ? 'Quantization' : 'Conversion'} complete: ${statusResult.output}`, 'success')
-            refreshFileList()
-          } else {
-            toast(`${isQuantize ? 'Quantization' : 'Conversion'} failed`, 'error')
-          }
+          toast(`${isQuantize ? 'Quantization' : 'Conversion'} complete: ${statusResult.output}`, 'success')
+          refreshFileList()
         }
       } else if (statusResult.status === 'error') {
         clearInterval(intervalRef.current)

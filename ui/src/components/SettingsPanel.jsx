@@ -63,6 +63,8 @@ const LLAMA_CPP_SECTIONS = [
     fields: [
       { key: 'flash_attn',    label: 'Flash Attention', type: 'toggle', hint: 'Enable Flash Attention for faster inference and lower memory (llama.cpp only).' },
       { key: 'kv_cache_quant', label: 'KV Cache Quant', type: 'select', options: ['f16', 'q8_0', 'q4_0'], hint: 'KV cache quantization type. Lower = less memory, slightly slower (llama.cpp only).' },
+      { key: 'kv_cache_type_k', label: 'KV Cache Type K', type: 'select', options: ['f16', 'q8_0', 'q4_0'], hint: 'llama.cpp K cache quantization type. Default q4_0 for 4-bit.' },
+      { key: 'kv_cache_type_v', label: 'KV Cache Type V', type: 'select', options: ['f16', 'q8_0', 'q4_0'], hint: 'llama.cpp V cache quantization type. Default q4_0 for 4-bit.' },
       { key: 'split_mode',    label: 'Split Mode',     type: 'select', options: ['auto', 'layer', 'row', 'none'], hint: 'GPU tensor split mode. Auto = detected by GPU type (llama.cpp only).' },
       { key: 'use_mlock',     label: 'Memory Lock (mlock)', type: 'toggle', hint: 'Lock pages in RAM to prevent swapping. Skip on macOS (llama.cpp only).' },
       { key: 'numa_mode',     label: 'NUMA Mode',      type: 'toggle', hint: 'Enable NUMA memory distribution for multi-socket systems (llama.cpp only).' },
@@ -102,6 +104,8 @@ const MLX_SECTIONS = [
     fields: [
       { key: 'mlx_max_tokens', label: 'Max Tokens',    type: 'number', min: 1, max: 8192, hint: 'Maximum tokens to generate per response.' },
       { key: 'mlx_stop_tokens', label: 'Stop Tokens',    type: 'text', hint: 'Comma-separated list of tokens to stop generation (e.g., "</s>,User:").' },
+      { key: 'kv_bits', label: 'KV Bits',           type: 'number', min: 2, max: 8, hint: 'MLX KV cache bit-width. 4 = 4-bit quantization for memory savings.' },
+      { key: 'kv_group_size', label: 'KV Group Size', type: 'number', min: 32, max: 128, hint: 'MLX KV cache group size for quantization. Default 64.' },
     ],
   },
   {
@@ -399,7 +403,7 @@ export default function SettingsPanel({ toast }) {
             ✓ Saved
           </span>
         )}
-        <div style={{ marginLeft: 'auto', fontSize: '0.7rem', color: 'var(--text-muted) ', maxWidth: 280, textAlign: 'right', lineHeight: 1.4 }}>
+        <div style={{ marginLeft: 'auto', fontSize: '0.7rem', color: 'var(--text-muted)', maxWidth: 280, textAlign: 'right', lineHeight: 1.4 }}>
           Settings are saved in browser storage and used by the UI.<br />
           To apply to shell scripts, edit <span className="font-mono">config.json</span> directly or copy the preview above.
         </div>

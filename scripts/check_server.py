@@ -2,11 +2,15 @@
 """Check if Lumina Edge API server is running"""
 
 import json
+import os
 import sys
 
 def check_server():
     try:
-        config = json.load(open('config.json'))
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.json')
+        config_path = os.path.normpath(config_path)
+        with open(config_path) as f:
+            config = json.load(f)
     except FileNotFoundError:
         print("ERROR: config.json not found")
         return False

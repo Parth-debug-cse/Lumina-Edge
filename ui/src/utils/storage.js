@@ -134,7 +134,9 @@ export const DEFAULT_CONFIG = {
 
   // llama.cpp advanced parameters (Windows/Linux only)
   flash_attn: true,
-  kv_cache_quant: 'f16',
+  kv_cache_quant: 'q4_0',
+  kv_cache_type_k: 'q4_0',
+  kv_cache_type_v: 'q4_0',
   split_mode: 'auto',
   use_mlock: true,
   numa_mode: false,
@@ -143,6 +145,8 @@ export const DEFAULT_CONFIG = {
 
   // MLX-specific parameters (macOS only)
   mlx_max_tokens: 2048,
+  kv_bits: 4,
+  kv_group_size: 64,
   mlx_seed: '',  // Empty = random seed
   mlx_stop_tokens: '',  // Comma-separated list
   mlx_adapter_path: '',  // Optional LoRA adapter path

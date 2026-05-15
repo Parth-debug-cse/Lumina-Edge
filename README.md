@@ -133,7 +133,7 @@ The launcher automatically:
 > npm start
 > ```
 
-> **Windows Users:** See [WINDOWS.md](WINDOWS.md) for detailed Windows setup instructions and troubleshooting.
+> **Windows Users:** See [WINDOWS.md](WINDOWS.md) for detailed Windows setup instructions and troubleshooting. `<TODO>` WINDOWS.md not yet created.
 
 ---
 
@@ -501,6 +501,7 @@ chmod +x install-goose.sh
 # Windows PowerShell
 .\install-goose.ps1
 ```
+> **Note:** The `install-goose.sh` and `install-goose.ps1` scripts are `<TODO>` and coming soon.
 
 The installer:
 1. Downloads and installs Goose if not already present
@@ -540,6 +541,7 @@ extensions:
 # Windows PowerShell
 .\start-goose.ps1
 ```
+> **Note:** The `start-goose.sh` and `start-goose.ps1` scripts are `<TODO>` and coming soon.
 
 The launcher:
 1. Auto-detects your platform (MLX on macOS, llama-server on Linux/Win)
@@ -575,13 +577,13 @@ With the developer extension enabled, Goose can autonomously:
 
 ### Files
 
-| File | Purpose |
-|------|---------|
-| `.goosehints` | Project context injected as Goose system prompt automatically |
-| `install-goose.sh` | macOS/Linux installer |
-| `install-goose.ps1` | Windows installer |
-| `start-goose.sh` | macOS/Linux launcher (Lumina + Goose) |
-| `start-goose.ps1` | Windows launcher (Lumina + Goose) |
+| File | Purpose | Status |
+|------|---------|--------|
+| `.goosehints` | Project context injected as Goose system prompt automatically | `<TODO>` |
+| `install-goose.sh` | macOS/Linux installer | `<TODO>` |
+| `install-goose.ps1` | Windows installer | `<TODO>` |
+| `start-goose.sh` | macOS/Linux launcher (Lumina + Goose) | `<TODO>` |
+| `start-goose.ps1` | Windows launcher (Lumina + Goose) | `<TODO>` |
 
 ### Verify Configuration
 

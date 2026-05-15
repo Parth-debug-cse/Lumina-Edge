@@ -20,11 +20,20 @@ function Get-ConfigValue {
     param([string]$Key, $Default)
     try {
         $config = Get-Content "config.json" -Raw | ConvertFrom-Json
-        $val = $config.$Key
-        return if ($null -eq $val) { $Default } else { $val }
-    } catch {
-        return $Default
-    }
+        $value = $config
+        $Key.Split('.') | ForEach-Object {
+            # BUG PS1-1 FIX: Use $null -ne instead of PowerShell truthiness.
+            # The old check ($value.$_) treats 0, $false, and "" as falsy and
+            # silently falls through to the default, ignoring the configured value.
+            if ($null -ne $value -and $null -ne $value.$_) {
+                $value = $value.$_
+            } else {
+                $value = $null
+            }
+        }
+        if ($null -ne $value) { return $value }
+    } catch {}
+    return $Default
 }
 
 $ConfigModel = Get-ConfigValue "model" ""
@@ -77,6 +86,8 @@ $FlashAttn = Get-ConfigValue "flash_attn" $true
 $UseMlock = Get-ConfigValue "use_mlock" $true
 $NoMmap = Get-ConfigValue "no_mmap" $true
 $ContBatching = Get-ConfigValue "cont_batching" $true
+$KvCacheTypeK = Get-ConfigValue "kv_cache_type_k" "q4_0"
+$KvCacheTypeV = Get-ConfigValue "kv_cache_type_v" "q4_0"
 
 Write-Host ""
 Write-Host "Lumina Edge API Server (Windows)" -ForegroundColor Cyan
@@ -110,8 +121,8 @@ $Arguments = @(
     "--top-k", $TopK,
     "--repeat-penalty", $RepeatPenalty,
     "--min-p", $MinP,
-    "--cache-type-k", "q4",
-    "--cache-type-v", "q4",
+    "--cache-type-k", $KvCacheTypeK,
+    "--cache-type-v", $KvCacheTypeV,
     "--jinja"
 )
 

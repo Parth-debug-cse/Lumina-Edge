@@ -94,7 +94,7 @@ const QUALITY_BADGE = {
 
 const ALL_TAG_FILTERS = ['all', 'tiny', 'fast', 'fastest', 'balanced', 'quality', 'popular', 'small']
 
-export default function ModelManager({ localModels = [], toast }) {
+export default function ModelManager({ localModels = [], toast, onModelsRefresh }) {
   const [tab, setTab]           = useState('local')   // 'local' | 'download' | 'custom' | 'converter'
   const [tagFilter, setTagFilter] = useState('all')
   const [tagsMap, setTagsMap]   = useState(getModelTags)
@@ -239,10 +239,17 @@ export default function ModelManager({ localModels = [], toast }) {
         </div>
         )}
 
-        {/* System optimization button */}
+        {/* Refresh & System optimization buttons */}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
         <button
           className="btn btn-ghost btn-sm"
-          style={{ gap: 6, marginLeft: 'auto', borderColor: 'var(--accent)', color: 'var(--accent)' }}
+          style={{ gap: 6, borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+          onClick={() => onModelsRefresh?.()}
+          title="Refresh model list from disk"
+        >↺ Refresh</button>
+        <button
+          className="btn btn-ghost btn-sm"
+          style={{ gap: 6, borderColor: 'var(--accent)', color: 'var(--accent)' }}
           onClick={async () => {
             const confirmed = window.confirm("This will free up system RAM and pause non-essential background services. Continue?")
             if (!confirmed) return
@@ -261,6 +268,7 @@ export default function ModelManager({ localModels = [], toast }) {
         >
           ⚡ Optimize System
         </button>
+        </div>
       </div>
 
       {/* Currently Loaded Model Indicator */}
@@ -368,7 +376,7 @@ export default function ModelManager({ localModels = [], toast }) {
       ) : tab === 'download' ? (
         <div className="model-grid">
           {filteredCatalog.map(m => (
-            <DownloadCard key={m.filename} model={m} toast={toast} autoConvertOnDownload={autoConvertOnDownload} systemInfo={systemInfo} />
+            <DownloadCard key={m.filename} model={m} toast={toast} autoConvertOnDownload={autoConvertOnDownload} systemInfo={systemInfo} onModelsRefresh={onModelsRefresh} />
           ))}
         </div>
       ) : tab === 'custom' ? (
@@ -385,6 +393,7 @@ export default function ModelManager({ localModels = [], toast }) {
             systemInfo={systemInfo}
             autoConvertOnDownload={autoConvertOnDownload}
             toast={toast}
+            onModelsRefresh={onModelsRefresh}
           />
         </div>
       ) : (
@@ -589,7 +598,7 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
   )
 }
 
-function DownloadCard({ model, toast, autoConvertOnDownload, systemInfo }) {
+function DownloadCard({ model, toast, autoConvertOnDownload, systemInfo, onModelsRefresh }) {
   const [downloading, setDownloading] = useState(false)
   const q = QUALITY_BADGE[model.quality] || QUALITY_BADGE['medium']
   
@@ -627,6 +636,7 @@ function DownloadCard({ model, toast, autoConvertOnDownload, systemInfo }) {
             toast(`Download failed: ${status.error || 'Unknown error'}`, 'error')
           } else if (status.status === 'complete') {
             toast(`✓ ${model.name} downloaded successfully!`, 'success')
+            onModelsRefresh?.()
           } else if (status.status === 'downloading') {
             pollCount++
             setTimeout(checkDownload, pollInterval)
@@ -675,7 +685,7 @@ function DownloadCard({ model, toast, autoConvertOnDownload, systemInfo }) {
   )
 }
 
-function CustomHFLinkPanel({ hfLink, setHfLink, hfFiles, setHfFiles, hfLoading, setHfLoading, selectedFile, setSelectedFile, systemInfo, autoConvertOnDownload, toast }) {
+function CustomHFLinkPanel({ hfLink, setHfLink, hfFiles, setHfFiles, hfLoading, setHfLoading, selectedFile, setSelectedFile, systemInfo, autoConvertOnDownload, toast, onModelsRefresh }) {
   const [downloading, setDownloading] = useState(false)
   const [downloadingRepo, setDownloadingRepo] = useState(false)
 
@@ -750,6 +760,7 @@ function CustomHFLinkPanel({ hfLink, setHfLink, hfFiles, setHfFiles, hfLoading, 
             toast(`Download failed: ${status.error || 'Unknown error'}`, 'error')
           } else if (status.status === 'complete') {
             toast(`✓ ${filename} downloaded successfully!`, 'success')
+            onModelsRefresh?.()
           } else if (status.status === 'downloading') {
             pollCount++
             setTimeout(checkDownload, pollInterval)

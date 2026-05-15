@@ -241,8 +241,11 @@ class ModelManager:
         try:
             self.log_info(f"Downloading MLX repository from {repo}...")
             # Use huggingface_hub to download entire directory
-            import subprocess
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "huggingface_hub"])
+            try:
+                import huggingface_hub
+            except ImportError:
+                print("[Lumina] Installing huggingface_hub (required for model downloads)...")
+                subprocess.run([sys.executable, "-m", "pip", "install", "-q", "huggingface_hub"], check=True)
             from huggingface_hub import snapshot_download
             snapshot_download(repo_id=repo, local_dir=str(dest_path))
             self.log_success(f"Downloaded MLX model to: {dir_name}")
@@ -342,7 +345,7 @@ def main():
     """Main entry point"""
     # Clear screen (cross-platform)
     try:
-        subprocess.run('cls' if os.name == 'nt' else 'clear', shell=True, check=False)
+        subprocess.run(['cls' if os.name == 'nt' else 'clear'], check=False)
     except Exception:
         pass
     

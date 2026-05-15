@@ -6,6 +6,9 @@ REM ============================================================================
 
 setlocal enabledelayedexpansion
 
+if "%1"=="--help" goto show_help
+if "%1"=="-h" goto show_help
+
 REM Get script directory and set paths
 set "SCRIPT_DIR=%~dp0"
 set "ROOT=%SCRIPT_DIR%"
@@ -93,17 +96,9 @@ set "key=%~1"
 set "default=%~2"
 set "config_file=%ROOT%config.json"
 if exist "%config_file%" (
-    REM Simple JSON parsing using findstr (limited but works for basic cases)
-    findstr /C:"\"%key%\"" "%config_file%" >nul 2>&1
-    if !errorlevel! equ 0 (
-        for /f "tokens=2 delims=:," %%a in ('findstr /C:"\"%key%\"" "%config_file%"') do (
-            set "value=%%a"
-            set "value=!value:~1,-1!"
-            if not "!value!"=="" (
-                set "%~3=!value!"
-                goto :eof
-            )
-        )
+    for /f "usebackq delims=" %%v in (`python3 -c "import json,sys; cfg=json.load(open(r'%config_file:\=\\%')); v=cfg; [v:=v.get(p,{}) for p in '%key%'.split('.')]; s=str(v).lower() if type(v) is bool else str(v); print(s if s!='{}' else '%default%')" 2^>nul`) do (
+        set "%~3=%%v"
+        if not "!%~3!"=="" goto :eof
     )
 )
 set "%~3=%default%"
@@ -189,7 +184,9 @@ call :get_config "min_p" "0.05" "MIN_P"
 call :get_config "http_threads" "2" "HTTP_THREADS"
 call :get_config "flash_attn" "true" "FLASH_ATTN"
 call :get_config "use_mlock" "true" "USE_MLOCK"
-call :get_config "kv_quant" "q8_0" "KV_QUANT"
+call :get_config "kv_quant" "q4_0" "KV_QUANT"
+call :get_config "kv_cache_type_k" "q4_0" "KV_CACHE_TYPE_K"
+call :get_config "kv_cache_type_v" "q4_0" "KV_CACHE_TYPE_V"
 call :get_config "cont_batching" "true" "CONT_BATCHING"
 
 set "BACKEND_LOG=%RUNDIR%\llama_server.log"
@@ -209,12 +206,11 @@ if "%CONT_BATCHING%"=="true" (
 
 rem Tool calling requires a model with a Jinja chat template that includes
 rem tool_call support. Recommended: Phi-4-mini, Gemma3-4B, Llama-3.2-3B (GGUF).
-start /B "" "%LLAMA_SERVER%" -m "%MODEL_PATH%" --port "%API_PORT%" --host 127.0.0.1 --ctx-size "%CTX_SIZE%" --n-gpu-layers "%N_GPU_LAYERS%" --batch-size "%BATCH_SIZE%" --ubatch-size "%UBATCH_SIZE%" --threads-http "%HTTP_THREADS%" --temperature "%TEMPERATURE%" --top-p "%TOP_P%" --top-k "%TOP_K%" --repeat-penalty "%REPEAT_PENALTY%" --min-p "%MIN_P%" --cache-type-k q4 --cache-type-v q4 --jinja %FLASH_FLAG% %CB_FLAG% > "%BACKEND_LOG%" 2>&1
+start /B "" "%LLAMA_SERVER%" -m "%MODEL_PATH%" --port "%API_PORT%" --host 127.0.0.1 --ctx-size "%CTX_SIZE%" --n-gpu-layers "%N_GPU_LAYERS%" --batch-size "%BATCH_SIZE%" --ubatch-size "%UBATCH_SIZE%" --threads-http "%HTTP_THREADS%" --temperature "%TEMPERATURE%" --top-p "%TOP_P%" --top-k "%TOP_K%" --repeat-penalty "%REPEAT_PENALTY%" --min-p "%MIN_P%" --cache-type-k "%KV_CACHE_TYPE_K%" --cache-type-v "%KV_CACHE_TYPE_V%" --jinja %FLASH_FLAG% %CB_FLAG% > "%BACKEND_LOG%" 2>&1
 
 REM Get PID of the started process (approximation)
-for /f "tokens=2" %%a in ('tasklist /FI "IMAGENAME eq llama-server.exe" /FO csv ^| find "llama-server.exe"') do (
+for /f "tokens=2 delims=," %%a in ('tasklist /FI "IMAGENAME eq llama-server.exe" /FO csv /NH 2^>nul') do (
     set "ll_pid=%%~a"
-    set "ll_pid=!ll_pid:~1,-1!"
 )
 echo !ll_pid! llama_server >> "%PID_FILE%"
 call :log "  llama-server PID: !ll_pid!"
@@ -250,13 +246,11 @@ set "MLX_PORT=%MLX_PORT%"
 set "LUMINA_API_PORT=%API_PORT%"
 set "LUMINA_MLX_PORT=%MLX_PORT%"
 
-start /B "" node api-server.js > "%API_LOG%" 2>&1
+rem Start API server and capture PID via PowerShell
+powershell -NoProfile -Command "$p = Start-Process -FilePath 'node' -ArgumentList 'api-server.js' -NoNewWindow -PassThru -RedirectStandardOutput '%API_LOG:\=\\%' -RedirectStandardError '%API_LOG:\=\\%'; $p.Id | Out-File -FilePath '%RUNDIR:\=\\%\\api_pid.tmp' -Encoding ascii" >nul 2>&1
+set /p api_pid=<"%RUNDIR%\api_pid.tmp"
+del "%RUNDIR%\api_pid.tmp" 2>nul
 
-REM Get PID of the started process (approximation)
-for /f "tokens=2" %%a in ('tasklist /FI "IMAGENAME eq node.exe" /FO csv ^| find "node.exe"') do (
-    set "api_pid=%%~a"
-    set "api_pid=!api_pid:~1,-1!"
-)
 echo !api_pid! api_server >> "%PID_FILE%"
 call :log "  API server PID: !api_pid!"
 
@@ -273,7 +267,9 @@ if !i! gtr 20 (
 )
 
 REM Check secondary port first
-curl -s --max-time 2 "http://127.0.0.1:8081/api/health" | find "ok" >nul 2>&1
+for /f "tokens=2 delims=: " %%a in ('findstr /C:"\"api_port_secondary\"" config.json') do set "SECONDARY_PORT=%%a"
+if not defined SECONDARY_PORT set SECONDARY_PORT=8081
+curl -s --max-time 2 "http://127.0.0.1:%SECONDARY_PORT%/api/health" | find "ok" >nul 2>&1
 if !errorlevel! equ 0 (
     call :log_ok "API gateway ready (primary: %API_PORT%, mgmt: 8081)"
     goto :eof
@@ -294,13 +290,11 @@ call :log "Starting Lumina Core UI..."
 set "UI_LOG=%RUNDIR%\vite.log"
 cd /d "%UI_DIR%"
 
-start /B "" npm run dev > "%UI_LOG%" 2>&1
+rem Start Vite dev server and capture PID via PowerShell
+powershell -NoProfile -Command "$p = Start-Process -FilePath 'cmd' -ArgumentList '/c npm run dev' -NoNewWindow -PassThru -RedirectStandardOutput '%UI_LOG:\=\\%' -RedirectStandardError '%UI_LOG:\=\\%'; $p.Id | Out-File -FilePath '%RUNDIR:\=\\%\\ui_pid.tmp' -Encoding ascii" >nul 2>&1
+set /p ui_pid=<"%RUNDIR%\ui_pid.tmp"
+del "%RUNDIR%\ui_pid.tmp" 2>nul
 
-REM Get PID of the started process (approximation)
-for /f "tokens=2" %%a in ('tasklist /FI "IMAGENAME eq node.exe" /FO csv ^| find "node.exe"') do (
-    set "ui_pid=%%~a"
-    set "ui_pid=!ui_pid:~1,-1!"
-)
 echo !ui_pid! vite >> "%PID_FILE%"
 call :log "  Vite PID: !ui_pid!"
 
@@ -377,13 +371,11 @@ if exist "%USERPROFILE%\open-webui" (
     set "OPENAI_API_KEY=%LUMINA_API_KEY%"
     set "WEBUI_NAME=%LUMINA_TITLE%"
     
-    start /B "" python -m uvicorn openwebui.main:app --host 127.0.0.1 --port "%OW_PORT%" --root-path "/" > "%OW_LOG%" 2>&1
+    rem Start OpenWebUI and capture PID via PowerShell
+    powershell -NoProfile -Command "$p = Start-Process -FilePath 'python' -ArgumentList '-m uvicorn openwebui.main:app --host 127.0.0.1 --port %OW_PORT% --root-path /' -NoNewWindow -PassThru -RedirectStandardOutput '%OW_LOG:\=\\%' -RedirectStandardError '%OW_LOG:\=\\%'; $p.Id | Out-File -FilePath '%RUNDIR:\=\\%\\ow_pid.tmp' -Encoding ascii" >nul 2>&1
+    set /p ow_pid=<"%RUNDIR%\ow_pid.tmp"
+    del "%RUNDIR%\ow_pid.tmp" 2>nul
     
-    REM Get PID of the started process (approximation)
-    for /f "tokens=2" %%a in ('tasklist /FI "IMAGENAME eq python.exe" /FO csv ^| find "python.exe"') do (
-        set "ow_pid=%%~a"
-        set "ow_pid=!ow_pid:~1,-1!"
-    )
     echo !ow_pid! openwebui >> "%PID_FILE%"
     call :log "  OpenWebUI PID: !ow_pid!"
     
@@ -447,6 +439,3 @@ echo.
 echo Model auto-detection: looks for first model in ./models/ or startup.default_model in config.json
 echo.
 goto :eof
-
-if "%1"=="--help" goto show_help
-if "%1"=="-h" goto show_help

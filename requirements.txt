@@ -1,9 +1,0 @@
-# Lumina Edge — Runtime Dependencies (Linux / Windows)
-# Install with: pip install --break-system-packages -r requirements.txt
-#
-# NOTE: macOS/Apple Silicon uses scripts/requirements-macos.txt instead.
-
-# Core inference
-psutil>=5.9.0
-requests>=2.28.0
-huggingface-hub>=0.16.0

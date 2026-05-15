@@ -4,7 +4,11 @@
 # Reads all settings from config.json
 # ==============================================================================
 
-set -e
+# Note: we do NOT use 'set -e' here because arithmetic expressions like
+# ((WAITED++)) evaluate to 0 on the first iteration, which bash treats as a
+# failure and exits the script silently. Individual commands check exit codes
+# explicitly instead.
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -14,15 +18,26 @@ cd "$ROOT_DIR"
 get_config() {
     local key="$1"
     local default="$2"
-    if command -v python3 &>/dev/null && [[ -f "config.json" ]]; then
+    if command -v python3 &>/dev/null && [[ -f "$ROOT_DIR/config.json" ]]; then
         python3 -c "
-import json
+import json,sys
+root=sys.argv[1]
+key=sys.argv[2]
+default=sys.argv[3]
 try:
-    v = json.load(open('config.json')).get('$key')
-    print(v if v is not None else $default)
+    cfg=json.load(open(root+'/config.json'))
+    parts=key.split('.')
+    v=cfg
+    for p in parts:
+        if isinstance(v,dict) and p in v:
+            v=v[p]
+        else:
+            v=None
+            break
+    print(v if v is not None else default)
 except Exception:
-    print($default)
-" 2>/dev/null || echo "$default"
+    print(default)
+" "$ROOT_DIR" "$key" "$default" 2>/dev/null || echo "$default"
     else
         echo "$default"
     fi
@@ -56,10 +71,12 @@ TOP_P=$(get_config "top_p" 0.9)
 REPEAT_PENALTY=$(get_config "repeat_penalty" 1.1)
 HTTP_THREADS=$(get_config "http_threads" 2)
 CONT_BATCHING=$(get_config "cont_batching" "true")
-KV_CACHE_QUANT=$(get_config "kv_cache_quant" "f16")
+KV_CACHE_QUANT=$(get_config "kv_cache_quant" "q4_0")
 USE_MLOCK=$(get_config "use_mlock" "true")
 NO_MMAP=$(get_config "no_mmap" "true")
-KV_QUANT=$(get_config "kv_quant" "turbo")
+KV_QUANT=$(get_config "kv_quant" "q4_0")
+KV_CACHE_TYPE_K=$(get_config "kv_cache_type_k" "q4_0")
+KV_CACHE_TYPE_V=$(get_config "kv_cache_type_v" "q4_0")
 
 # Use command-line parameters or fall back to config
 FINAL_MODEL="${MODEL:-$CONFIG_MODEL}"
@@ -83,7 +100,7 @@ if [[ -z "$FINAL_MODEL" ]]; then
 fi
 
 # Avoid double-prefix: if FINAL_MODEL already starts with models/ use it as-is
-if [[ "$FINAL_MODEL" == models/* || "$FINAL_MODEL" == ./* || "$FINAL_MODEL" == /* ]]; then
+if [[ "$FINAL_MODEL" == models/* || "$FINAL_MODEL" == ./* || "$FINAL_MODEL" == /* || "$FINAL_MODEL" == ..* ]]; then
     MODEL_PATH="$FINAL_MODEL"
 else
     MODEL_PATH="models/$FINAL_MODEL"
@@ -153,8 +170,8 @@ if [[ "$CONT_BATCHING" == "true" ]]; then
     ARGS+=("--cont-batching")
 fi
 
-# Add KV quantization flags
-ARGS+=("--cache-type-k" "q4" "--cache-type-v" "q4")
+# Add KV quantization flags from config (default q4_0)
+ARGS+=("--cache-type-k" "$KV_CACHE_TYPE_K" "--cache-type-v" "$KV_CACHE_TYPE_V")
 
 # Find llama-server binary
 if [[ "$IS_MAC" == "true" ]]; then
@@ -171,9 +188,15 @@ if [[ "$IS_MAC" == "true" ]]; then
     MAX_WAIT=30
     WAITED=0
     READY=false
+    # BUG SH-2 FIX: Register a trap so the MLX backend is killed on script exit
+    # (including on error) and does not become an orphaned process.
+    trap 'kill $MLX_PID 2>/dev/null || true' EXIT INT TERM
     while [[ $WAITED -lt $MAX_WAIT ]]; do
         sleep 1
-        ((WAITED++))
+        # BUG SH-1 FIX: Use WAITED=$((WAITED + 1)) instead of ((WAITED++)).
+        # With set -o pipefail, bash exits when ((WAITED++)) evaluates to 0
+        # (first iteration), causing the poll loop to exit after 1 second.
+        WAITED=$((WAITED + 1))
         if ! kill -0 $MLX_PID 2>/dev/null; then
             echo "ERROR: MLX backend exited unexpectedly!"
             echo "Check log: $LOG_FILE"
@@ -183,7 +206,7 @@ if [[ "$IS_MAC" == "true" ]]; then
             READY=true
             break
         fi
-        if ((WAITED % 5 == 0)); then
+        if [[ $((WAITED % 5)) -eq 0 ]]; then
             echo "  ... waiting ($WAITED/$MAX_WAIT seconds)"
         fi
     done
@@ -232,7 +255,10 @@ else
 
     while [[ $WAITED -lt $MAX_WAIT ]]; do
         sleep 1
-        ((WAITED++))
+        # BUG SH-1 FIX: Use WAITED=$((WAITED + 1)) instead of ((WAITED++)).
+        # With set -o pipefail, bash exits when ((WAITED++)) evaluates to 0
+        # (first iteration), causing the poll loop to exit after 1 second.
+        WAITED=$((WAITED + 1))
 
         # Check if process is still running
         if ! kill -0 $SERVER_PID 2>/dev/null; then
@@ -248,7 +274,7 @@ else
         fi
 
         # Show progress
-        if ((WAITED % 5 == 0)); then
+        if [[ $((WAITED % 5)) -eq 0 ]]; then
             echo "  ... waiting ($WAITED/$MAX_WAIT seconds)"
         fi
     done

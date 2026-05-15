@@ -61,6 +61,9 @@ if _mlx_memory_fraction is not None:
 # Module-level flags for model load state (used by HTTP handlers)
 MODEL_LOADED = False
 MODEL_LOAD_ERROR = None
+# BUG MLX-1 FIX (module-level init): _server_start_time_global is updated at the
+# start of launch_api_direct() so the /health endpoint always has a valid timestamp.
+_server_start_time_global = time.time()
 
 
 def _set_offline_env(model_path=None):
@@ -119,20 +122,31 @@ except Exception:
 if not _supports_sampler:
     print('[MLX] Using bare kwargs for sampling (mlx_lm < 0.28)', flush=True)
 
-def _get_kv_kwargs(mlx_kv_quant_config=None, mlx_kv_quant_native=None, mlx_max_kv_size=None):
+def _get_kv_kwargs(mlx_kv_quant_config=None, mlx_kv_quant_native=None, mlx_max_kv_size=None, kv_bits=None, kv_group_size=None):
     """Get KV quantization and cache kwargs based on mlx_lm support and config.
     
     Default: kv_bits=4 (4-bit KV cache quantization for both K and V).
-    Native KV quantization (mlx_kv_quant_native) takes precedence if enabled.
+    Priority: mlx_kv_quant_native (if enabled) > top-level kv_bits/kv_group_size > built-in default.
     """
     kwargs = {'kv_bits': 4}
     
-    # F: Native KV quantization takes precedence over default
+    # F: Native KV quantization takes precedence if enabled
     if mlx_kv_quant_native and mlx_kv_quant_native.get('enabled', False):
         if _supports_kv_sym:
             kwargs['kv_bits'] = mlx_kv_quant_native.get('kv_bits', 4)
             kwargs['kv_group_size'] = mlx_kv_quant_native.get('kv_group_size', 64)
             kwargs['quantized_kv_start'] = mlx_kv_quant_native.get('quantized_kv_start', 0)
+    elif mlx_kv_quant_config is not None and isinstance(mlx_kv_quant_config, dict):
+        # Asymmetric KV quantization: K and V at different bit widths
+        if _supports_kv_asym:
+            kwargs.pop('kv_bits', None)
+            kwargs['key_bits'] = mlx_kv_quant_config.get('key_bits', 8)
+            kwargs['value_bits'] = mlx_kv_quant_config.get('value_bits', 4)
+    elif kv_bits is not None:
+        # Top-level kv_bits/kv_group_size as quick-access override
+        kwargs['kv_bits'] = kv_bits
+        if kv_group_size is not None:
+            kwargs['kv_group_size'] = kv_group_size
     
     # A: max_kv_size - only pass if set and supported
     if mlx_max_kv_size is not None and _supports_max_kv:
@@ -160,14 +174,15 @@ def get_mlx_generation_kwargs(config, prompt=None, override_temp=None, override_
     Returns:
         dict: Complete kwargs for mlx_lm.stream_generate or mlx_lm.generate
     """
-    # Get mlx_sampling config with defaults
+    # Read from top-level config first, fall back to mlx_sampling sub-object
+    # (top-level keys are consistent with Linux/llama.cpp config; mlx_sampling sub-object overrides for macOS-only tuning)
     sampling = config.get('mlx_sampling', {})
-    temperature = override_temp if override_temp is not None else sampling.get('temperature', 0.7)
-    top_p = override_top_p if override_top_p is not None else sampling.get('top_p', 1.0)
-    min_p = sampling.get('min_p', 0.0)
-    repetition_penalty = sampling.get('repetition_penalty', 1.0)
+    temperature = override_temp if override_temp is not None else config.get('temperature', sampling.get('temperature', 0.7))
+    top_p = override_top_p if override_top_p is not None else config.get('top_p', sampling.get('top_p', 1.0))
+    min_p = config.get('min_p', sampling.get('min_p', 0.0))
+    repetition_penalty = config.get('repeat_penalty', sampling.get('repetition_penalty', 1.0))
     repetition_context_size = sampling.get('repetition_context_size', 20)
-    max_tokens = override_max_tokens if override_max_tokens is not None else sampling.get('max_tokens', 512)
+    max_tokens = override_max_tokens if override_max_tokens is not None else config.get('mlx_max_tokens', sampling.get('max_tokens', 512))
     
     # Get other config values
     seed = config.get('mlx_seed')
@@ -177,7 +192,9 @@ def get_mlx_generation_kwargs(config, prompt=None, override_temp=None, override_
     kv_kwargs = _get_kv_kwargs(
         config.get('mlx_kv_quant'),
         config.get('mlx_kv_quant_native'),
-        config.get('mlx_max_kv_size')
+        config.get('mlx_max_kv_size'),
+        config.get('kv_bits'),
+        config.get('kv_group_size')
     )
     
     kwargs = {
@@ -198,11 +215,22 @@ def get_mlx_generation_kwargs(config, prompt=None, override_temp=None, override_
             )
             kwargs['sampler'] = sampler
         except Exception as e:
-            # Fallback: don't pass sampling params - use defaults
-            pass
+            # BUG MLX-4 FIX: Log the failure instead of silently swallowing it.
+            # Without this log, generation runs with default temperature/top_p
+            # rather than the user's configured values.
+            print(f'[MLX] Sampler creation failed, using defaults: {e}', flush=True)
     else:
-        # Bare kwargs fallback for older mlx_lm versions - don't pass temp/temp
-        pass
+        # BUG MLX-7 FIX: When sampler API is not supported (mlx_lm < 0.28),
+        # the old code had a bare 'pass' which silently ignored all sampling
+        # parameters (temperature, top_p, etc.), running generation with library
+        # defaults (usually temperature=1.0).  Now we pass bare kwargs so the
+        # user's config values are actually respected.
+        kwargs['temperature'] = temperature
+        kwargs['top_p'] = top_p
+        if min_p and min_p > 0:
+            kwargs['min_p'] = min_p
+        if repetition_penalty and repetition_penalty != 1.0:
+            kwargs['repetition_penalty'] = repetition_penalty
     
     # Add seed if set
     if seed:
@@ -342,6 +370,9 @@ def load_config():
         "mlx_metal_optimizations": True,
         # D: Memory limit fraction (null = don't set, 0.65 = 65% of RAM)
         "mlx_memory_limit_fraction": 0.65,
+        # E: Top-level quick-access KV bits (used if mlx_kv_quant_native is not enabled)
+        "kv_bits": 4,
+        "kv_group_size": 64,
         # F: Native KV quantization (mutually exclusive with asymmetric)
         "mlx_kv_quant_native": {
             "enabled": False,
@@ -441,7 +472,14 @@ def launch_api_direct(model_path, port):
     
     print(f'[MLX Direct] {chip["chip_name"]} | {chip["memory_gb"]:.0f}GB unified memory', flush=True)
     
-    # Validate model directory (set error flags for early returns)
+    # BUG MLX-1 FIX: Initialize _server_start_time immediately at function entry.
+    # Previously it was set at line ~1300 (after serve_forever), but the /health
+    # handler references it.  If model loading fails and the function returns early,
+    # the handler would raise NameError.  Declaring it here as nonlocal is not
+    # possible for a top-level def, so we use a module-level approach: assign to a
+    # local that the closure (MLXHandler) can read via the enclosing scope.
+    global _server_start_time_global
+    _server_start_time_global = time.time()
     global MODEL_LOADED, MODEL_LOAD_ERROR
     MODEL_LOADED = False
     MODEL_LOAD_ERROR = None
@@ -484,8 +522,10 @@ def launch_api_direct(model_path, port):
     print(f'[MLX Direct] Loading model: {os.path.basename(abs_model_path)}', flush=True)
     load_start = time.time()
     try:
-        # Check for GGUF format (not supported on macOS/MLX)
-        if abs_model_path.endswith('.gguf') or abs_model_path.endswith('.GGUF'):
+        # BUG MLX-5 FIX: Use case-insensitive check for .gguf extension.
+        # On case-insensitive filesystems (macOS HFS+) the check '.gguf' or '.GGUF'
+        # may not catch .Gguf, .GGuf, etc.  lower() is consistent everywhere.
+        if abs_model_path.lower().endswith('.gguf'):
             raise ValueError(f"GGUF models are not supported on macOS. Use safetensors or MLX format.")
         
         # Check for LoRA adapter path (optional)
@@ -604,7 +644,9 @@ def launch_api_direct(model_path, port):
                     "status": "ok" if MODEL_LOADED else "error",
                     "model_loaded": MODEL_LOADED,
                     "model": os.path.basename(abs_model_path) if MODEL_LOADED else None,
-                    "uptime": int(time.time() - _server_start_time)
+                    # BUG MLX-1 FIX: Use the module-level global (always defined) rather
+                    # than the local _server_start_time which was only assigned after serve_forever().
+                    "uptime": int(time.time() - _server_start_time_global)
                 }
                 if MODEL_LOAD_ERROR:
                     health_status["error"] = MODEL_LOAD_ERROR
@@ -622,7 +664,8 @@ def launch_api_direct(model_path, port):
                     current_mem = 0.0
                 mem_status = {
                     "memory_used_gb": round(current_mem, 1),
-                    "memory_total_gb": 8.0,
+                    # BUG MLX-6 FIX: Was hardcoded to 8.0 GB — wrong on 16/32/64 GB systems.
+                    "memory_total_gb": round(_get_system_memory_gb(), 1),
                     "model_loaded": MODEL_LOADED,
                     "model": os.path.basename(abs_model_path) if MODEL_LOADED else None
                 }
@@ -1048,6 +1091,11 @@ def launch_api_direct(model_path, port):
             self.send_header('Cache-Control', 'no-cache')
             self.send_header('Connection', 'keep-alive')
             self.send_header('Access-Control-Allow-Origin', '*')
+            # BUG MLX-3 FIX: Add headers that tell reverse proxies (nginx, OpenWebUI)
+            # not to buffer the SSE stream. Without these, proxies accumulate all
+            # chunks before forwarding, breaking the streaming UX entirely.
+            self.send_header('X-Accel-Buffering', 'no')
+            self.send_header('Transfer-Encoding', 'chunked')
             self.end_headers()
 
             try:
@@ -1296,7 +1344,8 @@ def launch_api_direct(model_path, port):
             except KeyboardInterrupt:
                 print('[MLX Direct] Shutting down...', flush=True)
     except OSError as e:
-        if e.errno == 98 or 'Address already in use' in str(e):  # errno 98 = EADDRINUSE on Linux
+        import errno
+        if e.errno in (errno.EADDRINUSE, 98, 48) or 'Address already in use' in str(e):  # errno 98 = EADDRINUSE on Linux
             print(f'Error: Port {port} is already in use. Change api_port in config.json or stop the process using that port.', file=sys.stderr)
             sys.exit(1)
         raise
@@ -1388,6 +1437,8 @@ def main():
 
     if args.benchmark:
         run_benchmark(args.model)
+        if args.mode != "api":
+            return
 
     if args.mode == "api":
         launch_api(args.model, args.port)

@@ -4,6 +4,7 @@ import SettingsPanel  from './components/SettingsPanel.jsx'
 import SessionHistory from './components/SessionHistory.jsx'
 import MultiModelPanel from './components/MultiModelPanel.jsx'
 import DiagnosticsPanel from './components/DiagnosticsPanel.jsx'
+import LuminaScreenPanel from './components/LuminaScreenPanel.jsx'
 import { checkServerHealth } from './utils/api.js'
 
 // ============================================================
@@ -14,6 +15,7 @@ const NAV = [
   { id: 'models',     icon: '📦', label: 'Models' },
   { id: 'diagnostics',icon: '📊', label: 'Diagnostics' },
   { id: 'router',     icon: '🔄', label: 'Router' },
+  { id: 'screen',     icon: '🎯', label: 'Screen' },
   { id: 'history',    icon: '📋', label: 'History' },
   { id: 'settings',   icon: '⚙',  label: 'Settings' },
 ]
@@ -23,6 +25,7 @@ const PANEL_TITLES = {
   models:      { title: 'Model Manager',     sub: 'Browse, tag, and download GGUF models' },
   diagnostics: { title: 'Diagnostics',       sub: 'Resources, profiling, memory optimization, GPU benchmarks' },
   router:      { title: 'Multi-Model Router',sub: 'Load and route between multiple models' },
+  screen:      { title: 'Lumina Screen',     sub: 'Resume screening pipeline — watch, parse, match, notify' },
   history:     { title: 'Session History',   sub: 'Browse and export past conversations' },
   settings:    { title: 'Settings',          sub: 'Configure hyperparameters and server options' },
 }
@@ -49,7 +52,8 @@ export default function App() {
   const [serverStatus, setServerStatus] = useState('checking') // 'online' | 'offline' | 'checking'
   const [serverModel, setServerModel]   = useState('')
   const [localModels, setLocalModels]   = useState([]) // populated from server models list
-  const [chatUrl, setChatUrl]           = useState('http://localhost:8090')
+  const API_PORT = import.meta.env.VITE_LUMINA_API_PORT || 8090;
+const [chatUrl, setChatUrl]           = useState(`http://localhost:${API_PORT}`)
   const { toasts, addToast } = useToasts()
 
   // ---- Fetch chat URL (platform-aware) ----
@@ -114,11 +118,12 @@ export default function App() {
   // ---- Render current panel ----
   const renderPanel = () => {
     switch (activePanel) {
-      case 'models':    return <ModelManager   localModels={localModels}   toast={addToast} />
+      case 'models':    return <ModelManager      localModels={localModels}   toast={addToast} onModelsRefresh={fetchLocalModels} />
       case 'diagnostics': return <DiagnosticsPanel localModels={localModels} toast={addToast} />
-      case 'router':    return <MultiModelPanel                            toast={addToast} />
-      case 'history':   return <SessionHistory                             toast={addToast} />
-      case 'settings':  return <SettingsPanel                              toast={addToast} />
+      case 'router':    return <MultiModelPanel                               toast={addToast} />
+      case 'screen':    return <LuminaScreenPanel                             toast={addToast} />
+      case 'history':   return <SessionHistory                                toast={addToast} />
+      case 'settings':  return <SettingsPanel                                 toast={addToast} />
       default:          return null
     }
   }
@@ -194,7 +199,7 @@ export default function App() {
             <button
               className="btn btn-ghost btn-sm"
               style={{ flex: 1, justifyContent: 'center', fontSize: '0.65rem' }}
-              onClick={pollHealth}
+              onClick={() => { pollHealth(); fetchLocalModels(); }}
             >↺ Refresh</button>
           </div>
         </div>

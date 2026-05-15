@@ -45,15 +45,16 @@ def start_server(bin_dir: str, model_path: str, port: int, gpu_layers: int,
         '--threads', str(threads),
         '--flash-attn',
         '--mlock',
-        '--cache-type-k', 'q4',
-        '--cache-type-v', 'q4'
+        '--cache-type-k', 'q4_0',
+        '--cache-type-v', 'q4_0'
     ]
 
     log_file = os.path.join(tempfile.gettempdir(), f"lumina_bench_{port}.log")
     try:
-        with open(log_file, 'w') as lf:
-            proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, text=True)
-        return proc
+        lf = open(log_file, 'w')
+        proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, text=True)
+        # Keep lf open until subprocess finishes — caller must call proc.wait() then lf.close()
+        return (proc, lf)
     except Exception as e:
         print(f"Error starting server: {e}")
         return None
@@ -155,7 +156,12 @@ def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
 
         print(f"  ⏳ Testing {mode_label} (n_gpu_layers={gpu_layers}) on port {port}...")
 
-        proc = start_server(bin_dir, model_path, port, gpu_layers, ctx_size, threads)
+        proc_and_lf = start_server(bin_dir, model_path, port, gpu_layers, ctx_size, threads)
+        if not proc_and_lf:
+            lf = None
+            proc = None
+        else:
+            proc, lf = proc_and_lf
         if not proc:
             print(f"  ✗ Failed to start server for {mode_label}")
             results.append({"gpu_layers": gpu_layers, "label": mode_label, "error": "Failed to start server"})
@@ -164,6 +170,8 @@ def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
         if not wait_for_server(port, timeout=60):
             print(f"  ✗ Server not ready for {mode_label}")
             stop_server(proc)
+            if lf is not None:
+                lf.close()
             results.append({"gpu_layers": gpu_layers, "label": mode_label, "error": "Server startup timeout"})
             continue
 
@@ -182,6 +190,8 @@ def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
             run_results.append(result)
 
         stop_server(proc)
+        if lf is not None:
+            lf.close()
 
         valid = [r for r in run_results if not r.get('error')]
         if valid:

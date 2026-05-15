@@ -75,3 +75,7 @@ Thumbs.db
 *.egg-info/
 .eggs/
 .aider*
+
+# Environment files
+.env
+.env.*

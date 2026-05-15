@@ -67,7 +67,13 @@ def estimate_model_memory(model_path, ctx_size=4096, kv_quant="q8_0", gpu_layers
     # Context overhead (input processing, temp buffers) ~10-20% of KV cache
     overhead_gb = kv_mem_gb * 0.15
 
+    # Total estimated memory = weights + KV cache + overhead
     total_estimated_gb = weight_mem_gb + kv_mem_gb + overhead_gb
+
+    # Apply GPU layer offloading factor
+    if gpu_layers > 0:
+        gpu_ratio = min(1.0, gpu_layers / 80.0)  # rough: 80 layers ~ full offload
+        total_estimated_gb *= (1.0 - gpu_ratio * 0.3)  # GPU handles ~30% of memory
 
     return {
         "model_path": str(model_path),
@@ -208,7 +214,7 @@ if __name__ == '__main__':
         result = recommend_ctx_size(args.model_path, available, args.kv_quant, headroom_pct=args.headroom)
         print(json.dumps(result, indent=2))
 
-    elif args.command == 'compare_kv' or args.command == 'compare-kv':
+    elif args.command == 'compare-kv':
         print(f"KV Cache Memory Comparison (ctx_size={args.ctx_size}):")
         for quant in ['f16', 'q8_0', 'q5_0', 'q4_0']:
             result = estimate_model_memory(args.model_path, args.ctx_size, quant)

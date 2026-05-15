@@ -86,6 +86,10 @@ function runSystemOptimizer() {
       console.log('[Optimizer]', data.toString().trim());
     });
 
+    result.on('error', (err) => {
+      console.error(`[Optimizer] Spawn error: ${err.message}`);
+    });
+
     result.on('close', (code) => {
       if (code === 0) {
         console.log('[Optimizer] ✓ Dynamic hardware optimization completed');
@@ -188,8 +192,8 @@ const convertibleExtensions = ['.gguf', '.safetensors', '.bin', '.pt'];
 
 // Load config to get port settings (after loadConfig is defined)
 const config = loadConfig();
-const PRIMARY_PORT = parseInt(process.env.LUMINA_API_PORT) || config.api_port || 8081;
-const SECONDARY_PORT = parseInt(process.env.LUMINA_API_PORT_SECONDARY) || config.api_port_secondary || 8091;
+const PRIMARY_PORT = parseInt(process.env.LUMINA_API_PORT) || config.api_port || 8090;
+const SECONDARY_PORT = parseInt(process.env.LUMINA_API_PORT_SECONDARY) || config.api_port_secondary || 8081;
 
 // Config caching to avoid repeated file reads
 var cachedConfig = null;
@@ -264,6 +268,10 @@ function createConversionJob(input_file, quantization = 'Q4_K_M', targetFormat =
   const args = ['convert', inputPath, outPath, '--quantization', quantization || 'Q4_K_M', '--format', outputExt, '--report-progress'];
   const pythonCmd = getPythonCmd();
   const proc = spawn(pythonCmd, [pyScript, ...args]);
+
+  proc.on('error', (err) => {
+    console.error(`[Converter] Spawn error: ${err.message}`);
+  });
 
   let fullOutput = '';
   proc.stdout.on('data', (data) => {
@@ -363,6 +371,10 @@ apiRouter.post('/reoptimize', (req, res) => {
   const result = spawn(pythonCmd, [optimizerPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
     cwd: rootDir
+  });
+
+  result.on('error', (err) => {
+    console.error(`[Reoptimize] Spawn error: ${err.message}`);
   });
 
   let output = '';
@@ -474,6 +486,10 @@ apiRouter.get('/hardware-info', async (req, res) => {
   const proc = spawn(pythonCmd, [hwInfoPath, '--print-info'], {
     stdio: ['ignore', 'pipe', 'pipe'],
     cwd: rootDir
+  });
+
+  proc.on('error', (err) => {
+    console.error(`[HardwareInfo] Spawn error: ${err.message}`);
   });
 
   let output = '';
@@ -709,6 +725,10 @@ apiRouter.post('/quantize-model', (req, res) => {
   const pythonCmd = getPythonCmd();
   const proc = spawn(pythonCmd, [pyScript, ...args]);
 
+  proc.on('error', (err) => {
+    console.error(`[Quantizer] Spawn error: ${err.message}`);
+  });
+
   let fullOutput = '';
   proc.stdout.on('data', (data) => {
     fullOutput += data.toString();
@@ -819,6 +839,9 @@ apiRouter.post('/system/optimize', (req, res) => {
   console.log('[System Optimizer] Starting optimization...');
   
   const proc = spawn(pythonCmd, [scriptPath]);
+  proc.on('error', (err) => {
+    console.error(`[System Optimizer] Spawn error: ${err.message}`);
+  });
   let output = '';
   
   proc.stdout.on('data', (data) => {
@@ -921,6 +944,10 @@ apiRouter.get('/system/resources', (req, res) => {
   const scriptPath = path.join(scriptsDir, 'resource_monitor.py');
   const proc = spawn(pythonCmd, [scriptPath, 'snapshot']);
 
+  proc.on('error', (err) => {
+    console.error(`[Resources] Spawn error: ${err.message}`);
+  });
+
   let output = '';
   proc.stdout.on('data', (data) => { output += data.toString(); });
   proc.stderr.on('data', (data) => { output += data.toString(); });
@@ -943,6 +970,10 @@ apiRouter.get('/inference/diagnose', (req, res) => {
   const pythonCmd = getPythonCmd();
   const scriptPath = path.join(scriptsDir, 'inference_diagnostics.py');
   const proc = spawn(pythonCmd, [scriptPath, 'diagnose']);
+
+  proc.on('error', (err) => {
+    console.error(`[Diagnose] Spawn error: ${err.message}`);
+  });
   
   let output = '';
   proc.stdout.on('data', (data) => { output += data.toString(); });
@@ -958,6 +989,10 @@ apiRouter.get('/inference/report', async (req, res) => {
   const pythonCmd = getPythonCmd();
   const scriptPath = path.join(scriptsDir, 'inference_diagnostics.py');
   const proc = spawn(pythonCmd, [scriptPath, 'report', '--port', port.toString(), '--max-tokens', maxTokens.toString()]);
+
+  proc.on('error', (err) => {
+    console.error(`[Report] Spawn error: ${err.message}`);
+  });
   
   let output = '';
   proc.stdout.on('data', (data) => { output += data.toString(); });
@@ -990,6 +1025,9 @@ apiRouter.post('/benchmark/gpu', (req, res) => {
   ];
 
   const proc = spawn(pythonCmd, args);
+  proc.on('error', (err) => {
+    console.error(`[Benchmark] Spawn error: ${err.message}`);
+  });
   let output = '';
   proc.stdout.on('data', (data) => { output += data.toString(); });
   proc.stderr.on('data', (data) => { output += data.toString(); });
@@ -1023,6 +1061,9 @@ apiRouter.post('/benchmark/quick', (req, res) => {
   ];
 
   const proc = spawn(pythonCmd, args);
+  proc.on('error', (err) => {
+    console.error(`[QuickBench] Spawn error: ${err.message}`);
+  });
   let output = '';
   proc.stdout.on('data', (data) => { output += data.toString(); });
   proc.stderr.on('data', (data) => { output += data.toString(); });
@@ -1145,7 +1186,10 @@ apiRouter.get('/router/events', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin || '';
+  if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
 
   sseClients.add(res);
   console.log(`[SSE] Client connected. Total clients: ${sseClients.size}`);
@@ -1179,7 +1223,10 @@ apiRouter.post('/router/policy', (req, res) => {
 });
 
 apiRouter.post('/router/load', async (req, res) => {
-  const { model_path } = req.body;
+  const { model_path, port_offset } = req.body;
+  if (port_offset) {
+    console.log(`[api-server] port_offset received but parallel loading not yet implemented: ${port_offset}`);
+  }
   console.log('[Router Load] Received model_path:', model_path);
   
   const isMac = os.platform() === 'darwin' && os.arch() === 'arm64';
@@ -1282,30 +1329,47 @@ apiRouter.post('/router/load', async (req, res) => {
         }
       });
 
-      // Wait up to 15 seconds for the MLX backend to start
-      const MAX_RETRIES = 15;
-      const RETRY_DELAY = 1000;
+      // Wait up to 2 minutes for the MLX backend to load the model
+      const MAX_RETRIES = 60;
+      const RETRY_DELAY = 2000;
       let backendReady = false;
       let lastError = null;
+      let mlxStderr = '';
+
+      proc.stderr.on('data', (data) => {
+        mlxStderr += data.toString();
+      });
 
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         try {
           const httpClient = http;
           await new Promise((resolve, reject) => {
+            let body = '';
             const req = httpClient.get(`http://127.0.0.1:${port}/v1/models`, (resp) => {
-              if (resp.statusCode === 200) {
-                backendReady = true;
-                resolve();
-              } else {
-                reject(new Error(`Status ${resp.statusCode}`));
-              }
+              resp.on('data', (chunk) => { body += chunk; });
+              resp.on('end', () => {
+                if (resp.statusCode === 200) {
+                  backendReady = true;
+                  resolve();
+                } else {
+                  // Try to extract the actual MLX error from the response body
+                  let detail = `Status ${resp.statusCode}`;
+                  try {
+                    const parsed = JSON.parse(body);
+                    if (parsed.detail) detail = parsed.detail;
+                    else if (parsed.error) detail = parsed.error;
+                  } catch {}
+                  reject(new Error(detail));
+                }
+              });
             });
             req.on('error', reject);
-            req.setTimeout(2000, () => { req.destroy(); reject(new Error('Timeout')); });
+            req.setTimeout(5000, () => { req.destroy(); reject(new Error('Timeout')); });
           });
           if (backendReady) break;
         } catch (e) {
           lastError = e.message;
+          console.log(`[MLX] Waiting for model to load... (attempt ${attempt + 1}/${MAX_RETRIES}, detail: ${e.message})`);
           await new Promise(r => setTimeout(r, RETRY_DELAY));
         }
       }
@@ -1315,7 +1379,8 @@ apiRouter.post('/router/load', async (req, res) => {
         if (proc && !proc.killed) proc.kill();
         return res.status(500).json({
           error: 'MLX backend failed to start',
-          detail: lastError || 'Unknown error'
+          detail: lastError || 'Unknown error',
+          stderr: mlxStderr.slice(-2000)
         });
       }
 
@@ -1350,8 +1415,9 @@ const ctxSize = (() => {
 })();
 const batchSize = parseInt(config.batch_size) || 256;
 const ubatchSize = parseInt(config.ubatch_size) || 256;
-const nGpuLayers = parseInt(config.n_gpu_layers) ?? 0;
-const kvCacheType = config.kv_cache_quant || 'q4';
+const nGpuLayers = parseInt(config.n_gpu_layers) || 0;
+const kvCacheTypeK = config.kv_cache_type_k || config.kv_cache_quant || 'q4_0';
+const kvCacheTypeV = config.kv_cache_type_v || config.kv_cache_quant || 'q4_0';
 const splitMode = config.split_mode || 'row';
 const httpThreads = parseInt(config.http_threads) || 2;
 const useMlock = config.use_mlock === true;
@@ -1372,8 +1438,8 @@ const cmdArgs = [
   '--split-mode', splitMode,                  // tensor split mode
   '--threads-http', httpThreads.toString(),   // HTTP server threads
   '--flash-attn',                             // NO argument — just the flag
-  '--cache-type-k', kvCacheType,             // KV key cache quantization
-  '--cache-type-v', kvCacheType,             // KV value cache quantization
+  '--cache-type-k', kvCacheTypeK,            // KV key cache quantization
+  '--cache-type-v', kvCacheTypeV,            // KV value cache quantization
 ];
 
 // Continuous batching — enabled by default, only disable if explicitly false
@@ -1391,7 +1457,7 @@ if (!promptCache) {
 console.log(`[Router] Launching llama-server with flags:`);
 console.log(`[Router]   ctx-size: ${ctxSize}`);
 console.log(`[Router]   n-gpu-layers: ${effectiveGpuLayers || nGpuLayers}`);
-console.log(`[Router]   kv-cache-type: ${kvCacheType}`);
+console.log(`[Router]   kv-cache-type-k: ${kvCacheTypeK}, kv-cache-type-v: ${kvCacheTypeV}`);
 console.log(`[Router]   mlock: ${useMlock}`);
 console.log(`[Router]   prompt-cache: ${promptCache}`);
 console.log(`[Router]   flash-attn: enabled`);
@@ -1491,6 +1557,10 @@ proc = spawn(finalCmd, finalArgs, {
     // Disable CPU frequency scaling interference
     GOMP_SPINCOUNT: '0',
   }
+});
+
+proc.on('error', (err) => {
+  console.error(`[Router] Spawn error for llama-server: ${err.message}`);
 });
 
 // Set llama-server to high I/O and CPU priority on Linux
@@ -1860,6 +1930,174 @@ except Exception as e:
   });
 }
 
+// === LUMINA SCREEN PIPELINE ===
+
+const luminaScreenDir = path.join(rootDir, 'lumina_screen');
+let luminaScreenProcess = null;
+let luminaScreenState = 'idle'; // 'idle' | 'running' | 'stopped'
+
+apiRouter.get('/lumina-screen/status', (req, res) => {
+  const hits = [];
+  const hitPath = path.join(luminaScreenDir, 'page_hit.txt');
+  if (fs.existsSync(hitPath)) {
+    const lines = fs.readFileSync(hitPath, 'utf8').trim().split('\n').filter(Boolean);
+    for (const line of lines.slice(-50)) {
+      const match = line.match(/^\[(.+?)\]\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*([\d.]+)\s*\|\s*(.*?)\s*\|\s*(.*)$/);
+      if (match) {
+        hits.push({
+          timestamp: match[1],
+          name: match[2],
+          filename: match[3],
+          score: parseFloat(match[4]),
+          email: match[5],
+          phone: match[6],
+        });
+      }
+    }
+  }
+  let config = {};
+  const configPath = path.join(luminaScreenDir, 'config.json');
+  if (fs.existsSync(configPath)) {
+    try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
+  }
+  let jd_text = '';
+  const jdPath = path.join(luminaScreenDir, 'jd.txt');
+  if (fs.existsSync(jdPath)) {
+    try { jd_text = fs.readFileSync(jdPath, 'utf8'); } catch {}
+  }
+  res.json({ status: luminaScreenState, hits, config, jd_text });
+});
+
+apiRouter.post('/lumina-screen/start', (req, res) => {
+  if (luminaScreenProcess) {
+    return res.json({ status: 'already_running' });
+  }
+  const pythonCmd = getPythonCmd();
+  const mainScript = path.join(luminaScreenDir, 'main.py');
+  if (!fs.existsSync(mainScript)) {
+    return res.status(500).json({ error: 'lumina_screen/main.py not found' });
+  }
+  // BUG FIX: spawn with cwd=luminaScreenDir so that Python's os.path.abspath(__file__)
+  // resolves correctly and relative paths in config.json point to the right locations.
+  luminaScreenState = 'running';
+  luminaScreenProcess = spawn(pythonCmd, [mainScript], {
+    cwd: luminaScreenDir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  luminaScreenProcess.stdout.on('data', (data) => {
+    console.log(`[LuminaScreen] ${data.toString().trim()}`);
+  });
+  luminaScreenProcess.stderr.on('data', (data) => {
+    console.error(`[LuminaScreen] STDERR: ${data.toString().trim()}`);
+  });
+  luminaScreenProcess.on('error', (err) => {
+    console.error(`[LuminaScreen] Spawn error: ${err.message}`);
+    luminaScreenState = 'stopped';
+    luminaScreenProcess = null;
+  });
+  luminaScreenProcess.on('close', (code) => {
+    console.log(`[LuminaScreen] Process exited with code ${code}`);
+    luminaScreenState = code === 0 || code === null ? 'stopped' : 'stopped';
+    luminaScreenProcess = null;
+  });
+  console.log('[LuminaScreen] Started pipeline (cwd: lumina_screen/)');
+  res.json({ status: 'started' });
+});
+
+apiRouter.post('/lumina-screen/stop', (req, res) => {
+  const proc = luminaScreenProcess;
+  if (!proc) {
+    return res.json({ status: 'not_running' });
+  }
+  try {
+    proc.kill('SIGTERM');
+    setTimeout(() => {
+      try { proc.kill('SIGKILL'); } catch {}
+    }, 3000);
+  } catch (err) {
+    console.error(`[LuminaScreen] Kill error: ${err.message}`);
+  }
+  luminaScreenState = 'stopped';
+  luminaScreenProcess = null;
+  console.log('[LuminaScreen] Stopped pipeline');
+  res.json({ status: 'stopped' });
+});
+
+apiRouter.post('/lumina-screen/config', (req, res) => {
+  const { resume_folder, poll_interval_ms, match_threshold, jd_text } = req.body;
+  const configPath = path.join(luminaScreenDir, 'config.json');
+  const jdPath = path.join(luminaScreenDir, 'jd.txt');
+  try {
+    let config = {};
+    if (fs.existsSync(configPath)) {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    }
+    if (resume_folder !== undefined) {
+      // BUG FIX: Normalize resume_folder so it is always relative to lumina_screen/.
+      // Strip any leading 'lumina_screen/' prefix the UI may have sent, preventing
+      // double-nesting (lumina_screen/lumina_screen/resumes) at runtime.
+      let normalizedFolder = resume_folder.trim();
+      const redundantPrefix = 'lumina_screen/';
+      if (normalizedFolder.startsWith(redundantPrefix)) {
+        normalizedFolder = './' + normalizedFolder.slice(redundantPrefix.length);
+      } else if (normalizedFolder.startsWith('./' + redundantPrefix)) {
+        normalizedFolder = './' + normalizedFolder.slice(2 + redundantPrefix.length);
+      }
+      // If an absolute path outside luminaScreenDir is given, keep it as-is.
+      config.resume_folder = normalizedFolder;
+    }
+    if (poll_interval_ms !== undefined) config.poll_interval_ms = poll_interval_ms;
+    if (match_threshold !== undefined) config.match_threshold = match_threshold;
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    if (jd_text !== undefined) {
+      fs.writeFileSync(jdPath, jd_text, 'utf8');
+    }
+    console.log('[LuminaScreen] Config saved');
+    res.json({ status: 'saved', config });
+  } catch (err) {
+    console.error(`[LuminaScreen] Config save error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Clear processed.json dedup state so existing resumes in the folder are re-evaluated.
+apiRouter.post('/lumina-screen/rescan', (req, res) => {
+  const processedPath = path.join(luminaScreenDir, 'processed.json');
+  try {
+    if (fs.existsSync(processedPath)) {
+      fs.unlinkSync(processedPath);
+      console.log('[LuminaScreen] Cleared processed.json — all resumes will be re-scanned');
+    }
+    res.json({ status: 'cleared', message: 'Dedup state reset. Restart the pipeline to re-process all existing resumes.' });
+  } catch (err) {
+    console.error(`[LuminaScreen] Rescan error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.get('/lumina-screen/hits', (req, res) => {
+  const hitPath = path.join(luminaScreenDir, 'page_hit.txt');
+  const hits = [];
+  if (!fs.existsSync(hitPath)) {
+    return res.json([]);
+  }
+  const lines = fs.readFileSync(hitPath, 'utf8').trim().split('\n').filter(Boolean);
+  for (const line of lines) {
+    const match = line.match(/^\[(.+?)\]\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*([\d.]+)\s*\|\s*(.*?)\s*\|\s*(.*)$/);
+    if (match) {
+      hits.push({
+        timestamp: match[1],
+        name: match[2],
+        filename: match[3],
+        score: parseFloat(match[4]),
+        email: match[5],
+        phone: match[6],
+      });
+    }
+  }
+  res.json(hits);
+});
+
 // === STARTUP PIPELINE ===
 
 async function runStartupPipeline() {
@@ -2049,8 +2287,9 @@ async function runStartupPipeline() {
 const ctxSize = parseInt(cfg.ctx_size) || 4096;
 const batchSize = parseInt(cfg.batch_size) || 256;
 const ubatchSize = parseInt(cfg.ubatch_size) || 256;
-const nGpuLayers = parseInt(cfg.n_gpu_layers) ?? 0;
-const kvCacheType = cfg.kv_cache_quant || 'q4';
+const nGpuLayers = parseInt(cfg.n_gpu_layers) || 0;
+const kvCacheTypeK = cfg.kv_cache_type_k || cfg.kv_cache_quant || 'q4_0';
+const kvCacheTypeV = cfg.kv_cache_type_v || cfg.kv_cache_quant || 'q4_0';
 const splitMode = cfg.split_mode || 'row';
 const httpThreads = parseInt(cfg.http_threads) || 2;
 const useMlock = cfg.use_mlock === true;
@@ -2071,8 +2310,8 @@ const cmdArgs = [
   '--split-mode', splitMode,                  // tensor split mode
   '--threads-http', httpThreads.toString(),   // HTTP server threads
   '--flash-attn',                             // NO argument — just the flag
-  '--cache-type-k', kvCacheType,             // KV key cache quantization
-  '--cache-type-v', kvCacheType,             // KV value cache quantization
+  '--cache-type-k', kvCacheTypeK,            // KV key cache quantization
+  '--cache-type-v', kvCacheTypeV,            // KV value cache quantization
 ];
 
 // Continuous batching — enabled by default, only disable if explicitly false
@@ -2090,7 +2329,7 @@ if (!promptCache) {
 console.log(`[Startup] Launching llama-server with flags:`);
 console.log(`[Startup]   ctx-size: ${ctxSize}`);
 console.log(`[Startup]   n-gpu-layers: ${effectiveGpuLayers || nGpuLayers}`);
-console.log(`[Startup]   kv-cache-type: ${kvCacheType}`);
+console.log(`[Startup]   kv-cache-type-k: ${kvCacheTypeK}, kv-cache-type-v: ${kvCacheTypeV}`);
 console.log(`[Startup]   mlock: ${useMlock}`);
 console.log(`[Startup]   prompt-cache: ${promptCache}`);
 console.log(`[Startup]   flash-attn: enabled`);
@@ -2192,6 +2431,10 @@ proc = spawn(finalCmd, finalArgs, {
     // Disable CPU frequency scaling interference
     GOMP_SPINCOUNT: '0',
   }
+});
+
+proc.on('error', (err) => {
+  console.error(`[Startup] Spawn error for llama-server: ${err.message}`);
 });
 
 // Set llama-server to high I/O and CPU priority on Linux
@@ -2301,7 +2544,7 @@ app.get('/v1/models', async (req, res) => {
     if (readyModels.length === 0) {
       // No router models — try direct backend on multiple ports
       const mlxPort = parseInt(process.env.LUMINA_MLX_PORT || '8091');
-      const directPorts = [PRIMARY_PORT, 8090, mlxPort];
+      const directPorts = [PRIMARY_PORT, mlxPort, 8091];
       
       for (const port of directPorts) {
         try {
@@ -2402,7 +2645,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       const mlxPort = parseInt(process.env.LUMINA_MLX_PORT || '8091');
       const directPort = (process.env.LUMINA_API_PORT && parseInt(process.env.LUMINA_API_PORT) !== PRIMARY_PORT)
         ? parseInt(process.env.LUMINA_API_PORT)
-        : (mlxPort !== PRIMARY_PORT ? mlxPort : 8090);
+        : (mlxPort !== PRIMARY_PORT ? mlxPort : 8091);
       const targetUrl = `http://127.0.0.1:${directPort}/v1/chat/completions`;
 
       const body = { ...req.body };
@@ -2416,7 +2659,10 @@ app.post('/v1/chat/completions', async (req, res) => {
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
-        res.setHeader('Access-Control-Allow-Origin', '*');
+        const origin = req.headers.origin || '';
+        if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+          res.setHeader('Access-Control-Allow-Origin', origin);
+        }
 
         try {
           const response = await fetch(targetUrl, {
@@ -2514,7 +2760,10 @@ app.post('/v1/chat/completions', async (req, res) => {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
-      res.setHeader('Access-Control-Allow-Origin', '*');
+      const origin = req.headers.origin || '';
+      if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+      }
 
       try {
         const response = await fetch(targetUrl, {
