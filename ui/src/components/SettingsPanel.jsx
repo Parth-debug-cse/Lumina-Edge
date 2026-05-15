@@ -221,18 +221,17 @@ export default function SettingsPanel({ toast }) {
     setSaved(true)
   }
 
-  // Platform indicator text
   const getPlatformIndicator = () => {
     if (platformInfo.platform === 'darwin' && platformInfo.arch === 'arm64') {
-      return '🖥️ macOS (Apple Silicon) — MLX Backend'
+      return '> macOS (Apple Silicon) — MLX Backend'
     } else if (platformInfo.platform === 'darwin') {
-      return '🖥️ macOS (Intel) — Not Supported'
+      return '> macOS (Intel) — Not Supported'
     } else if (platformInfo.platform === 'linux') {
-      return '🖥️ Linux — llama.cpp + Vulkan'
+      return '> Linux — llama.cpp + Vulkan'
     } else if (platformInfo.platform === 'win32') {
-      return '🖥️ Windows — llama.cpp'
+      return '> Windows — llama.cpp'
     }
-    return '🖥️ Platform Detecting...'
+    return '> Platform Detecting...'
   }
 
   return (
@@ -283,7 +282,7 @@ export default function SettingsPanel({ toast }) {
               fontSize: '0.8rem',
               color: 'var(--text)'
             }}>
-              ℹ️ <strong>Context size</strong> is determined by the model's training configuration and cannot be changed at runtime on MLX.
+              &gt; <strong>Context size</strong> is determined by the model's training configuration and cannot be changed at runtime on MLX.
             </div>
             <button
               onClick={() => setAdvancedOpen(!advancedOpen)}
@@ -301,7 +300,7 @@ export default function SettingsPanel({ toast }) {
                 fontSize: '0.9rem',
               }}
             >
-              <span>macOS / MLX Settings</span>
+              <span>&gt; macOS / MLX Settings</span>
               <span style={{ transform: advancedOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</span>
             </button>
             {advancedOpen && (
@@ -345,7 +344,7 @@ export default function SettingsPanel({ toast }) {
                 fontSize: '0.9rem',
               }}
             >
-              <span>Advanced / llama.cpp Settings</span>
+              <span>&gt; Advanced / llama.cpp Settings</span>
               <span style={{ transform: advancedOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</span>
             </button>
             {advancedOpen && (

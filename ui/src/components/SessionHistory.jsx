@@ -33,7 +33,7 @@ export default function SessionHistory({ toast }) {
       {/* Toolbar */}
       <div style={{ padding: '14px 24px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 10 }}>
         <div className="search-box" style={{ maxWidth: '100%', flex: 1 }}>
-          <span className="search-icon">⌕</span>
+          <span className="search-icon">&gt;</span>
           <input
             placeholder="Search sessions and messages…"
             value={search}
@@ -55,7 +55,7 @@ export default function SessionHistory({ toast }) {
           <div className="history-list">
             {filtered.length === 0 && (
               <div className="empty-state">
-                <div className="empty-icon">📋</div>
+                <div className="empty-icon" style={{ fontFamily: 'var(--font-mono)' }}>{'{ }'}</div>
                 <div className="empty-title">{sessions.length === 0 ? 'No sessions yet' : 'No matches'}</div>
                 <div className="empty-body">
                   {sessions.length === 0
@@ -73,7 +73,7 @@ export default function SessionHistory({ toast }) {
                   onClick={() => setSelected(s)}
                   style={selected?.id === s.id ? { borderColor: 'var(--accent)' } : {}}
                 >
-                  <div style={{ fontSize: '1.2rem', flex: '0 0 auto' }}>💬</div>
+                  <div style={{ fontSize: '1rem', fontFamily: 'var(--font-mono)', color: 'var(--accent)', flex: '0 0 auto' }}>{'>'}</div>
                   <div className="history-info">
                     <div className="history-title">{s.title}</div>
                     <div className="history-meta">
@@ -105,9 +105,9 @@ export default function SessionHistory({ toast }) {
         {/* Detail view */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '0 0 20px' }}>
           {!selected ? (
-            <div className="empty-state">
-              <div className="empty-icon">📂</div>
-              <div className="empty-title">Select a session</div>
+              <div className="empty-state">
+                <div className="empty-icon" style={{ fontFamily: 'var(--font-mono)' }}>{'~'}</div>
+                <div className="empty-title">Select a session</div>
               <div className="empty-body">Click a session to preview its messages here.</div>
             </div>
           ) : (
