@@ -104,7 +104,7 @@ def verify_jd():
 
 
 def verify_resume_folder():
-    """Verify resume folder exists and is readable."""
+    """Verify resume folder exists, is readable, and is within safe path bounds."""
     config_path = os.path.join(os.path.dirname(__file__), "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
@@ -113,11 +113,30 @@ def verify_resume_folder():
     if not os.path.isabs(resume_folder):
         resume_folder = os.path.join(os.path.dirname(__file__), resume_folder)
 
-    if not os.path.exists(resume_folder):
-        os.makedirs(resume_folder, exist_ok=True)
-        print(f"[Lumina Screen Init] ✓ Created resume folder at {resume_folder}")
+    # SECURITY: Resolve to canonical path (resolves symlinks, .., etc.)
+    resolved = os.path.realpath(os.path.abspath(resume_folder))
+
+    # Path traversal containment: must be within user's home directory
+    safe_base = os.path.realpath(os.path.expanduser("~"))
+    if resolved != safe_base and not resolved.startswith(safe_base + os.sep):
+        print(f"[Lumina Screen Init] ERROR: Resume folder must be within your home directory: {resolved}")
+        return False
+
+    if not os.path.exists(resolved):
+        try:
+            os.makedirs(resolved, exist_ok=True)
+            print(f"[Lumina Screen Init] ✓ Created resume folder at {resolved}")
+        except OSError as e:
+            print(f"[Lumina Screen Init] ERROR: Cannot create resume folder: {e}")
+            return False
     else:
-        print(f"[Lumina Screen Init] ✓ Resume folder exists at {resume_folder}")
+        if not os.path.isdir(resolved):
+            print(f"[Lumina Screen Init] ERROR: Path is not a directory: {resolved}")
+            return False
+        if not os.access(resolved, os.R_OK):
+            print(f"[Lumina Screen Init] ERROR: Path is not readable: {resolved}")
+            return False
+        print(f"[Lumina Screen Init] ✓ Resume folder exists at {resolved}")
 
     return True
 

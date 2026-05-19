@@ -434,7 +434,8 @@ export async function getModelRoutes() {
 export async function loadModel(modelPath, portOffset = 0) {
   try {
     const cleanModelPath = modelPath.trim()
-    console.log('[API] Loading model:', cleanModelPath)
+    console.log('[API] loadModel() called with:', cleanModelPath)
+    console.log('[API] Fetching POST /api/router/load')
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30000);
@@ -878,16 +879,15 @@ export async function unloadAllModels() {
 
 /**
  * Get Lumina Screen status and recent hits
+ * BUG LS-H1 FIX: Throw errors instead of silently swallowing them, so the
+ * component can handle connection failures and show error state to user.
  * @returns {Promise<Object>} - { status, hits }
+ * @throws {Error} if request fails or server returns error
  */
 export async function getLuminaScreenStatus() {
-  try {
-    const res = await fetch('/api/lumina-screen/status')
-    if (!res.ok) throw new Error(`Status error ${res.status}`)
-    return await res.json()
-  } catch (err) {
-    return { status: 'idle', hits: [], error: err.message }
-  }
+  const res = await fetch('/api/lumina-screen/status')
+  if (!res.ok) throw new Error(`Status error ${res.status}`)
+  return await res.json()
 }
 
 /**
@@ -971,6 +971,65 @@ export async function rescanLuminaScreen() {
     if (!res.ok) {
       const err = await res.text()
       throw new Error(`Rescan error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    return { error: err.message }
+  }
+}
+
+// ============================================================
+// LUMINA AGENT — AUTONOMOUS IT OPERATIONS AGENT
+// ============================================================
+
+/**
+ * Run the Lumina Agent with a goal
+ * @param {string} goal - Plain English goal for the agent
+ * @returns {Promise<Object>} - { runId } or { error }
+ */
+export async function runLuminaAgent(goal) {
+  try {
+    const res = await fetch('/api/lumina-agent/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goal }),
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Agent run error ${res.status}: ${err}`)
+    }
+    return await res.json()
+  } catch (err) {
+    return { error: err.message }
+  }
+}
+
+/**
+ * Get Lumina Agent status for a specific run
+ * @param {string} runId - The run ID to check
+ * @returns {Promise<Object>} - { status, steps, finalReport, error }
+ */
+export async function getLuminaAgentStatus(runId) {
+  try {
+    const res = await fetch(`/api/lumina-agent/status/${runId}`)
+    if (!res.ok) throw new Error(`Status error ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    return { status: 'error', steps: [], error: err.message }
+  }
+}
+
+/**
+ * Stop the running Lumina Agent by run ID
+ * @param {string} runId - The run ID to stop
+ * @returns {Promise<Object>} - { ok: true } or { error }
+ */
+export async function stopLuminaAgent(runId) {
+  try {
+    const res = await fetch(`/api/lumina-agent/stop/${runId}`, { method: 'POST' })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Stop error ${res.status}: ${err}`)
     }
     return await res.json()
   } catch (err) {

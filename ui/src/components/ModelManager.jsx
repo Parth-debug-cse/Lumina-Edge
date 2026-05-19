@@ -457,6 +457,7 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
 
   const handleLoad = async () => {
     if (loading) return
+    console.log('[ModelManager] handleLoad clicked for:', model.name)
     setLoading(true)
     try {
       toast(`Loading ${model.name}...`, 'info')

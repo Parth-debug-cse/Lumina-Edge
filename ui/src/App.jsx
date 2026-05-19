@@ -1,33 +1,35 @@
 import { useState, useEffect, useCallback } from 'react'
-import { MessageSquare, Box, Activity, Route, Target, Clock, Radio, Settings, HardDrive, Zap, BarChart3 } from 'lucide-react'
+import { MessageSquare, Cpu, Activity, ScanLine, Bot, Radar, Clock, Plug, SlidersHorizontal, HardDrive, Zap, BarChart3, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
 import ModelManager   from './components/ModelManager.jsx'
 import SettingsPanel  from './components/SettingsPanel.jsx'
 import SessionHistory from './components/SessionHistory.jsx'
-import MultiModelPanel from './components/MultiModelPanel.jsx'
 import DiagnosticsPanel from './components/DiagnosticsPanel.jsx'
 import LuminaScreenPanel from './components/LuminaScreenPanel.jsx'
-import ChatInterface from './components/ChatInterface.jsx'
+import AgentPanel from './components/AgentPanel.jsx'
+import ScoutPanel from './components/ScoutPanel.jsx'
 import ApiDocs from './components/ApiDocs.jsx'
 import SystemMonitor from './components/SystemMonitor.jsx'
 import { checkServerHealth } from './utils/api.js'
 
 const NAV = [
-  { id: 'chat',       icon: MessageSquare, label: 'Chat' },
-  { id: 'models',     icon: Box,           label: 'Models' },
-  { id: 'diagnostics',icon: Activity,      label: 'Diagnostics' },
-  { id: 'router',     icon: Route,         label: 'Router' },
-  { id: 'screen',     icon: Target,        label: 'Screen' },
-  { id: 'history',    icon: Clock,         label: 'History' },
-  { id: 'api',        icon: Radio,         label: 'API' },
-  { id: 'settings',   icon: Settings,      label: 'Settings' },
+  { id: 'chat',       icon: MessageSquare,    label: 'Chat' },
+  { id: 'models',     icon: Cpu,              label: 'Models' },
+  { id: 'diagnostics',icon: Activity,         label: 'Diagnostics' },
+  { id: 'screen',     icon: ScanLine,         label: 'Screen' },
+  { id: 'agent',      icon: Bot,              label: 'Agent' },
+  { id: 'scout',      icon: Radar,            label: 'Scout' },
+  { id: 'history',    icon: Clock,            label: 'History' },
+  { id: 'api',        icon: Plug,             label: 'API' },
+  { id: 'settings',   icon: SlidersHorizontal,label: 'Settings' },
 ]
 
 const PANEL_TITLES = {
-  chat:        { title: 'Chat',              sub: 'Chat with loaded models' },
+  chat:        { title: 'Chat',              sub: 'Chat with your local model' },
   models:      { title: 'Model Manager',     sub: 'Browse, tag, and download GGUF models' },
   diagnostics: { title: 'Diagnostics',       sub: 'Resources, profiling, memory optimization, GPU benchmarks' },
-  router:      { title: 'Multi-Model Router',sub: 'Load and route between multiple models' },
   screen:      { title: 'Lumina Screen',     sub: 'Resume screening pipeline — watch, parse, match, notify' },
+  agent:       { title: 'Lumina Agent',      sub: 'Autonomous IT ops agent — reason, act, complete tasks' },
+  scout:       { title: 'Lumina Scout',      sub: 'Hardware-aware model finder — scan, recommend, plan' },
   history:     { title: 'Session History',   sub: 'Browse and export past conversations' },
   api:         { title: 'API Documentation', sub: 'OpenAI-compatible endpoints reference' },
   settings:    { title: 'Settings',          sub: 'Configure hyperparameters and server options' },
@@ -50,7 +52,24 @@ export default function App() {
   const [serverModel, setServerModel]   = useState('')
   const [localModels, setLocalModels]   = useState([])
   const [showMonitor, setShowMonitor]   = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('lumina-sidebar-collapsed') === 'true' } catch { return false }
+  })
+  const [chatUrl, setChatUrl] = useState('http://localhost:8000')
   const { toasts, addToast } = useToasts()
+
+  const openChat = useCallback(async () => {
+    try {
+      const res = await fetch('/api/open-chat', { method: 'POST' })
+      const data = await res.json()
+      if (data.url) setChatUrl(data.url)
+    } catch {}
+  }, [])
+
+  const handleNavClick = useCallback((id) => {
+    if (id === 'chat') openChat()
+    setActivePanel(id)
+  }, [openChat])
 
   const fetchLocalModels = useCallback(async () => {
     try {
@@ -89,15 +108,40 @@ export default function App() {
     };
   }, [pollHealth, fetchLocalModels]);
 
+  useEffect(() => {
+    try { localStorage.setItem('lumina-sidebar-collapsed', String(sidebarCollapsed)) } catch {}
+  }, [sidebarCollapsed]);
+
   const pt = PANEL_TITLES[activePanel] || PANEL_TITLES.chat
 
   const renderPanel = () => {
     switch (activePanel) {
-      case 'chat':        return <ChatInterface serverModel={serverModel} localModels={localModels} toast={addToast} />
+      case 'chat':        return (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 16, padding: 40 }}>
+          <div style={{ fontSize: '1.2rem', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
+            Opening llama.cpp interface in your browser...
+          </div>
+          <a
+            href={chatUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '10px 20px', background: 'var(--accent-dim)',
+              border: '1px solid var(--border-accent)', borderRadius: 'var(--r-md)',
+              color: 'var(--accent)', fontSize: '0.9rem', fontFamily: 'var(--font-mono)',
+              textDecoration: 'none', cursor: 'pointer'
+            }}
+          >
+            <ExternalLink size={16} /> {chatUrl}
+          </a>
+        </div>
+      )
       case 'models':      return <ModelManager      localModels={localModels}   toast={addToast} onModelsRefresh={fetchLocalModels} />
       case 'diagnostics': return <DiagnosticsPanel   localModels={localModels} toast={addToast} />
-      case 'router':      return <MultiModelPanel                               toast={addToast} />
       case 'screen':      return <LuminaScreenPanel                             toast={addToast} />
+      case 'agent':       return <AgentPanel                                    toast={addToast} />
+      case 'scout':       return <ScoutPanel                                    toast={addToast} />
       case 'history':     return <SessionHistory                                toast={addToast} />
       case 'api':         return <ApiDocs                                      toast={addToast} />
       case 'settings':    return <SettingsPanel                                 toast={addToast} />
@@ -107,74 +151,88 @@ export default function App() {
 
   return (
     <>
-      <aside className="sidebar">
+      <aside className={`sidebar${sidebarCollapsed ? ' collapsed' : ''}`}>
         <div className="sidebar-logo">
           <div className="logo-mark">
             <div className="logo-icon">{'>_'}</div>
-            <div className="logo-text">
-              <span className="logo-name">Lumina Edge</span>
-              <span className="logo-version">v1.2 · local AI</span>
-            </div>
+            {!sidebarCollapsed && (
+              <div className="logo-text">
+                <span className="logo-name">Lumina Edge</span>
+                <span className="logo-version">v1.2 · local AI</span>
+              </div>
+            )}
           </div>
         </div>
 
         <nav className="sidebar-nav">
-          <div className="nav-section-label">Navigation</div>
+          {!sidebarCollapsed && <div className="nav-section-label">Navigation</div>}
           {NAV.map(item => {
             const Icon = item.icon
             return (
               <div
                 key={item.id}
                 className={`nav-item${activePanel === item.id ? ' active' : ''}`}
-                onClick={() => setActivePanel(item.id)}
+                onClick={() => handleNavClick(item.id)}
                 id={`nav-${item.id}`}
+                title={sidebarCollapsed ? item.label : undefined}
               >
                 <span className="nav-item-lucide"><Icon size={16} /></span>
-                {item.label}
+                {!sidebarCollapsed && item.label}
               </div>
             )
           })}
         </nav>
 
         <div className="sidebar-footer">
-          <div className="server-status">
-            <div className={`status-dot ${serverStatus}`} />
-            <div>
-              <div style={{ fontWeight: 500, fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
-                {serverStatus === 'offline' ? 'Offline' :
-                 serverStatus === 'checking' ? 'Starting...' :
-                 serverModel && serverModel !== 'none' ? 'Model Loaded' : 'API Ready'}
+          <button
+            className="sidebar-toggle"
+            onClick={() => setSidebarCollapsed(c => !c)}
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+          </button>
+          {!sidebarCollapsed && (
+            <>
+              <div className="server-status">
+                <div className={`status-dot ${serverStatus}`} />
+                <div>
+                  <div style={{ fontWeight: 500, fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
+                    {serverStatus === 'offline' ? 'Offline' :
+                     serverStatus === 'checking' ? 'Starting...' :
+                     serverModel && serverModel !== 'none' ? 'Model Loaded' : 'API Ready'}
+                  </div>
+                  {serverStatus === 'offline' && (
+                    <div style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', marginTop: 1 }}>
+                      Restart the app
+                    </div>
+                  )}
+                  {serverStatus === 'checking' && (
+                    <div style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', marginTop: 1 }}>
+                      Initializing...
+                    </div>
+                  )}
+                  {serverStatus === 'online' && serverModel && serverModel !== 'none' && (
+                    <div style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', marginTop: 1, fontFamily: 'var(--font-mono)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {serverModel}
+                    </div>
+                  )}
+                  {serverStatus === 'online' && (!serverModel || serverModel === 'none') && (
+                    <div style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', marginTop: 1 }}>
+                      Load a model to chat
+                    </div>
+                  )}
+                </div>
               </div>
-              {serverStatus === 'offline' && (
-                <div style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', marginTop: 1 }}>
-                  Restart the app
-                </div>
-              )}
-              {serverStatus === 'checking' && (
-                <div style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', marginTop: 1 }}>
-                  Initializing...
-                </div>
-              )}
-              {serverStatus === 'online' && serverModel && serverModel !== 'none' && (
-                <div style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', marginTop: 1, fontFamily: 'var(--font-mono)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {serverModel}
-                </div>
-              )}
-              {serverStatus === 'online' && (!serverModel || serverModel === 'none') && (
-                <div style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', marginTop: 1 }}>
-                  Load a model to chat
-                </div>
-              )}
-            </div>
-          </div>
 
-          <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
-            <button
-              className="btn btn-ghost btn-sm"
-              style={{ flex: 1, justifyContent: 'center', fontSize: '0.65rem' }}
-              onClick={() => { pollHealth(); fetchLocalModels(); }}
-            >↺ Refresh</button>
-          </div>
+              <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  style={{ flex: 1, justifyContent: 'center', fontSize: '0.65rem' }}
+                  onClick={() => { pollHealth(); fetchLocalModels(); }}
+                >↺ Refresh</button>
+              </div>
+            </>
+          )}
         </div>
       </aside>
 

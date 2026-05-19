@@ -17,12 +17,15 @@ export default function LuminaScreenPanel({ toast }) {
   const [config, setConfig] = useState({
     resume_folder: './resumes',
     poll_interval_ms: 300,
-    match_threshold: 0.40,
+    match_threshold: 0.25,
   })
   const [jdText, setJdText] = useState('')
   const [saving, setSaving] = useState(false)
   const [rescanning, setRescanning] = useState(false)
+  const [clearingHits, setClearingHits] = useState(false)
   const [loadingStatus, setLoadingStatus] = useState(false)
+  // BUG LS-H1 FIX: Add error state to track connection failures
+  const [connectionError, setConnectionError] = useState(null)
   const pollingRef = useRef(null)
 
   useEffect(() => {
@@ -52,7 +55,11 @@ export default function LuminaScreenPanel({ toast }) {
       if (isInitialLoad && data.jd_text !== undefined && data.jd_text !== null) {
         setJdText(data.jd_text)
       }
+      // BUG LS-H1 FIX: Clear connection error on successful fetch
+      setConnectionError(null)
     } catch (err) {
+      // BUG LS-H1 FIX: Set connection error state so UI can render error banner
+      setConnectionError(err.message || 'Connection failed')
       console.error('[LuminaScreen] Status fetch error:', err)
     } finally {
       setLoadingStatus(false)
@@ -100,10 +107,24 @@ export default function LuminaScreenPanel({ toast }) {
     }
   }
 
-  const handleClearResults = () => {
-    setHits([])
-    toast('Results cleared', 'info')
-  }
+  const handleClearResults = async () => {
+    // FIXED: call backend to clear page_hit.txt on disk, not just in-memory state
+    setClearingHits(true);
+    try {
+      const res = await fetch('/api/lumina-screen/clear-hits', { method: 'POST' });
+      if (res.ok) {
+        setHits([]);
+        toast('Results cleared', 'info');
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        toast(`Failed to clear results: ${errData.error || 'Unknown error'}`, 'error');
+      }
+    } catch (e) {
+      toast(`Clear error: ${e.message}`, 'error');
+    } finally {
+      setClearingHits(false);
+    }
+  };
 
   const handleRescan = async () => {
     setRescanning(true)
@@ -129,6 +150,39 @@ export default function LuminaScreenPanel({ toast }) {
 
   return (
     <div style={{ padding: '0 8px 24px', overflow: 'auto', flex: 1 }}>
+
+      {/* ===== CONNECTION ERROR BANNER (BUG LS-H1 FIX) ===== */}
+      {connectionError && (
+        <div style={{
+          background: '#fee',
+          border: '1px solid #faa',
+          borderRadius: 8,
+          padding: 12,
+          marginBottom: 16,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flex: 1 }}>
+            <span style={{ fontSize: '1rem' }}>⚠️</span>
+            <div style={{ fontSize: '0.85rem', color: '#c33' }}>
+              <strong>Connection Lost:</strong> {connectionError}
+              {pipelineStatus === 'running' && (
+                <div style={{ fontSize: '0.75rem', marginTop: 4, opacity: 0.8 }}>
+                  The backend may have crashed or the network connection was lost. Check your API server and refresh manually.
+                </div>
+              )}
+            </div>
+          </div>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => fetchStatus()}
+            title="Try to reconnect"
+          >
+            🔄 Retry
+          </button>
+        </div>
+      )}
 
       {/* ===== CONFIGURATION PANEL ===== */}
       <div style={SECTION_STYLE}>
@@ -278,8 +332,8 @@ export default function LuminaScreenPanel({ toast }) {
               Shortlisted candidates from page_hit.txt — {pipelineStatus === 'running' ? 'auto-refreshing every 2s' : 'static view'}
             </div>
           </div>
-          <button className="btn btn-ghost btn-sm" onClick={handleClearResults}>
-            Clear Results
+          <button className="btn btn-ghost btn-sm" onClick={handleClearResults} disabled={clearingHits}>
+            {clearingHits ? '⏳' : ''} Clear Results
           </button>
         </div>
 

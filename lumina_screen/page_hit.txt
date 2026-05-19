@@ -1,1 +1,2 @@
-[2026-05-15 17:24:51] | John Doe | John_Doe_resume.pdf | 0.4899 | john.doe@email.com | +1 555 123 4567
+[2026-05-18 16:47:04] | Jane Smith | Jane_Smith_resume.pdf | 0.2945 | jane.smith@company.org | (408) 555-9876
+[2026-05-18 16:47:05] | ALEX RIVERA | Senior_Software_Engineer_Resume.pdf | 0.4749 | alex.rivera.dev@email.com | 

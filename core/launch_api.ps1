@@ -22,14 +22,11 @@ function Get-ConfigValue {
         [string]$Key,
         [object]$Default
     )
-    
+
     try {
         $config = Get-Content "config.json" -Raw | ConvertFrom-Json
         $value = $config
         $Key.Split('.') | ForEach-Object {
-            # BUG PS1-1 FIX: Use $null -ne instead of PowerShell truthiness.
-            # The old check ($value.$_) treats 0, $false, and "" as falsy and
-            # silently falls through to the default, ignoring the configured value.
             if ($null -ne $value -and $null -ne $value.$_) {
                 $value = $value.$_
             } else {
@@ -43,24 +40,26 @@ function Get-ConfigValue {
 
 # Read configuration from config.json
 $ConfigModel = Get-ConfigValue -Key "model" -Default ""
-$ConfigPort = Get-ConfigValue -Key "api_port" -Default 8090
-$CtxSize = Get-ConfigValue -Key "ctx_size" -Default 16384
-$NGpuLayers = Get-ConfigValue -Key "n_gpu_layers" -Default 15
+# FIX: Use backend_port (not api_port) for llama-server
+$ConfigPort = Get-ConfigValue -Key "backend_port" -Default 8091
+$CtxSize = Get-ConfigValue -Key "ctx_size" -Default 4096
+$NGpuLayers = Get-ConfigValue -Key "n_gpu_layers" -Default 0
 $BatchSize = Get-ConfigValue -Key "batch_size" -Default 256
 $UbatchSize = Get-ConfigValue -Key "ubatch_size" -Default 256
 $FlashAttn = Get-ConfigValue -Key "flash_attn" -Default $true
 $MinP = Get-ConfigValue -Key "min_p" -Default 0.05
-$TopK = Get-ConfigValue -Key "top_k" -Default 20
+# FIX: top_k default should be 40 to match config.json
+$TopK = Get-ConfigValue -Key "top_k" -Default 40
 $TopP = Get-ConfigValue -Key "top_p" -Default 0.9
 $RepeatPenalty = Get-ConfigValue -Key "repeat_penalty" -Default 1.1
 $HttpThreads = Get-ConfigValue -Key "http_threads" -Default 2
 $ContBatching = Get-ConfigValue -Key "cont_batching" -Default $true
 $KvCacheQuant = Get-ConfigValue -Key "kv_cache_quant" -Default "q4_0"
-$UseMlock = Get-ConfigValue -Key "use_mlock" -Default $true
+# FIX: --mlock is not supported on Windows; default to false
+$UseMlock = Get-ConfigValue -Key "use_mlock" -Default $false
 $NoMmap = Get-ConfigValue -Key "no_mmap" -Default $true
 $MoeModel = Get-ConfigValue -Key "moe_model" -Default $false
 $MoeOverride = Get-ConfigValue -Key "moe_override_tensor" -Default ""
-$KvQuant = Get-ConfigValue -Key "kv_quant" -Default "q4_0"
 $KvCacheTypeK = Get-ConfigValue -Key "kv_cache_type_k" -Default "q4_0"
 $KvCacheTypeV = Get-ConfigValue -Key "kv_cache_type_v" -Default "q4_0"
 
@@ -78,10 +77,7 @@ if (-not $FinalModel) {
     exit 1
 }
 
-# BUG PS1-2 FIX: Only prepend models\ if the path is not already absolute and
-# does not already start with 'models\'. The original code always called
-# Join-Path $RootDir "models" $FinalModel, producing double paths like
-# C:\...\models\models\foo.gguf for paths that were already prefixed.
+# FIX: Resolve model path correctly — only prepend models\ if not already absolute
 if ([System.IO.Path]::IsPathRooted($FinalModel) -or
     $FinalModel -match '^models[\\/]' -or
     $FinalModel -match '^\.[\\/]' -or
@@ -101,7 +97,7 @@ if (-not (Test-Path $ModelPath)) {
     exit 1
 }
 
-Write-Host "Model: $FinalModel" -ForegroundColor Green
+Write-Host "Model: $ModelPath" -ForegroundColor Green
 Write-Host "Port: $FinalPort" -ForegroundColor Green
 Write-Host "GPU Backend: $Gpu" -ForegroundColor Green
 Write-Host "Context Size: $CtxSize" -ForegroundColor Green
@@ -124,16 +120,9 @@ if (-not (Test-Path $LogsDir)) {
 $LogFile = Join-Path $LogsDir "api_server.log"
 
 # Build llama-server command arguments
-# Tool calling requires a model with a Jinja chat template that includes
-# tool_call support. Recommended: Phi-4-mini, Gemma3-4B, Llama-3.2-3B (GGUF).
-if ($FinalModel -match '^[a-zA-Z]:\\|^\\|^\.\.\\|^\.\\') {
-    $ModelArg = $FinalModel
-} else {
-    $ModelArg = "models\$FinalModel"
-}
-
+# FIX: Use $ModelPath (resolved absolute path) instead of a relative string
 $Arguments = @(
-    "-m", $ModelArg,
+    "-m", $ModelPath,
     "--port", $FinalPort,
     "--host", "127.0.0.1",
     "--ctx-size", $CtxSize,
@@ -150,7 +139,8 @@ $Arguments = @(
 
 # Add boolean flags
 if ($FlashAttn) { $Arguments += "--flash-attn" }
-if ($UseMlock) { $Arguments += "--mlock" }
+# FIX: --mlock is not supported on Windows; skip it entirely
+# if ($UseMlock) { $Arguments += "--mlock" }
 if ($NoMmap) { $Arguments += "--no-mmap" }
 if ($ContBatching) { $Arguments += "--cont-batching" }
 
@@ -196,33 +186,32 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 # Start the server
 $Process = $null
 try {
-    # BUG PS1-4 FIX: Start-Process throws InvalidOperationException when
-    # -RedirectStandardOutput and -RedirectStandardError both point to the
-    # same file. Redirect stderr to a separate log file to avoid this crash.
+    # FIX: Redirect stderr to a separate log file to avoid Start-Process crash
+    # when both stdout and stderr point to the same file
     $ErrorLogFile = "$LogFile.err"
     $Process = Start-Process -FilePath $BinaryPath -ArgumentList $Arguments -RedirectStandardOutput $LogFile -RedirectStandardError $ErrorLogFile -WindowStyle Hidden -PassThru
-    
+
     Write-Host "Server started with PID: $($Process.Id)" -ForegroundColor Green
     Write-Host "Waiting for server to initialize..." -ForegroundColor Yellow
-    
+
     # Wait for server to be ready
     $MaxWait = 30
     $Waited = 0
     $Ready = $false
-    
+
     while ($Waited -lt $MaxWait) {
         Start-Sleep -Seconds 1
         $Waited++
-        
+
         # Check if process is still running
         if ($Process.HasExited) {
             Write-Error "Server process exited unexpectedly!`nCheck log: $LogFile"
             exit 1
         }
-        
+
         # Try to connect to health endpoint
         try {
-            $Response = Invoke-WebRequest -Uri "http://127.0.0.1:$FinalPort/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
+            $Response = Invoke-WebRequest -Uri "http://127.0.0.1:$FinalPort/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction SilentlyContinue
             if ($Response.StatusCode -eq 200) {
                 $Ready = $true
                 break
@@ -230,21 +219,21 @@ try {
         } catch {
             # Not ready yet, continue waiting
         }
-        
+
         # Show progress
         if ($Waited % 5 -eq 0) {
             Write-Host "  ... waiting ($Waited/$MaxWait seconds)" -ForegroundColor DarkGray
         }
     }
-    
+
     if ($Ready) {
-        Write-Host "`n✓ Server is ready!" -ForegroundColor Green
+        Write-Host "`nOK: Server is ready!" -ForegroundColor Green
         Write-Host "  API URL: http://127.0.0.1:$FinalPort" -ForegroundColor Cyan
-        Write-Host "  Health: http://127.0.0.1:$FinalPort/health" -ForegroundColor Cyan
+        Write-Host "  Docs:  http://127.0.0.1:$FinalPort/docs" -ForegroundColor Cyan
         Write-Host "`nTo test the server, run:" -ForegroundColor Yellow
         Write-Host "  python scripts\check_server.py" -ForegroundColor White
         Write-Host "`nPress Ctrl+C to stop the server" -ForegroundColor Yellow
-        
+
         # Wait for user to press Ctrl+C
         try {
             while ($true) {

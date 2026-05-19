@@ -55,6 +55,7 @@
   --t-slow: 380ms ease;
 
   --sidebar-w: 220px;
+  --sidebar-w-collapsed: 56px;
 
   --font-sans: 'Inter', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
@@ -94,6 +95,43 @@ body {
   flex-direction: column;
   padding: 0;
   overflow: hidden;
+  transition: width var(--t-mid), min-width var(--t-mid);
+}
+
+.sidebar.collapsed {
+  width: var(--sidebar-w-collapsed);
+  min-width: var(--sidebar-w-collapsed);
+}
+
+.sidebar.collapsed .sidebar-logo .logo-mark {
+  justify-content: center;
+}
+
+.sidebar.collapsed .sidebar-nav {
+  align-items: center;
+}
+
+.sidebar.collapsed .nav-item {
+  justify-content: center;
+  padding: 8px;
+  width: 40px;
+}
+
+.sidebar.collapsed .nav-section-label {
+  display: none;
+}
+
+.sidebar-toggle {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; padding: 6px;
+  background: transparent; border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-tertiary); cursor: pointer;
+  transition: all var(--t-fast);
+}
+.sidebar-toggle:hover {
+  color: var(--text-primary);
+  background: rgba(255,255,255,0.04);
 }
 
 .sidebar-logo {
@@ -229,15 +267,17 @@ body {
    STATUS BAR
    ======================================================== */
 .status-bar {
-  position: fixed; bottom: 0; left: var(--sidebar-w); right: 0;
+  position: fixed; bottom: 0; left: 0; right: 0;
   height: 32px; z-index: 20;
   background: var(--bg-app);
   border-top: 1px solid var(--border);
   display: flex; align-items: center;
   padding: 0 16px;
+  padding-left: calc(var(--sidebar-w-collapsed) + 16px);
   font-family: var(--font-mono); font-size: 0.65rem;
   color: var(--text-tertiary);
   gap: 16px;
+  transition: padding-left var(--t-mid);
 }
 .status-bar-item {
   display: flex; align-items: center; gap: 4px;
@@ -1233,12 +1273,93 @@ input[type="range"] {
 }
 
 /* ========================================================
-   TERMINAL THEME EXTENSIONS
-   ======================================================== */
+    TERMINAL THEME EXTENSIONS
+    ======================================================== */
 .terminal-prefix::before {
   content: '> ';
   color: var(--accent);
   font-family: var(--font-mono);
+}
+
+/* ========================================================
+    LUMINA SCOUT
+    ======================================================== */
+.card-header {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.card-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.card-body {
+  padding: 1rem;
+}
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.75rem;
+}
+.info-item {
+  background: var(--bg-input);
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+}
+.info-label {
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.25rem;
+}
+.info-value {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+.table thead th {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-tertiary);
+  font-weight: 600;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.table tbody td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-dim, rgba(255,255,255,0.04));
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+.table tbody tr:hover {
+  background: var(--bg-input);
+}
+.badge-red {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+.badge-yellow {
+  background: rgba(234, 179, 8, 0.15);
+  color: #eab308;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spin {
+  animation: spin 1s linear infinite;
 }
 
 

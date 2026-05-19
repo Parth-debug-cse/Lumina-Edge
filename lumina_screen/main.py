@@ -40,6 +40,38 @@ def resolve(path):
     return os.path.normpath(os.path.join(CONFIG_DIR, path))
 
 
+# SECURITY: Path validation to prevent directory traversal and invalid paths.
+# Lumina Screen is designed for end-user resume screening, so we restrict
+# paths to the user's home directory to prevent scanning arbitrary system paths.
+SAFE_BASE = os.path.realpath(os.path.expanduser("~"))
+
+
+def validate_resume_folder(path: str) -> tuple:
+    """Returns (is_valid, error_message). Empty error = valid."""
+    if not path or not path.strip():
+        return False, "Resume folder path cannot be empty."
+
+    try:
+        resolved = os.path.realpath(os.path.abspath(path.strip()))
+    except Exception as e:
+        return False, f"Invalid path: {e}"
+
+    if not os.path.exists(resolved):
+        return False, f"Path does not exist: {resolved}"
+
+    if not os.path.isdir(resolved):
+        return False, f"Path is not a directory: {resolved}"
+
+    if not os.access(resolved, os.R_OK):
+        return False, f"Path is not readable: {resolved}"
+
+    # Path traversal containment: must be within user's home directory
+    if resolved != SAFE_BASE and not resolved.startswith(SAFE_BASE + os.sep):
+        return False, "Path must be within your home directory."
+
+    return True, ""
+
+
 def process_file(filepath, embedder, matcher, page_hit_path,
                  compute_hash, is_processed, mark_processed,
                  parse, notify, log_hit):
@@ -58,7 +90,9 @@ def process_file(filepath, embedder, matcher, page_hit_path,
         print(f"[Lumina Screen] Parse failed for {filename}: {e}")
         return
 
+    # Guard: Skip resume if no text was extracted (empty PDF, image-only, corrupted, etc.)
     if not parsed["raw_text"].strip():
+        print(f"[Lumina Screen] WARNING: {filename} — No text extracted (empty PDF?). Skipping.")
         return
 
     try:
@@ -69,6 +103,11 @@ def process_file(filepath, embedder, matcher, page_hit_path,
         return
 
     try:
+        # DIAGNOSTIC LOG: Show score, threshold, and pass/fail status for debugging
+        threshold = matcher.threshold
+        passed = "PASS" if shortlisted else "FAIL"
+        print(f"[Lumina Screen] DIAG: {filename} | Score: {score:.4f} | Threshold: {threshold:.4f} | Status: {passed}")
+
         if shortlisted:
             entry = {
                 "name": parsed["name"] or filename,
@@ -91,7 +130,19 @@ def main():
 
     # BUG LS-1 FIX: Use .get() with sensible defaults for every config key so
     # that a missing key raises a clear message instead of a bare KeyError crash.
-    resume_folder = resolve(config.get("resume_folder", "./resumes"))
+    resume_folder_raw = config.get("resume_folder", "./resumes")
+    resume_folder = resolve(resume_folder_raw)
+
+    # SECURITY: Validate resume folder path before any file I/O.
+    # Uses the resolved (absolute, canonical) path for all checks.
+    valid, err = validate_resume_folder(resume_folder)
+    if not valid:
+        print(f"[Lumina Screen] ERROR: {err}")
+        sys.exit(1)
+
+    # Use the resolved canonical path from validation for all downstream operations
+    resume_folder = os.path.realpath(os.path.abspath(resume_folder.strip()))
+
     poll_interval = config.get("poll_interval_ms", 300)
     threshold = config.get("match_threshold", 0.65)
     chroma_path = resolve(config.get("chroma_store_path", "./chroma_store"))
@@ -149,6 +200,10 @@ def main():
 
     watcher = Watcher(resume_folder, poll_interval)
 
+    # BUG LS-D1 FIX: Track JD file modification time so we can detect when
+    # the user updates the JD via the API and re-embed without restarting.
+    jd_mtime = os.path.getmtime(jd_path)
+
     # Graceful shutdown on SIGINT (Ctrl+C) or SIGTERM (from API stop)
     def _handle_shutdown(sig, frame):
         print("\n[Lumina Screen] Shutting down...")
@@ -159,6 +214,19 @@ def main():
         signal.signal(signal.SIGTERM, _handle_shutdown)
 
     while True:
+        # BUG LS-D1 FIX: Check if jd.txt has been modified. If so, reload
+        # and re-embed it without restarting the pipeline.
+        try:
+            current_jd_mtime = os.path.getmtime(jd_path)
+            if current_jd_mtime != jd_mtime:
+                with open(jd_path, "r") as f:
+                    new_jd_text = f.read()
+                embedder.reload_jd(new_jd_text)
+                jd_mtime = current_jd_mtime
+                print(f"[Lumina Screen] JD file updated — embeddings recomputed")
+        except Exception as e:
+            print(f"[Lumina Screen] Warning: Failed to check/reload JD: {e}")
+
         new_files = watcher.poll()
         for filepath in new_files:
             process_file(

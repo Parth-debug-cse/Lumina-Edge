@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { spawn, exec, execFile } from 'child_process';
+import { spawn, exec, execFile, execSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -19,7 +19,7 @@ app.use(express.json());
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Root paths
+// Root paths — anchored to this file's location, NOT cwd
 const rootDir = path.resolve(__dirname, '..');
 const scriptsDir = path.join(rootDir, 'scripts');
 const modelsDir = path.join(rootDir, 'models');
@@ -159,6 +159,36 @@ function isPortFree(port) {
     s.once('listening', () => { s.close(); resolve(true); });
     s.listen(port, '127.0.0.1');
   });
+}
+
+// Kill any process occupying a port (zombie llama-server from previous session)
+async function killProcessOnPort(port) {
+  if (os.platform() === 'win32') return false;
+  try {
+    const result = execSync(`lsof -ti :${port} 2>/dev/null || ss -tlnp sport = :${port} 2>/dev/null | grep -oP 'pid=\\K\\d+' | head -1`, { timeout: 3000 }).toString().trim();
+    if (result) {
+      const pids = result.split('\n').filter(Boolean);
+      for (const pid of pids) {
+        console.log(`[Port Cleanup] Killing zombie process PID ${pid} on port ${port}`);
+        try { execSync(`kill -9 ${pid} 2>/dev/null`); } catch {}
+      }
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+// Clear stale model state from previous session on startup
+function clearStaleModelState() {
+  for (const [id, modelInfo] of routerModels) {
+    if (modelInfo.status === 'error' || modelInfo.status === 'loading') {
+      if (modelInfo.readyCheckInterval) clearInterval(modelInfo.readyCheckInterval);
+      if (modelInfo.failsafeTimer) clearTimeout(modelInfo.failsafeTimer);
+      try { modelInfo.process?.kill('SIGKILL'); } catch {}
+      routerModels.delete(id);
+      console.log(`[Startup] Cleared stale model state: ${modelInfo.name} (id: ${id}, status: ${modelInfo.status})`);
+    }
+  }
 }
 
 // Ensure models directory exists
@@ -334,11 +364,46 @@ apiRouter.get('/system-info', (req, res) => {
 
 apiRouter.get('/chat-url', (req, res) => {
   const mac = isMac();
-  // macOS → OpenWebUI on OW_PORT; Linux → API gateway root (proxies to llama-server web UI)
-  const chatUrl = mac
-    ? `http://127.0.0.1:${process.env.LUMINA_OW_PORT || 8080}`
-    : `http://127.0.0.1:${PRIMARY_PORT}`;
-  res.json({ url: chatUrl, platform: os.platform() });
+  let chatUrl;
+  if (mac) {
+    chatUrl = `http://127.0.0.1:${process.env.LUMINA_OW_PORT || 3000}`;
+  } else {
+    // Linux/Windows: use the port of the first ready model
+    const readyModel = Array.from(routerModels.values()).find(m => m.status === 'ready');
+    if (readyModel) {
+      chatUrl = `http://127.0.0.1:${readyModel.port}`;
+    } else {
+      // No model loaded — return API gateway root (proxies to backend)
+      chatUrl = `http://127.0.0.1:${PRIMARY_PORT}`;
+    }
+  }
+  res.json({ url: chatUrl, platform: os.platform(), modelLoaded: !!Array.from(routerModels.values()).find(m => m.status === 'ready') });
+});
+
+// Open chat URL in system browser (platform-aware)
+apiRouter.post('/open-chat', (req, res) => {
+  const platform = os.platform();
+  const url = platform === 'darwin'
+    ? 'http://localhost:3000'
+    : 'http://localhost:8000';
+
+  try {
+    let openCmd;
+    if (platform === 'linux') {
+      openCmd = `xdg-open "${url}" 2>/dev/null || sensible-browser "${url}" 2>/dev/null || x-www-browser "${url}" 2>/dev/null`;
+    } else if (platform === 'darwin') {
+      openCmd = `open "${url}"`;
+    } else {
+      openCmd = `start "${url}"`;
+    }
+    exec(openCmd, (err) => {
+      if (err) console.log(`[Open Chat] Browser open failed: ${err.message}`);
+      else console.log(`[Open Chat] Opened ${url}`);
+    });
+    res.json({ status: 'opened', url });
+  } catch (err) {
+    res.json({ status: 'opened', url });
+  }
 });
 
 // Get current optimized configuration
@@ -1223,13 +1288,18 @@ apiRouter.post('/router/policy', (req, res) => {
 });
 
 apiRouter.post('/router/load', async (req, res) => {
+  console.log(`[DEBUG] /api/router/load called with body:`, JSON.stringify(req.body));
   const { model_path, port_offset } = req.body;
+  if (!model_path) {
+    console.error('[DEBUG] model_path is missing from request body');
+    return res.status(400).json({ error: 'model_path is required' });
+  }
   if (port_offset) {
     console.log(`[api-server] port_offset received but parallel loading not yet implemented: ${port_offset}`);
   }
   console.log('[Router Load] Received model_path:', model_path);
   
-  const isMac = os.platform() === 'darwin' && os.arch() === 'arm64';
+  const isMacPlatform = os.platform() === 'darwin' && os.arch() === 'arm64';
   let targetPath = path.isAbsolute(model_path) ? model_path : path.join(modelsDir, model_path);
   
   console.log('[Router Load] Resolved targetPath:', targetPath);
@@ -1238,13 +1308,10 @@ apiRouter.post('/router/load', async (req, res) => {
   if (!fs.existsSync(targetPath)) return res.status(404).json({ error: 'Model not found' });
 
   // macOS MLX specific path handling
-  // Define stats outside the conditional blocks so it's available throughout the function
   let stats;
-  if (isMac) {
-    // Check if it's a directory (MLX model) or file (GGUF)
+  if (isMacPlatform) {
     stats = fs.statSync(targetPath);
     if (stats.isDirectory()) {
-      // MLX model directory — check for required files
       const hasConfig = fs.existsSync(path.join(targetPath, 'config.json'));
       const hasSafetensors = fs.readdirSync(targetPath).some(f => f.endsWith('.safetensors'));
       if (!hasConfig || !hasSafetensors) {
@@ -1255,7 +1322,6 @@ apiRouter.post('/router/load', async (req, res) => {
       console.log(`[Router] macOS: Loading MLX model directory: ${targetPath}`);
     }
     
-    // Mac MLX requires config.json in the model directory
     const modelDir = stats.isFile() ? path.dirname(targetPath) : targetPath;
     const configPath = path.join(modelDir, 'config.json');
     if (!fs.existsSync(configPath)) {
@@ -1277,7 +1343,19 @@ apiRouter.post('/router/load', async (req, res) => {
   });
 
   // Find available port
-  const port = await findAvailablePort();
+  let port = await findAvailablePort();
+
+  // If port is not free, try to kill zombie process and retry
+  if (!await isPortFree(port)) {
+    console.log(`[Router Load] Port ${port} is occupied, attempting cleanup...`);
+    await killProcessOnPort(port);
+    // Give the OS a moment to release the port
+    await new Promise(r => setTimeout(r, 500));
+    if (!await isPortFree(port)) {
+      console.log(`[Router Load] Port ${port} still occupied after cleanup, finding another...`);
+      port = await findAvailablePort();
+    }
+  }
   console.log(`[Router Load] Using port: ${port}`);
 
   // Store model info
@@ -1294,7 +1372,7 @@ apiRouter.post('/router/load', async (req, res) => {
 
   let proc;
 
-  if (isMac) {
+  if (isMacPlatform) {
     const pythonCmd = getPythonCmd();
     const modelDir = stats.isFile() ? path.dirname(targetPath) : targetPath;
 
@@ -1406,6 +1484,19 @@ apiRouter.post('/router/load', async (req, res) => {
         message: `Expected binary at: ${llamaServer}. Please extract llama.cpp release binaries to the bin/ directory.`
       });
     }
+
+    // Ubuntu/Linux: verify execute permission
+    if (os.platform() === 'linux') {
+      try {
+        fs.accessSync(llamaServer, fs.constants.X_OK);
+      } catch (e) {
+        routerModels.delete(id);
+        return res.status(500).json({
+          error: 'llama-server is not executable',
+          message: `Run: chmod +x ${llamaServer}`
+        });
+      }
+    }
     
     // Helper to read config values with enforced safety limits
 const ctxSize = (() => {
@@ -1415,7 +1506,7 @@ const ctxSize = (() => {
 })();
 const batchSize = parseInt(config.batch_size) || 256;
 const ubatchSize = parseInt(config.ubatch_size) || 256;
-const nGpuLayers = parseInt(config.n_gpu_layers) || 0;
+const nGpuLayers = parseInt(config.n_gpu_layers) || 999; // 999 = offload max layers GPU can hold, rest CPU
 const kvCacheTypeK = config.kv_cache_type_k || config.kv_cache_quant || 'q4_0';
 const kvCacheTypeV = config.kv_cache_type_v || config.kv_cache_quant || 'q4_0';
 const splitMode = config.split_mode || 'row';
@@ -1437,7 +1528,7 @@ const cmdArgs = [
   '--ubatch-size', ubatchSize.toString(),     // micro-batch size
   '--split-mode', splitMode,                  // tensor split mode
   '--threads-http', httpThreads.toString(),   // HTTP server threads
-  '--flash-attn',                             // NO argument — just the flag
+  '--flash-attn', 'on',                       // Flash Attention enabled
   '--cache-type-k', kvCacheTypeK,            // KV key cache quantization
   '--cache-type-v', kvCacheTypeV,            // KV value cache quantization
 ];
@@ -1545,7 +1636,12 @@ if (os.platform() === 'linux') {
   }
 }
 
+// Pre-spawn log — must appear in terminal immediately
+console.log(`[Lumina] Spawning llama.cpp for model: ${path.basename(targetPath)} on port ${port}`);
+console.log(`[Lumina] Binary: ${finalCmd}, Args: ${finalArgs.slice(0, 6).join(' ')}...`);
+
 proc = spawn(finalCmd, finalArgs, {
+  stdio: ['ignore', 'pipe', 'pipe'],
   env: {
     ...process.env,
     // Optimize OpenMP threading for llama.cpp
@@ -1559,20 +1655,32 @@ proc = spawn(finalCmd, finalArgs, {
   }
 });
 
+// Capture stdout in real time
+proc.stdout.on('data', (data) => {
+  const text = data.toString().trim();
+  if (text) console.log(`[llama-server] ${text}`);
+});
+
+// Capture stderr in real time — critical for diagnosing crashes
+proc.stderr.on('data', (data) => {
+  const text = data.toString().trim();
+  if (text) console.error(`[llama-server ERR] ${text}`);
+});
+
 proc.on('error', (err) => {
   console.error(`[Router] Spawn error for llama-server: ${err.message}`);
+  modelInfo.status = 'error';
+  broadcastModelStatus(id, 'error', port, err.message);
 });
 
 // Set llama-server to high I/O and CPU priority on Linux
 if (os.platform() === 'linux' && proc.pid) {
   try {
-    // High CPU priority (nice -5 = slightly above normal, doesn't require root)
     exec(`renice -n -5 -p ${proc.pid} 2>/dev/null || true`);
-    // High I/O priority — critical during model load from disk
     exec(`ionice -c 2 -n 0 -p ${proc.pid} 2>/dev/null || true`);
     console.log(`[Router] Set priority for llama-server PID ${proc.pid}`);
   } catch (e) {
-    // Non-fatal — just run at default priority
+    // Non-fatal
   }
 }
 
@@ -1624,15 +1732,6 @@ modelInfo.process = proc;
   // Store interval ref so we can clear it on unload
   modelInfo.readyCheckInterval = checkReady;
   modelInfo.failsafeTimer = failsafeTimer;
-
-  proc.on('close', () => {
-    clearInterval(checkReady);
-    clearTimeout(failsafeTimer);
-    if (modelInfo.status !== 'unloaded') {
-      modelInfo.status = 'error';
-      broadcastModelStatus(id, 'error', port, 'Process exited unexpectedly');
-    }
-  });
 
   res.json({ status: 'success', id, port });
 });
@@ -2023,6 +2122,45 @@ apiRouter.post('/lumina-screen/stop', (req, res) => {
   res.json({ status: 'stopped' });
 });
 
+// Validate resume folder path: existence, type, readability, and containment within home dir.
+function validateResumeFolderPath(folderPath) {
+  if (!folderPath || !folderPath.trim()) {
+    return { valid: false, error: "Resume folder path cannot be empty." };
+  }
+
+  let resolved;
+  try {
+    resolved = fs.realpathSync(path.resolve(folderPath.trim()));
+  } catch (e) {
+    return { valid: false, error: `Invalid path: ${e.message}` };
+  }
+
+  if (!fs.existsSync(resolved)) {
+    return { valid: false, error: `Path does not exist: ${resolved}` };
+  }
+
+  const stats = fs.statSync(resolved);
+  if (!stats.isDirectory()) {
+    return { valid: false, error: `Path is not a directory: ${resolved}` };
+  }
+
+  // Check readability
+  try {
+    fs.accessSync(resolved, fs.constants.R_OK);
+  } catch (e) {
+    return { valid: false, error: `Path is not readable: ${resolved}` };
+  }
+
+  // Path traversal containment: must be within user's home directory
+  const homeDir = os.homedir();
+  const resolvedHome = fs.realpathSync(path.resolve(homeDir));
+  if (resolved !== resolvedHome && !resolved.startsWith(resolvedHome + path.sep)) {
+    return { valid: false, error: "Path must be within your home directory." };
+  }
+
+  return { valid: true, resolved };
+}
+
 apiRouter.post('/lumina-screen/config', (req, res) => {
   const { resume_folder, poll_interval_ms, match_threshold, jd_text } = req.body;
   const configPath = path.join(luminaScreenDir, 'config.json');
@@ -2033,6 +2171,14 @@ apiRouter.post('/lumina-screen/config', (req, res) => {
       config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     }
     if (resume_folder !== undefined) {
+      // SECURITY: Validate resume folder path before saving to config.
+      // Resolves symlinks, .., etc. and checks existence/type/readability.
+      // Also enforces containment within the user's home directory.
+      const validation = validateResumeFolderPath(resume_folder);
+      if (!validation.valid) {
+        return res.status(400).json({ error: validation.error });
+      }
+
       // BUG FIX: Normalize resume_folder so it is always relative to lumina_screen/.
       // Strip any leading 'lumina_screen/' prefix the UI may have sent, preventing
       // double-nesting (lumina_screen/lumina_screen/resumes) at runtime.
@@ -2096,6 +2242,301 @@ apiRouter.get('/lumina-screen/hits', (req, res) => {
     }
   }
   res.json(hits);
+});
+
+// FIXED: Clear page_hit.txt on disk so UI "Clear Results" persists across restarts
+apiRouter.post('/lumina-screen/clear-hits', (req, res) => {
+  const hitPath = path.join(luminaScreenDir, 'page_hit.txt');
+  try {
+    if (fs.existsSync(hitPath)) {
+      fs.writeFileSync(hitPath, '', 'utf8');
+      console.log('[LuminaScreen] Cleared page_hit.txt');
+    }
+    res.json({ status: 'cleared' });
+  } catch (err) {
+    console.error(`[LuminaScreen] Clear hits error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// === LUMINA AGENT ===
+
+const luminaAgentDir = path.join(rootDir, 'lumina_agent');
+const agentRuns = new Map(); // runId -> { steps[], status, finalReport, error, proc }
+const MAX_AGENT_RUNS = 100; // Prevent memory leak — cap stored runs
+
+// Periodic cleanup of old completed runs to prevent memory leak
+function cleanupAgentRuns() {
+  if (agentRuns.size <= MAX_AGENT_RUNS) return;
+  const toRemove = [];
+  for (const [id, run] of agentRuns) {
+    if (run.status !== 'running') toRemove.push(id);
+  }
+  // Remove oldest completed runs first
+  for (const id of toRemove.slice(0, Math.ceil(MAX_AGENT_RUNS * 0.25))) {
+    agentRuns.delete(id);
+  }
+}
+
+apiRouter.post('/lumina-agent/run', async (req, res) => {
+  const { goal } = req.body;
+  if (!goal || typeof goal !== 'string' || goal.trim().length === 0) {
+    return res.status(400).json({ error: 'goal is required' });
+  }
+
+  const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  agentRuns.set(runId, { steps: [], status: 'running', finalReport: null, error: null, proc: null });
+
+  // SECURITY: Use environment variables to pass data to subprocess instead of
+  // string interpolation, preventing shell/Python injection from malicious goal strings.
+  const { spawn } = await import('child_process');
+  const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+
+  const proc = spawn(pythonCmd, ['-c', `
+import sys, os, json
+sys.path.insert(0, os.environ['LUMINA_ROOT_DIR'])
+from lumina_agent.agent import run_agent
+
+goal = os.environ['LUMINA_AGENT_GOAL']
+run_id = os.environ['LUMINA_AGENT_RUN_ID']
+
+def on_update(step):
+    print(json.dumps({"type": "step", "data": step}), flush=True)
+
+result = run_agent(goal, run_id, on_update)
+print(json.dumps({"type": "done", "data": result}), flush=True)
+  `], {
+    cwd: luminaAgentDir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      PYTHONUNBUFFERED: '1',
+      LUMINA_ROOT_DIR: rootDir,
+      LUMINA_AGENT_GOAL: goal,
+      LUMINA_AGENT_RUN_ID: runId,
+    }
+  });
+
+  // Store proc reference so stop endpoint can kill it directly
+  const run = agentRuns.get(runId);
+  run.proc = proc;
+
+  proc.stdout.on('data', (chunk) => {
+    const lines = chunk.toString().split('\n').filter(Boolean);
+    for (const line of lines) {
+      try {
+        const msg = JSON.parse(line);
+        const r = agentRuns.get(runId);
+        if (!r) return;
+        if (msg.type === 'step') {
+          r.steps.push(msg.data);
+        } else if (msg.type === 'done') {
+          r.status = 'done';
+          r.finalReport = msg.data;
+        }
+      } catch (_) {}
+    }
+  });
+
+  proc.stderr.on('data', (chunk) => {
+    const r = agentRuns.get(runId);
+    if (r) r.error = (r.error || '') + chunk.toString();
+  });
+
+  // Fix 1: Handle spawn failures (e.g. python3 not found).
+  // Without this, the 'error' event is unhandled and the frontend polls forever.
+  proc.on('error', (err) => {
+    console.error('[LuminaAgent] Spawn error:', err.message);
+    const r = agentRuns.get(runId);
+    if (r) {
+      r.status = 'error';
+      r.error = `Failed to start Python process: ${err.message}`;
+    }
+  });
+
+  // Fix 2: Null-guard r in case cleanupAgentRuns() already removed this run.
+  proc.on('close', (code) => {
+    const r = agentRuns.get(runId);
+    if (!r) return;
+    if (r.status === 'running') {
+      r.status = code === 0 ? 'done' : 'error';
+    }
+    cleanupAgentRuns();
+  });
+
+  console.log('[LuminaAgent] Started run:', runId);
+  res.json({ runId });
+});
+
+apiRouter.get('/lumina-agent/status/:runId', (req, res) => {
+  const run = agentRuns.get(req.params.runId);
+  if (!run) return res.status(404).json({ error: 'Run not found' });
+  res.json({
+    status: run.status,
+    steps: run.steps,
+    finalReport: run.finalReport,
+    error: run.error,
+  });
+});
+
+apiRouter.post('/lumina-agent/stop/:runId', (req, res) => {
+  const run = agentRuns.get(req.params.runId);
+  if (!run) return res.status(404).json({ error: 'Run not found' });
+
+  // SECURITY: Kill the actual child process directly instead of spawning
+  // a separate Python process that can't reach the in-memory stop flag.
+  if (run.proc && !run.proc.killed) {
+    run.proc.kill('SIGTERM');
+    // Fallback to SIGKILL after 3 seconds if process doesn't exit
+    setTimeout(() => {
+      if (run.proc && !run.proc.killed) {
+        try { run.proc.kill('SIGKILL'); } catch {}
+      }
+    }, 3000);
+  }
+
+  run.status = 'stopped';
+  console.log('[LuminaAgent] Stopped run:', req.params.runId);
+  res.json({ ok: true });
+});
+
+// === LUMINA SCOUT ===
+
+const luminaScoutDir = path.join(rootDir, 'lumina_scout');
+
+// Helper: spawn Python with env vars for safe parameter passing (no code injection)
+function spawnScoutEndpoint(args, callback) {
+  const pythonCmd = getPythonCmd();
+  const scoutScript = path.join(luminaScoutDir, 'scout.py');
+  if (!fs.existsSync(scoutScript)) {
+    return callback({ error: 'lumina_scout/scout.py not found', status: 500 });
+  }
+
+  // Build env: pass all args as SCOUT_ARG_* env vars
+  const env = { ...process.env };
+  for (const [key, val] of Object.entries(args)) {
+    env[`SCOUT_ARG_${key.toUpperCase()}`] = val !== null && val !== undefined ? String(val) : '';
+  }
+
+  // Python script reads args from environment — zero string interpolation of user input
+  const pyScript = `
+import sys, os, json
+sys.path.insert(0, os.environ.get('SCOUT_ARG_SCOUT_DIR', ''))
+from scout import get_hardware_info, get_recommendations, get_plan
+
+def _e(name, default=None):
+    v = os.environ.get(name, '')
+    return v if v else default
+
+def _ei(name, default):
+    try: return int(os.environ.get(name, str(default)))
+    except: return default
+
+def _ef(name, default=None):
+    try: return float(os.environ.get(name, str(default)))
+    except: return default
+
+def _eb(name, default=False):
+    return os.environ.get(name, str(default)).lower() == 'true'
+
+_func = os.environ.get('SCOUT_ARG_FUNC', '')
+if _func == 'get_hardware_info':
+    result = get_hardware_info()
+elif _func == 'get_recommendations':
+    q = _e('SCOUT_ARG_QUANT')
+    ms = _ef('SCOUT_ARG_MIN_SPEED')
+    result = get_recommendations(
+        top=_ei('SCOUT_ARG_TOP', 10),
+        profile=_e('SCOUT_ARG_PROFILE', 'general'),
+        quant=q if q else None,
+        min_speed=ms if ms is not None else None,
+        gpu_override=_e('SCOUT_ARG_GPU_OVERRIDE') or None,
+        cpu_only=_eb('SCOUT_ARG_CPU_ONLY', False),
+        refresh=_eb('SCOUT_ARG_REFRESH', False),
+    )
+elif _func == 'get_plan':
+    q = _e('SCOUT_ARG_QUANT')
+    result = get_plan(
+        model_query=_e('SCOUT_ARG_MODEL_QUERY', ''),
+        quant=q if q else None,
+        context_length=_ei('SCOUT_ARG_CONTEXT_LENGTH', 4096),
+    )
+else:
+    result = {"error": "unknown function"}
+
+print(json.dumps(result))
+`;
+
+  const proc = spawn(pythonCmd, ['-c', pyScript], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: luminaScoutDir,
+    env,
+  });
+  let out = '';
+  proc.stdout.on('data', (d) => { out += d.toString(); });
+  proc.stderr.on('data', (d) => { console.log(`[Scout] ${d.toString().trim()}`); });
+  proc.on('close', (code) => {
+    if (code === 0) {
+      try { callback(null, JSON.parse(out)); } catch { callback({ error: 'Parse error', raw: out.slice(0, 500) }, null); }
+    } else {
+      callback({ error: 'Scout endpoint failed' }, null);
+    }
+  });
+}
+
+apiRouter.get('/lumina-scout/hardware', (req, res) => {
+  spawnScoutEndpoint({
+    scout_dir: luminaScoutDir,
+    func: 'get_hardware_info',
+  }, (err, data) => {
+    if (err) return res.status(err.status || 500).json({ error: err.error || 'Hardware detection failed' });
+    res.json(data);
+  });
+});
+
+apiRouter.get('/lumina-scout/recommend', (req, res) => {
+  const top = parseInt(req.query.top) || 10;
+  const profile = req.query.profile || 'general';
+  const quant = req.query.quant || '';
+  const minSpeedRaw = req.query.min_speed ? parseFloat(req.query.min_speed) : null;
+  const minSpeed = (minSpeedRaw !== null && !isNaN(minSpeedRaw)) ? minSpeedRaw : null;
+  const gpuOverride = req.query.gpu_override || '';
+  const cpuOnly = req.query.cpu_only === 'true';
+  const refresh = req.query.refresh === 'true';
+
+  spawnScoutEndpoint({
+    scout_dir: luminaScoutDir,
+    func: 'get_recommendations',
+    top: String(top),
+    profile: profile,
+    quant: quant,
+    min_speed: minSpeed !== null ? String(minSpeed) : '',
+    gpu_override: gpuOverride,
+    cpu_only: String(cpuOnly),
+    refresh: String(refresh),
+  }, (err, data) => {
+    if (err) return res.status(500).json({ error: err.error || 'Recommendation failed' });
+    res.json(data);
+  });
+});
+
+apiRouter.get('/lumina-scout/plan', (req, res) => {
+  const model = req.query.model;
+  if (!model) return res.status(400).json({ error: 'model query parameter required' });
+  const quant = req.query.quant || '';
+  const ctxLen = parseInt(req.query.context_length) || 4096;
+
+  spawnScoutEndpoint({
+    scout_dir: luminaScoutDir,
+    func: 'get_plan',
+    model_query: model,
+    quant: quant,
+    context_length: String(ctxLen),
+  }, (err, data) => {
+    if (err) return res.status(500).json({ error: err.error || 'Plan lookup failed' });
+    if (data && data.error) return res.status(400).json(data);
+    res.json(data);
+  });
 });
 
 // === STARTUP PIPELINE ===
@@ -2287,7 +2728,7 @@ async function runStartupPipeline() {
 const ctxSize = parseInt(cfg.ctx_size) || 4096;
 const batchSize = parseInt(cfg.batch_size) || 256;
 const ubatchSize = parseInt(cfg.ubatch_size) || 256;
-const nGpuLayers = parseInt(cfg.n_gpu_layers) || 0;
+const nGpuLayers = parseInt(cfg.n_gpu_layers) || 999; // 999 = offload max layers GPU can hold, rest CPU
 const kvCacheTypeK = cfg.kv_cache_type_k || cfg.kv_cache_quant || 'q4_0';
 const kvCacheTypeV = cfg.kv_cache_type_v || cfg.kv_cache_quant || 'q4_0';
 const splitMode = cfg.split_mode || 'row';
@@ -2309,9 +2750,9 @@ const cmdArgs = [
   '--ubatch-size', ubatchSize.toString(),     // micro-batch size
   '--split-mode', splitMode,                  // tensor split mode
   '--threads-http', httpThreads.toString(),   // HTTP server threads
-  '--flash-attn',                             // NO argument — just the flag
-  '--cache-type-k', kvCacheTypeK,            // KV key cache quantization
-  '--cache-type-v', kvCacheTypeV,            // KV value cache quantization
+  '--flash-attn', 'on',                       // Flash Attention always on
+  '--cache-type-k', 'q4_0',                  // KV key cache always q4_0
+  '--cache-type-v', 'q4_0',                  // KV value cache always q4_0
 ];
 
 // Continuous batching — enabled by default, only disable if explicitly false
@@ -2419,22 +2860,40 @@ if (os.platform() === 'linux') {
   }
 }
 
+console.log(`[Lumina] Spawning llama.cpp for model: ${path.basename(targetModel.path)} on port ${port}`);
+
 proc = spawn(finalCmd, finalArgs, {
+  stdio: ['ignore', 'pipe', 'pipe'],
   env: {
     ...process.env,
-    // Optimize OpenMP threading for llama.cpp
     OMP_NUM_THREADS: httpThreads.toString(),
     OMP_PROC_BIND: 'close',
     OMP_PLACES: 'cores',
-    // Optimize memory allocation
     MALLOC_ARENA_MAX: '2',
-    // Disable CPU frequency scaling interference
     GOMP_SPINCOUNT: '0',
   }
 });
 
+proc.stdout.on('data', (data) => {
+  const text = data.toString().trim();
+  if (text) console.log(`[llama-server] ${text}`);
+});
+
+proc.stderr.on('data', (data) => {
+  const text = data.toString().trim();
+  if (text) console.error(`[llama-server ERR] ${text}`);
+});
+
 proc.on('error', (err) => {
   console.error(`[Startup] Spawn error for llama-server: ${err.message}`);
+  modelInfo.status = 'error';
+});
+
+proc.on('close', (code) => {
+  console.log(`[llama-server] Process exited with code ${code}`);
+  if (modelInfo.status !== 'unloaded' && modelInfo.status !== 'error') {
+    modelInfo.status = 'error';
+  }
 });
 
 // Set llama-server to high I/O and CPU priority on Linux
@@ -2935,6 +3394,9 @@ app.use((req, res, next) => {
     req.pipe(proxyReq);
   }
 });
+
+// Clear stale model state from previous session before accepting connections
+clearStaleModelState();
 
 const server = app.listen(PRIMARY_PORT, '127.0.0.1', () => {
   console.log(`[API Server] ✓ Primary (inference + management) listening on http://127.0.0.1:${PRIMARY_PORT}`);

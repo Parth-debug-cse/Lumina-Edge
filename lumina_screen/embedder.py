@@ -100,6 +100,20 @@ class Embedder:
             documents=[jd_text],
         )
 
+    def reload_jd(self, new_jd_text):
+        """
+        BUG LS-D1 FIX: Reload and re-embed the JD text if it has changed.
+        Called when the JD file is updated during pipeline execution.
+        Updates both the cached embedding and the ChromaDB collection.
+        """
+        self.jd_embedding = self._embed(new_jd_text)
+        self.collection.upsert(
+            ids=["__jd__"],
+            embeddings=[self.jd_embedding],
+            metadatas=[{"type": "jd"}],
+            documents=[new_jd_text],
+        )
+
     @staticmethod
     def _chunk(text):
         """

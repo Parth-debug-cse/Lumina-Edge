@@ -26,3 +26,11 @@ huggingface-hub>=0.16.0
 fastapi>=0.100.0
 uvicorn>=0.23.0
 aiohttp>=3.8.0
+
+# Lumina Scout — hardware-aware model finder
+typer>=0.9
+rich>=13.0
+httpx>=0.27
+psutil>=5.9
+dbgpu[fuzz]>=1.0
+nvidia-ml-py>=12.0

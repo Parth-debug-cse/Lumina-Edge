@@ -8,15 +8,24 @@
 param()
 
 $ErrorActionPreference = "Continue"
+
+# FIX: Check if running on actual Windows (not WSL or other platform)
+if ($PSVersionTable.Platform -and $PSVersionTable.Platform -ne "Win32NT") {
+    Write-Host "WARNING: This script is designed for native Windows." -ForegroundColor Yellow
+    Write-Host "  Detected platform: $($PSVersionTable.Platform)" -ForegroundColor Yellow
+    Write-Host "  If running under WSL, use the Linux optimizer instead." -ForegroundColor Yellow
+    Write-Host ""
+}
+
 $Host.UI.RawUI.WindowTitle = "Lumina Edge - Windows System Optimizer"
 
 function Write-Status {
     param([string]$Message, [string]$Status = "info")
     $colors = @{ "ok" = "Green"; "warn" = "Yellow"; "error" = "Red"; "info" = "Cyan" }
-    $prefixes = @{ "ok" = "✓"; "warn" = "⚠"; "error" = "✗"; "info" = "ℹ" }
+    $prefixes = @{ "ok" = "[OK]"; "warn" = "[WARN]"; "error" = "[ERR]"; "info" = "[INFO]" }
     $color = $colors[$Status]
     $prefix = $prefixes[$Status]
-    Write-Host "[$prefix] " -ForegroundColor $color -NoNewline
+    Write-Host "$prefix " -ForegroundColor $color -NoNewline
     Write-Host $Message
 }
 
@@ -26,6 +35,12 @@ Write-Host "  ======================================" -ForegroundColor Cyan
 Write-Host ""
 
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
+
+if (-not $isAdmin) {
+    Write-Status "Not running as Administrator — some optimizations will be skipped" "warn"
+    Write-Status "Right-click PowerShell and 'Run as Administrator' for full optimizations" "info"
+    Write-Host ""
+}
 
 # ── 1. POWER PLAN ────────────────────────────────────────────────────────────
 Write-Status "Checking power plan..." "info"
@@ -37,7 +52,6 @@ try {
         Write-Status "Power plan: Ultimate Performance (already set)" "ok"
     } else {
         if ($isAdmin) {
-            # Try to set High Performance
             $highPerfGuid = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
             $result = powercfg /setactive $highPerfGuid 2>&1
             if ($LASTEXITCODE -eq 0) {
@@ -56,14 +70,12 @@ try {
 # ── 2. DISABLE CPU IDLE STATES (Performance boost) ────────────────────────────
 Write-Status "Checking CPU idle states..." "info"
 try {
-    # Check current idle state settings
     $idleDisable = powercfg /query SCHEME_CURRENT SUB_PROCESSOR IDLEDISABLE 2>$null | Select-String "Current AC Power Setting Index"
     if ($idleDisable -match "0x00000001") {
         Write-Status "CPU idle states: Disabled (performance mode)" "ok"
     } else {
         if ($isAdmin) {
-            # Disable idle states for AC power
-            $result = powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR IDLEDISABLE 1 2>&1
+            powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR IDLEDISABLE 1 2>$null
             powercfg /setactive SCHEME_CURRENT 2>$null | Out-Null
             Write-Status "CPU idle states disabled for AC power" "ok"
         } else {
@@ -87,13 +99,15 @@ try {
 # ── 4. MEMORY OPTIMIZATION ──────────────────────────────────────────────────
 Write-Status "Checking memory configuration..." "info"
 try {
-    $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
-    $totalGB = [math]::Round($computerSystem.TotalPhysicalMemory / 1GB, 2)
-    Write-Status "Total physical memory: $totalGB GB" "info"
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
+    if ($os) {
+        $totalGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 2)
+        $freeGB = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
+        Write-Status "Total physical memory: $totalGB GB (Free: $freeGB GB)" "info"
 
-    # Check if large pages might be beneficial (typically for 32GB+ systems)
-    if ($totalGB -ge 32) {
-        Write-Status "Large memory system detected - consider enabling Large Pages in config" "info"
+        if ($totalGB -ge 32) {
+            Write-Status "Large memory system detected - consider enabling Large Pages in config" "info"
+        }
     }
 } catch {
     Write-Status "Could not query memory information: $_" "warn"
@@ -104,13 +118,16 @@ Write-Status "Checking for NVIDIA GPU..." "info"
 try {
     $nvidiaSmi = Get-Command "nvidia-smi" -ErrorAction SilentlyContinue
     if ($nvidiaSmi) {
-        $gpuInfo = nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader,nounits 2>$null
-        if ($gpuInfo) {
-            $parts = $gpuInfo.Split(",")
-            if ($parts.Count -ge 3) {
-                $gpuName = $parts[0].Trim()
-                $vramMB = [int]$parts[1].Trim()
-                Write-Status "NVIDIA GPU detected: $gpuName ($vramMB MB VRAM)" "ok"
+        $gpuOutput = nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader,nounits 2>$null
+        if ($gpuOutput) {
+            foreach ($line in $gpuOutput) {
+                $parts = $line.Split(",")
+                if ($parts.Count -ge 3) {
+                    $gpuName = $parts[0].Trim()
+                    $vramMB = [int]$parts[1].Trim()
+                    $freeMB = [int]$parts[2].Trim()
+                    Write-Status "NVIDIA GPU: $gpuName ($vramMB MB VRAM, $freeMB MB free)" "ok"
+                }
             }
         }
     } else {
@@ -124,13 +141,11 @@ try {
 Write-Status "Optimizing file system cache..." "info"
 try {
     if ($isAdmin) {
-        # Increase file system cache size for better I/O performance during model load
-        # This is a memory trade-off that benefits large file operations
         $result = fsutil behavior set memoryusage 2 2>&1
         if ($LASTEXITCODE -eq 0) {
             Write-Status "File system cache optimized for applications" "ok"
         } else {
-            Write-Status "Could not optimize file system cache" "warn"
+            Write-Status "Could not optimize file system cache (fsutil returned error)" "warn"
         }
     } else {
         Write-Status "Run as Administrator to optimize file system cache" "warn"
@@ -162,10 +177,9 @@ try {
 Write-Status "Optimizing network settings..." "info"
 try {
     if ($isAdmin) {
-        # Disable Nagle's algorithm for better TCP latency (affects local API responsiveness)
         $tcpParams = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -Name "TcpAckFrequency" -ErrorAction SilentlyContinue
         if (-not $tcpParams) {
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -Name "TcpAckFrequency" -Value 1 -Type DWord -Force | Out-Null
+            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -Name "TcpAckFrequency" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue | Out-Null
             Write-Status "TCP latency optimization applied" "ok"
         } else {
             Write-Status "TCP already optimized" "ok"
@@ -180,14 +194,12 @@ try {
 # ── 9. TEMP CLEANUP ───────────────────────────────────────────────────────────
 Write-Status "Cleaning temporary files..." "info"
 try {
-    $tempItems = 0
     $tempDirs = @($env:TEMP, "C:\Windows\Temp")
     foreach ($dir in $tempDirs) {
         if (Test-Path $dir) {
-            Get-ChildItem -Path $dir -File -Recurse -ErrorAction SilentlyContinue | 
-                Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) } | 
-                Remove-Item -Force -ErrorAction SilentlyContinue
-            $tempItems++
+            Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) } |
+                Remove-Item -Force -ErrorAction SilentlyContinue | Out-Null
         }
     }
     Write-Status "Temporary files older than 7 days cleaned" "ok"

@@ -45,7 +45,7 @@ except Exception:
 
 # Parse arguments
 MODEL=""
-PORT=0
+PORT=""
 GPU="vulkan"
 
 while [[ $# -gt 0 ]]; do

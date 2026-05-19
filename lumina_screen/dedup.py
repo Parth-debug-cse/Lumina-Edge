@@ -43,3 +43,12 @@ def mark_processed(file_hash, filename):
     data = _load()
     data[file_hash] = {"filename": filename}
     _save(data)
+
+
+def reset_processed():
+    """
+    DEV/TEST HELPER: Reset processed.json to empty dict without deleting the file.
+    Allows re-processing of all existing resumes for testing without restarting backend.
+    """
+    _save({})
+    print(f"[Lumina Screen] Reset processed.json — all resumes marked as unprocessed")

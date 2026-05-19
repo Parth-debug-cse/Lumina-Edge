@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Send, Square, Copy, Plus } from 'lucide-react'
+import { Send, Square, Copy, Plus, ExternalLink } from 'lucide-react'
 import { streamChat } from '../utils/api.js'
 
 function formatTime(date) {
@@ -110,6 +110,21 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
 
   const handleStop = () => setGenerating(false)
 
+  const handleOpenWebUI = useCallback(async () => {
+    try {
+      const res = await fetch('/api/open-chat', { method: 'POST' })
+      const data = await res.json()
+      if (data.error) {
+        toast?.(data.error, 'error')
+      } else {
+        window.open(data.url, '_blank')
+        if (data.hint) toast?.(data.hint, 'info')
+      }
+    } catch (err) {
+      toast?.(`Failed to open chat: ${err.message}`, 'error')
+    }
+  }, [toast])
+
   const copyMessage = (content) => {
     navigator.clipboard.writeText(content)
     toast?.('Copied to clipboard', 'success')
@@ -138,6 +153,9 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
         </div>
 
         <div className="chat-actions">
+          <button className="chat-action-btn" title="Open llama.cpp Web UI" onClick={handleOpenWebUI}>
+            <ExternalLink size={16} />
+          </button>
           <button className="chat-action-btn" title="New chat" onClick={() => setMessages([{ role: 'system', content: 'You are a helpful AI assistant running on Lumina Edge.' }])}>
             <Plus size={16} />
           </button>
