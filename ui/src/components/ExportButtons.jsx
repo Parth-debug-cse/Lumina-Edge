@@ -11,6 +11,7 @@ import { exportAsJSON, exportAsMarkdown } from '../utils/storage.js'
  *  - onSuccess: Optional callback after export
  */
 export default function ExportButtons({ data, label = 'Data', toast, onSuccess }) {
+  // Supports single objects and arrays — iterates and exports each item
   const handleExportJSON = () => {
     try {
       if (Array.isArray(data)) {
@@ -27,6 +28,7 @@ export default function ExportButtons({ data, label = 'Data', toast, onSuccess }
     }
   }
 
+  // Same structure as handleExportJSON but produces Markdown files instead
   const handleExportMarkdown = () => {
     try {
       if (Array.isArray(data)) {

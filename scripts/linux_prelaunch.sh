@@ -5,13 +5,14 @@
 # Safe to run without root — root-only optimizations are attempted but skipped
 # ==============================================================================
 
-set -e  # exit on error
+set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "[Lumina Edge] Linux system optimizer starting..."
 
 # ── 1. CPU GOVERNOR ────────────────────────────────────────────────────────────
-# Already 'performance' on this machine — verify and set if not
+# Check current governor; if not 'performance', try to set it
+# cpupower is the cleanest method; fallback is writing to each CPU's sysfs
 GOVERNOR=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "unknown")
 if [ "$GOVERNOR" != "performance" ]; then
     echo "[CPU] Setting performance governor..."
@@ -29,7 +30,7 @@ else
 fi
 
 # ── 2. CPU BOOST (Intel Turbo) ─────────────────────────────────────────────────
-# Ensure Intel Turbo Boost is enabled — some power managers disable it
+# Some BIOS/power managers disable turbo — force it on for max inference perf
 BOOST_FILE="/sys/devices/system/cpu/cpufreq/boost"
 if [ -f "$BOOST_FILE" ]; then
     BOOST=$(cat "$BOOST_FILE")
@@ -43,8 +44,7 @@ if [ -f "$BOOST_FILE" ]; then
 fi
 
 # ── 3. TRANSPARENT HUGE PAGES ──────────────────────────────────────────────────
-# THP allows the kernel to use 2MB pages for large allocations (like model weights)
-# This reduces TLB misses during inference — measurable speedup on llama.cpp
+# THP allows 2MB pages instead of 4KB — reduces TLB misses during inference
 THP_FILE="/sys/kernel/mm/transparent_hugepage/enabled"
 if [ -f "$THP_FILE" ]; then
     THP=$(cat "$THP_FILE")
@@ -55,8 +55,8 @@ if [ -f "$THP_FILE" ]; then
             echo "[MEM] ✓ Transparent huge pages set to madvise" || \
             echo "[MEM] ⚠ Could not set THP (sudo required)"
     fi
-    
-    # Also set defrag to defer — reduces latency spikes during allocation
+
+    # Defrag policy: defer+madvise avoids allocation-time latency spikes
     THP_DEFRAG="/sys/kernel/mm/transparent_hugepage/defrag"
     if [ -f "$THP_DEFRAG" ]; then
         echo "defer+madvise" | sudo -n tee "$THP_DEFRAG" &>/dev/null || true
@@ -64,9 +64,9 @@ if [ -f "$THP_FILE" ]; then
 fi
 
 # ── 4. SWAPPINESS ──────────────────────────────────────────────────────────────
-# Default swappiness=60 means kernel starts swapping when RAM is 40% used
-# For inference workloads we want to keep model weights in RAM as long as possible
-# Setting to 10 means kernel only swaps under extreme memory pressure
+# Default swappiness=60 means kernel starts swapping at 40% RAM usage
+# For inference, we want model weights in RAM as long as possible
+# swappiness=10 means kernel only swaps under extreme memory pressure
 CURRENT_SWAPPINESS=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo "60")
 if [ "$CURRENT_SWAPPINESS" -gt "10" ]; then
     echo "10" | sudo -n tee /proc/sys/vm/swappiness &>/dev/null && \
@@ -77,20 +77,15 @@ else
 fi
 
 # ── 5. DIRTY PAGE WRITEBACK ────────────────────────────────────────────────────
-# Reduce dirty page writeback frequency to avoid I/O contention during inference
-# This matters during model load when the kernel is reading large files
+# Reduce writeback frequency to avoid I/O contention during model load
 echo "500" | sudo -n tee /proc/sys/vm/dirty_writeback_centisecs &>/dev/null || true
 echo "20" | sudo -n tee /proc/sys/vm/dirty_ratio &>/dev/null || true
 
 # ── 6. INTEL iGPU: ENABLE VULKAN ENVIRONMENT ───────────────────────────────────
-# Set Mesa/ANV Vulkan environment variables for Intel Iris Plus
-# These are read by llama-server when it initializes Vulkan
+# Mesa/ANV Vulkan env vars for Intel Iris Plus — read by llama-server at init
 export MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE=1
 export ANV_QUEUE_THREAD_DISABLE=0
-# No AMD Vulkan env vars here — linux_prelaunch.sh targets Intel iGPU/Vulkan
-# AMD users should use AMD-specific scripts or set RADV flags themselves
 
-# Check if Vulkan is available for Intel
 if command -v vulkaninfo &>/dev/null; then
     gpu_name=$(vulkaninfo 2>/dev/null | grep "deviceName" | head -1 | awk -F'=' '{print $2}' | xargs) || gpu_name="unknown"
     if [ -n "$gpu_name" ]; then
@@ -103,8 +98,7 @@ else
 fi
 
 # ── 7. FILE DESCRIPTOR LIMITS ──────────────────────────────────────────────────
-# llama-server opens many file descriptors during model load
-# Default limit (1024) can be hit with large models
+# llama-server opens many FDs during model load — the default 1024 can be too low
 CURRENT_NOFILE=$(ulimit -n)
 if [ "$CURRENT_NOFILE" -lt "65536" ]; then
     ulimit -n 65536 2>/dev/null && \
@@ -116,17 +110,13 @@ fi
 
 # ── 8. MEMORY COMPACTION ───────────────────────────────────────────────────────
 # Compact memory before model load to create contiguous pages for mmap
-# This reduces model load time significantly on fragmented systems
 echo "1" | sudo -n tee /proc/sys/vm/compact_memory &>/dev/null && \
     echo "[MEM] ✓ Memory compacted" || \
     echo "[MEM] ⚠ Memory compaction skipped (sudo required)"
 
 # ── 9. SCHEDULER TUNING ────────────────────────────────────────────────────────
-# Set scheduler to prioritize throughput over latency for inference workloads
-# SCHED_BATCH is ideal for CPU-bound compute tasks like llama.cpp
 if command -v chrt &>/dev/null; then
     echo "[SYS] ✓ chrt available for process scheduling"
-    # Note: actual chrt is applied per-process in api-server.js, not here
 fi
 
 echo ""

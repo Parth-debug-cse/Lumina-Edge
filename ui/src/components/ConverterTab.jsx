@@ -3,6 +3,7 @@ import { getConvertibleModels, convertModel, getConversionStatus, saveConfig, qu
 import ProgressBar from './ProgressBar.jsx'
 
 export default function ConverterTab({ systemInfo, apiLoadModel, toast, autoConvertOnDownload, setAutoConvertOnDownload }) {
+  // File list and conversion lifecycle state
   const [files, setFiles] = useState([])
   const [loading, setLoading] = useState(false)
   const [selectedFile, setSelectedFile] = useState(null)
@@ -11,8 +12,8 @@ export default function ConverterTab({ systemInfo, apiLoadModel, toast, autoConv
   const [outputFile, setOutputFile] = useState('')
   const [converting, setConverting] = useState(false)
   const [savingConfig, setSavingConfig] = useState(false)
-  const [selectedBits, setSelectedBits] = useState(4)
-  const intervalRef = useRef(null)
+  const [selectedBits, setSelectedBits] = useState(4)  // Quantization bit depth (Mac only)
+  const intervalRef = useRef(null)  // Holds the progress-polling interval
 
   const isMac = systemInfo?.isMacAppleSilicon
   // Mac: Quantize safetensors to different bit levels using mlx-lm
@@ -20,6 +21,7 @@ export default function ConverterTab({ systemInfo, apiLoadModel, toast, autoConv
   const targetLabel = isMac ? 'Quantized' : 'GGUF'
   const targetFormat = isMac ? 'safetensors' : 'gguf'
 
+  // Fetch convertible model list on mount; cleanup interval on unmount
   useEffect(() => {
     refreshFileList()
     return () => {
@@ -41,6 +43,7 @@ export default function ConverterTab({ systemInfo, apiLoadModel, toast, autoConv
     }
   }
 
+  // Poll conversion/quantization progress every 1s until complete or error
   const startPolling = (filename, isQuantize = false) => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current)
@@ -132,6 +135,7 @@ export default function ConverterTab({ systemInfo, apiLoadModel, toast, autoConv
     }
   }
 
+  // Load the converted model into the inference engine via router
   const handleLoad = async () => {
     if (!outputFile) {
       toast('No converted model output available yet', 'info')

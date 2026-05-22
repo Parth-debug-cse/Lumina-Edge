@@ -3,34 +3,38 @@
 // All sessions stored in localStorage for browser-based UI
 // ============================================================
 
+// localStorage keys for session persistence
 const SESSIONS_KEY = 'lumina_sessions'
 const ACTIVE_KEY   = 'lumina_active_session'
 
+// Returns all saved sessions, or [] if none / corrupt
 export function getSessions() {
   try {
     return JSON.parse(localStorage.getItem(SESSIONS_KEY) || '[]')
   } catch {
-    return []
+    return []  // Config is corrupted — reset to empty
   }
 }
 
+// Upsert: updates existing session or inserts at front
 export function saveSession(session) {
   try {
     const raw = localStorage.getItem(SESSIONS_KEY);
     const sessions = raw ? JSON.parse(raw) : [];
     const idx = sessions.findIndex(s => s.id === session.id);
     if (idx >= 0) {
-      sessions[idx] = session;
+      sessions[idx] = session;  // Update existing in-place
     } else {
-      sessions.unshift(session);
+      sessions.unshift(session);  // New sessions pushed to front
     }
     localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
   } catch {
-    // If parse fails, just store this session alone
+    // localStorage full or parse failed — store this session alone
     localStorage.setItem(SESSIONS_KEY, JSON.stringify([session]));
   }
 }
 
+// Removes session by ID — silent no-op if not found
 export function deleteSession(id) {
   const sessions = getSessions().filter(s => s.id !== id)
   localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions))
@@ -44,6 +48,7 @@ export function setActiveSessionId(id) {
   localStorage.setItem(ACTIVE_KEY, id)
 }
 
+// Creates a new session object with a timestamp-based unique ID
 export function createSession(model = 'local') {
   return {
     id: `session_${Date.now()}`,
@@ -55,6 +60,7 @@ export function createSession(model = 'local') {
   }
 }
 
+// Derives a short title from the first user message (first 7 words)
 export function generateTitle(firstUserMsg) {
   if (!firstUserMsg) return 'New Conversation'
   const words = firstUserMsg.trim().split(/\s+/).slice(0, 7).join(' ')
@@ -84,13 +90,14 @@ export function exportAsMarkdown(session) {
   triggerDownload(blob, `lumina-${session.id}.md`)
 }
 
+// Creates a temp <a>, clicks it, then removes it — avoids DOM leaks
 function triggerDownload(blob, filename) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url; a.download = filename
   document.body.appendChild(a); a.click()
   document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  URL.revokeObjectURL(url)  // Release the object URL from memory
 }
 
 // ============================================================
@@ -160,6 +167,7 @@ export const DEFAULT_CONFIG = {
   api_port: 8090,
 }
 
+// Merge stored config with defaults — undefined keys fall back to DEFAULT_CONFIG
 export function getLocalConfig() {
   try {
     const stored = JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}')

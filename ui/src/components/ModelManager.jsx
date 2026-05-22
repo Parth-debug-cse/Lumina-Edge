@@ -7,7 +7,7 @@ import {
 import { downloadModel, optimizeSystem, loadModel as apiLoadModel, fetchHFFiles, getSystemInfo, fetchConfig, saveConfig, getRouterStatus, unloadAllModels, getDownloadStatus } from '../utils/api.js'
 import ConverterTab from './ConverterTab.jsx'
 
-// Helper to detect model format
+// Helper to detect model format by file extension or directory type
 function getModelFormat(modelName, isDirectory = false) {
   if (isDirectory) {
     // For MLX model directories, check if they contain model.safetensors
@@ -97,18 +97,19 @@ const ALL_TAG_FILTERS = ['all', 'tiny', 'fast', 'fastest', 'balanced', 'quality'
 export default function ModelManager({ localModels = [], toast, onModelsRefresh }) {
   const [tab, setTab]           = useState('local')   // 'local' | 'download' | 'custom' | 'converter'
   const [tagFilter, setTagFilter] = useState('all')
-  const [tagsMap, setTagsMap]   = useState(getModelTags)
+  const [tagsMap, setTagsMap]   = useState(getModelTags)  // { filename: [tag1, tag2] }
   const [addingTag, setAddingTag] = useState({})      // { filename: true }
   const [tagInput, setTagInput] = useState({})
   const [systemInfo, setSystemInfo] = useState({ isMacAppleSilicon: false })
   const [hfLink, setHfLink] = useState('')
-  const [hfFiles, setHfFiles] = useState(null)
+  const [hfFiles, setHfFiles] = useState(null)          // File list from HuggingFace repo
   const [hfLoading, setHfLoading] = useState(false)
   const [selectedFile, setSelectedFile] = useState(null)
   const [autoConvertOnDownload, setAutoConvertOnDownload] = useState(true)
-  const [routerStatus, setRouterStatus] = useState(null)
+  const [routerStatus, setRouterStatus] = useState(null)  // Polled every 2s for loaded model info
   const [unloading, setUnloading] = useState(false)
 
+  // Fetch system info and persisted auto-convert setting on mount
   useEffect(() => {
     getSystemInfo().then(setSystemInfo)
     fetchConfig().then(config => {
@@ -118,7 +119,7 @@ export default function ModelManager({ localModels = [], toast, onModelsRefresh 
     })
   }, [])
 
-  // Poll router status to show currently loaded model
+  // Poll router status every 2s to show currently loaded models
   useEffect(() => {
     const refreshRouterStatus = async () => {
       try {

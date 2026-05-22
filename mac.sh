@@ -47,6 +47,8 @@ log()    { echo "[Lumina] $*" | tee -a "$RUNDIR/startup.log"; }
 log_ok() { echo "[Lumina] ✓ $*" | tee -a "$RUNDIR/startup.log"; }
 log_err(){ echo "[Lumina] ✗ $*" | tee -a "$RUNDIR/startup.log" >&2; }
 
+# Reads a key from config.json with a fallback default
+# Supports dot-notation keys like "startup.default_model"
 get_config() {
     local key="$1"
     local default="$2"
@@ -75,6 +77,8 @@ resolve_ports() {
     export LUMINA_API_PORT="$API_PORT"
 }
 
+# Kills all tracked Lumina processes + any orphan MLX/node/vite processes
+# Uses ps -p instead of /proc (macOS doesn't have /proc)
 stop_existing() {
     log "Stopping any existing Lumina processes..."
     if [[ -f "$PID_FILE" ]]; then
@@ -113,6 +117,7 @@ optimize_system() {
         fi
         if [[ -x "$MACOS_SCRIPTS/purge_and_prep.sh" ]]; then
             log "  Purging disk cache and memory..."
+            # sudo purge drops filesystem caches — needs admin, may fail without passwordless sudo
             sudo bash "$MACOS_SCRIPTS/purge_and_prep.sh" >> "$RUNDIR/optimizer.log" 2>&1 || \
                 log "  purge_and_prep.sh skipped (sudo required or not available)"
         fi
@@ -125,11 +130,15 @@ optimize_system() {
         "$PYTHON" "$OPTIMIZER" optimize >> "$RUNDIR/optimizer.log" 2>&1 || true
     fi
 
+    # macOS-specific: disable sudden motion sensor (not a real SMS, it's a Mac Pro thing)
     sudo pmset -a sms 0 2>/dev/null || true
+    # Force memory compressor into mode 4 (aggressive decompression when under memory pressure)
     sudo sysctl -w vm.compressor_mode=4 2>/dev/null || true
     renice -n -10 $$ 2>/dev/null || true
+    # Prevent App Nap from throttling background processes
     defaults write NSGlobalDomain NSAppSleepDisabled -bool YES 2>/dev/null || true
 
+    # MLX/Metal env vars for best GPU throughput
     export MTL_HUD_ENABLED=0
     export PYTORCH_ENABLE_MPS_FALLBACK=0
     export MLX_USE_DEFAULT_STREAM=1
@@ -247,6 +256,7 @@ print_summary() {
     echo "============================================================"
     echo ""
 
+    # macOS uses `open` instead of xdg-open
     open "http://localhost:$UI_PORT" 2>/dev/null || true
 }
 

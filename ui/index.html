@@ -1,16 +1,21 @@
+<!-- Lumina Edge UI — root HTML entry -->
 <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Meta: viewport + SEO description -->
     <meta name="description" content="Lumina Edge — Local LLM Interface. Run powerful AI models entirely on your hardware." />
     <title>Lumina Edge | Local LLM Interface</title>
+    <!-- Google Fonts: Inter (UI sans) + JetBrains Mono (code) — preconnect for perf -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   </head>
   <body>
+    <!-- React mount point — App renders into this div -->
     <div id="root"></div>
+    <!-- ESM entry — Vite resolves and bundles /src/main.jsx -->
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

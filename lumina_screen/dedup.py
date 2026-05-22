@@ -9,6 +9,7 @@ PROCESSED_FILE = os.path.join(
 
 
 def _load():
+    """Load processed dict from disk. Returns empty dict if no state file yet."""
     if not os.path.exists(PROCESSED_FILE):
         return {}
     with open(PROCESSED_FILE, "r") as f:
@@ -16,6 +17,7 @@ def _load():
 
 
 def _save(data):
+    """Persist processed dict to disk. Overwrites the entire file each call."""
     with open(PROCESSED_FILE, "w") as f:
         json.dump(data, f, indent=2)
 

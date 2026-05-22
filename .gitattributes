@@ -1,5 +1,8 @@
+# Normalise line endings across contributors with different OSes
 * text=auto
+# Shell scripts MUST stay LF even on Windows — bash won't run with CRLF
 *.sh text eol=lf
+# PowerShell needs CRLF or it may fail to execute
 *.ps1 text eol=crlf
 *.bat text eol=crlf
 *.cjs text eol=lf

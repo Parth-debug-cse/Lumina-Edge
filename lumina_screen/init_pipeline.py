@@ -12,24 +12,24 @@ import os
 
 
 def check_pip_package(package_name, import_name=None):
-    """Check if a pip package is installed."""
+    """Check if a pip package is installed by trying to import it."""
     import_name = import_name or package_name
     try:
         __import__(import_name)
         return True
     except ImportError:
-        return False
+        return False  # Not installed or not importable
 
 
 def install_requirements():
-    """Install all dependencies from requirements.txt."""
+    """Install all dependencies from requirements.txt via pip."""
     req_file = os.path.join(os.path.dirname(__file__), "requirements.txt")
     print(f"[Lumina Screen Init] Installing dependencies from {req_file}...")
     result = subprocess.run(
         [sys.executable, "-m", "pip", "install", "-r", req_file, "-q"],
         capture_output=True,
         text=True,
-    )
+    )  # -q = quiet; stderr captured but printed on failure
     if result.returncode != 0:
         print(f"[Lumina Screen Init] ERROR: pip install failed")
         print(result.stderr)
@@ -48,14 +48,14 @@ def verify_dependencies():
         "torch": "torch",
     }
 
-    missing = []
+    missing = []  # Collect missing packages for batch install
     for pip_name, import_name in required.items():
         if not check_pip_package(pip_name, import_name):
             missing.append(pip_name)
 
     if missing:
         print(f"[Lumina Screen Init] Missing dependencies: {', '.join(missing)}")
-        return install_requirements()
+        return install_requirements()  # Auto-install missing deps, then return True/False
 
     print("[Lumina Screen Init] ✓ All dependencies available")
     return True
@@ -86,7 +86,7 @@ def verify_jd():
 
     jd_path = config.get("jd_path", "./jd.txt")
     if not os.path.isabs(jd_path):
-        jd_path = os.path.join(os.path.dirname(__file__), jd_path)
+        jd_path = os.path.join(os.path.dirname(__file__), jd_path)  # Resolve relative to script dir
 
     if not os.path.exists(jd_path):
         print(f"[Lumina Screen Init] ERROR: JD file not found at {jd_path}")
@@ -97,7 +97,7 @@ def verify_jd():
 
     if not jd_text.strip():
         print(f"[Lumina Screen Init] ERROR: JD file is empty at {jd_path}")
-        return False
+        return False  # Empty JD → zero-vector embedding → meaningless match scores
 
     print(f"[Lumina Screen Init] ✓ JD file valid ({len(jd_text)} chars)")
     return True
@@ -111,7 +111,7 @@ def verify_resume_folder():
 
     resume_folder = config.get("resume_folder", "./resumes")
     if not os.path.isabs(resume_folder):
-        resume_folder = os.path.join(os.path.dirname(__file__), resume_folder)
+        resume_folder = os.path.join(os.path.dirname(__file__), resume_folder)  # Resolve relative to script
 
     # SECURITY: Resolve to canonical path (resolves symlinks, .., etc.)
     resolved = os.path.realpath(os.path.abspath(resume_folder))
@@ -124,7 +124,7 @@ def verify_resume_folder():
 
     if not os.path.exists(resolved):
         try:
-            os.makedirs(resolved, exist_ok=True)
+            os.makedirs(resolved, exist_ok=True)  # Auto-create folder if it doesn't exist
             print(f"[Lumina Screen Init] ✓ Created resume folder at {resolved}")
         except OSError as e:
             print(f"[Lumina Screen Init] ERROR: Cannot create resume folder: {e}")
@@ -152,7 +152,7 @@ def main():
         ("Resume folder", verify_resume_folder),
     ]
 
-    failed = []
+    failed = []  # Accumulate failures so user sees all issues at once
     for name, check_func in checks:
         try:
             if not check_func():

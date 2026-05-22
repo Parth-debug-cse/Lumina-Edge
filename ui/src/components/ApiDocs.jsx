@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { Copy, Play } from 'lucide-react'
 
+// Language tabs for the quick-start code snippet display
 const LANGUAGES = ['Python', 'JavaScript', 'cURL', 'PowerShell']
 
+// Each function returns a code snippet string for its language
 function py() {
   return 'from openai import OpenAI\n\n' +
     'client = OpenAI(\n' +
@@ -74,8 +76,9 @@ const SNIPPETS = {
 
 export default function ApiDocs({ toast }) {
   const [lang, setLang] = useState('Python')
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState(false)  // 2s reset timer for copy feedback
 
+  // Copy current language's snippet to clipboard via browser API
   const handleCopy = () => {
     navigator.clipboard.writeText(SNIPPETS[lang])
     setCopied(true)
@@ -83,6 +86,7 @@ export default function ApiDocs({ toast }) {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  // Placeholder — could fire a real health-check request
   const handleTest = () => {
     toast?.('Testing API connection...', 'info')
   }

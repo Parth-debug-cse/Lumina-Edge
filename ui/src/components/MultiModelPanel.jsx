@@ -14,6 +14,7 @@ export default function MultiModelPanel({ toast }) {
     }
   }
 
+  // Poll router every 3s to keep model status up to date
   useEffect(() => {
     refreshStatus()
     const interval = setInterval(refreshStatus, 3000)

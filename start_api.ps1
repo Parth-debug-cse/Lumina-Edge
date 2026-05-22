@@ -16,6 +16,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $Root = $ScriptDir
 Set-Location $Root
 
+# Reads a config.json value with dot-notation support and a fallback default
 function Get-ConfigValue {
     param([string]$Key, $Default)
     try {
@@ -39,11 +40,13 @@ $ConfigModel = Get-ConfigValue "model" ""
 $StartupDefault = Get-ConfigValue "startup.default_model" ""
 $ConfigPort = Get-ConfigValue "backend_port" 8091
 
+# Priority: explicit CLI arg > startup.default_model > model
 $FinalModel = if ($Model) { $Model } else {
     if ($StartupDefault) { $StartupDefault } else { $ConfigModel }
 }
 $FinalPort = if ($Port -gt 0) { $Port } else { $ConfigPort }
 
+# Auto-detect a .gguf if none configured
 if (-not $FinalModel) {
     $gguf = Get-ChildItem (Join-Path $Root "models\*.gguf") -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($gguf) {
@@ -118,7 +121,7 @@ if (-not (Test-Path $LLAMA_SERVER)) {
 $Arguments = @(
     "-m", $ModelPath,
     "--port", $FinalPort,
-    "--host", "127.0.0.1",
+    "--host", "127.0.0.1",  # Only listen on localhost — no external exposure
     "--ctx-size", $CtxSize,
     "--n-gpu-layers", $NGpuLayers,
     "--batch-size", $BatchSize,
@@ -131,9 +134,10 @@ $Arguments = @(
     "--min-p", $MinP,
     "--cache-type-k", $KvCacheTypeK,
     "--cache-type-v", $KvCacheTypeV,
-    "--jinja"
+    "--jinja"  # Jinja2 template support for chat templates
 )
 
+# Only add boolean flags when true (llama-server fails on empty flag args)
 if ($FlashAttn -eq $true) { $Arguments += "--flash-attn" }
 if ($NoMmap -eq $true) { $Arguments += "--no-mmap" }
 if ($ContBatching -eq $true) { $Arguments += "--cont-batching" }
@@ -145,6 +149,7 @@ Write-Host ""
 
 $proc = Start-Process -FilePath $LLAMA_SERVER -ArgumentList $Arguments -NoNewWindow -PassThru
 
+# Wait up to 30 seconds for the model endpoint to respond
 $Ready = $false
 for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Seconds 1

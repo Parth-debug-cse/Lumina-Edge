@@ -39,6 +39,7 @@ except Exception:
 
 GPU="vulkan"
 
+# Auto-detect macOS for MLX backend
 if [[ "$(uname -s)" == "Darwin" ]]; then
     GPU="mlx"
 fi
@@ -71,6 +72,7 @@ if [[ -z "$MODEL" ]]; then
 fi
 if [[ -z "$MODEL" ]]; then
     if [[ "$(uname -s)" == "Darwin" ]]; then
+        # macOS model dirs are directories with safetensors or .mlx inside
         MODEL="$(find models -maxdepth 2 -name '*.safetensors' -o -name '*.mlx' 2>/dev/null | head -1 | xargs -I{} dirname {})"
     else
         MODEL="$(find models -maxdepth 1 -name '*.gguf' 2>/dev/null | head -1)"
@@ -111,20 +113,19 @@ KV_QUANT=$(get_config kv_quant 'q4_0')
 KV_CACHE_TYPE_K=$(get_config kv_cache_type_k 'q4_0')
 KV_CACHE_TYPE_V=$(get_config kv_cache_type_v 'q4_0')
 
-# Convert boolean to on/off for flash-attn
+# llama.cpp flags need --flag or nothing — convert boolean to on/off
 if [[ "$FLASH_ATTN" == "true" ]]; then
     FLASH_ATTN_FLAG="--flash-attn"
 else
     FLASH_ATTN_FLAG=""
 fi
 
-# Convert boolean flags
 MLOCK_FLAG=""
 if [[ "$USE_MLOCK" == "true" ]]; then
     MLOCK_FLAG="--mlock"
 fi
 
-# MoE offloading flags (llama.cpp only)
+# MoE offloading: if model is MoE, use per-tensor override or CPU fallback
 MOE_FLAGS=""
 if [[ "$MOE_MODEL" == "true" ]]; then
     if [[ -n "$MOE_OVERRIDE" && "$MOE_OVERRIDE" != "" ]]; then
@@ -134,13 +135,11 @@ if [[ "$MOE_MODEL" == "true" ]]; then
     fi
 fi
 
-# no-mmap flag (llama.cpp only)
 NO_MMAP_FLAG=""
 if [[ "$NO_MMAP" == "true" ]]; then
     NO_MMAP_FLAG="--no-mmap"
 fi
 
-# KV cache quantization (llama.cpp only) — read from config with q4_0 default
 KV_QUANT_FLAGS="--cache-type-k $KV_CACHE_TYPE_K --cache-type-v $KV_CACHE_TYPE_V"
 
 CONT_BATCH_FLAGS=""

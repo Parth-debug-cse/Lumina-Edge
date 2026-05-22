@@ -1,3 +1,5 @@
+# Launches Open WebUI as a Docker container that connects to Lumina's backend
+# Open WebUI is the chat frontend (not Lumina's own UI) — it proxies through to our API
 version: '3.8'
 
 services:
@@ -7,10 +9,12 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # Point Open WebUI at Lumina's OpenAI-compatible endpoint
       - OLLAMA_BASE_URL=http://host.docker.internal:8090/v1
       - WEBUI_SECRET_KEY=your-secret-key-change-me
       - OLLAMA_API_BASE_URL=http://host.docker.internal:8090
       - API_BASE_URL=http://host.docker.internal:8090/v1
+    # host.docker.internal lets the container reach services on the host machine
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

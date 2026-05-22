@@ -18,6 +18,7 @@ from lumina_agent.agent import run_agent, stop_agent
 from lumina_agent.config import LUMINA_API_BASE
 
 
+# Check Lumina is up before starting the agent — tries /health first, then /models
 def check_lumina_running():
     import requests
     try:
@@ -31,6 +32,7 @@ def check_lumina_running():
             return False
 
 
+# CLI usage: python3 -m lumina_agent.run "your goal here"
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         print(json.dumps({"error": "Goal required as first argument"}), file=sys.stderr)
@@ -42,7 +44,7 @@ if __name__ == '__main__':
         sys.exit(1)
 
     goal = sys.argv[1]
-    run_id = "cli-" + uuid.uuid4().hex[:8]
+    run_id = "cli-" + uuid.uuid4().hex[:8]  # short unique ID for this agent run
 
     def on_update(step):
         print(json.dumps(step), flush=True)

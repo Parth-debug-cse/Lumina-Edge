@@ -92,7 +92,7 @@ export default function DiagnosticsPanel({ localModels = [], toast }) {
   // -- Resource monitoring state --
   const [resources, setResources] = useState(null)
   const [resLoading, setResLoading] = useState(false)
-  const [autoRefresh, setAutoRefresh] = useState(false)
+  const [autoRefresh, setAutoRefresh] = useState(false)  // Toggle 2s polling
 
   // -- Inference profiling state --
   const [profileResult, setProfileResult] = useState(null)
@@ -110,9 +110,9 @@ export default function DiagnosticsPanel({ localModels = [], toast }) {
   const [memKvQuant, setMemKvQuant] = useState('q8_0')
   const [memResult, setMemResult] = useState(null)
   const [memLoading, setMemLoading] = useState(false)
-  const [ctxRecResult, setCtxRecResult] = useState(null)
+  const [ctxRecResult, setCtxRecResult] = useState(null)       // Recommended context size result
   const [ctxRecLoading, setCtxRecLoading] = useState(false)
-  const [kvCompareResult, setKvCompareResult] = useState(null)
+  const [kvCompareResult, setKvCompareResult] = useState(null)  // KV cache quant comparison
   const [kvCompareLoading, setKvCompareLoading] = useState(false)
 
   // -- GPU benchmark state --
@@ -120,7 +120,7 @@ export default function DiagnosticsPanel({ localModels = [], toast }) {
   const [benchLoading, setBenchLoading] = useState(false)
   const [benchResult, setBenchResult] = useState(null)
 
-  // -- Auto-refresh resources --
+  // -- Auto-refresh resources: 2s interval when checkbox is on
   useEffect(() => {
     if (!autoRefresh) return
     const interval = setInterval(() => fetchResources(), 2000)

@@ -10,12 +10,13 @@ function formatDate(iso) {
 }
 
 export default function SessionHistory({ toast }) {
-  const [sessions, setSessions] = useState(getSessions)
+  const [sessions, setSessions] = useState(getSessions)  // Load from localStorage on mount
   const [search, setSearch]     = useState('')
   const [selected, setSelected] = useState(null)
 
   const refresh = () => setSessions(getSessions())
 
+  // Filter by title or message content (case-insensitive)
   const filtered = sessions.filter(s =>
     !search || s.title.toLowerCase().includes(search.toLowerCase()) ||
     s.messages.some(m => m.content.toLowerCase().includes(search.toLowerCase()))

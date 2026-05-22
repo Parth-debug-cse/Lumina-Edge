@@ -5,6 +5,7 @@ import subprocess
 import urllib.request
 
 
+# 30s timeout to prevent hung processes; truncate output at 1500 chars for context budget
 def run_shell(cmd):
     try:
         r = subprocess.run(
@@ -23,6 +24,7 @@ def run_shell(cmd):
         return f"ERROR: {e}"
 
 
+# Read first 4000 chars; errors="replace" prevents crash on binary data
 def read_file(path):
     try:
         with open(path, "r", errors="replace") as f:
@@ -36,6 +38,7 @@ def read_file(path):
         return f"ERROR: {e}"
 
 
+# Auto-create parent directories so the LLM doesn't need to mkdir separately
 def write_file(path, content):
     try:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -46,6 +49,7 @@ def write_file(path, content):
         return f"ERROR: {e}"
 
 
+# Fetch up to 2000 bytes — enough for config files, API responses, not full downloads
 def http_get(url):
     try:
         with urllib.request.urlopen(url, timeout=10) as r:
@@ -58,6 +62,8 @@ def report(summary):
     return f"DONE: {summary}"
 
 
+# Dispatch table: lambdas normalize varying arg key names the LLM might hallucinate
+# e.g. "command" vs "cmd", "path" vs "filename" vs "file"
 TOOLS = {
     "run_shell": lambda args: run_shell(
         args.get("command", args.get("cmd", str(args)))
@@ -76,6 +82,7 @@ TOOLS = {
 }
 
 
+# Router: looks up tool in TOOLS dict, returns error string on failure (never throws)
 def execute_tool(name, args):
     if name not in TOOLS:
         return f"ERROR: unknown tool '{name}'. Valid tools: {', '.join(sorted(TOOLS.keys()))}"

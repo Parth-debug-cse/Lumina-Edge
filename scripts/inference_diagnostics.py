@@ -17,7 +17,7 @@ from pathlib import Path
 
 
 def check_server_health(port=8000):
-    """Check if a model server is responding."""
+    """Check if a model server is responding on /health."""
     try:
         req = urllib.request.Request(f"http://127.0.0.1:{port}/health", method='GET')
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -30,9 +30,10 @@ def profile_inference(port=8000, prompt="Hello, how are you?", max_tokens=64,
                       temperature=0.7, num_runs=3):
     """
     Run inference profiling: measure time-to-first-token, tokens/sec, total latency.
+    Returns average metrics across multiple runs.
     """
     results = []
-    
+
     for run in range(num_runs):
         payload = {
             "model": "local",
@@ -41,7 +42,7 @@ def profile_inference(port=8000, prompt="Hello, how are you?", max_tokens=64,
             "temperature": temperature,
             "stream": False
         }
-        
+
         data = json.dumps(payload).encode('utf-8')
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/v1/chat/completions",
@@ -49,7 +50,7 @@ def profile_inference(port=8000, prompt="Hello, how are you?", max_tokens=64,
             headers={'Content-Type': 'application/json'},
             method='POST'
         )
-        
+
         start = time.perf_counter()
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
@@ -59,18 +60,16 @@ def profile_inference(port=8000, prompt="Hello, how are you?", max_tokens=64,
             return {"error": f"HTTP {e.code}: {e.read().decode()}"}
         except Exception as e:
             return {"error": str(e)}
-        
+
         total_time = end - start
-        
-        # Extract token info
+
         usage = result.get('usage', {})
         prompt_tokens = usage.get('prompt_tokens', 0)
         completion_tokens = usage.get('completion_tokens', 0)
-        
-        # Calculate metrics
+
         tokens_per_sec = completion_tokens / total_time if total_time > 0 else 0
         time_per_token = total_time / completion_tokens if completion_tokens > 0 else 0
-        
+
         run_result = {
             "run": run + 1,
             "total_time_s": round(total_time, 3),
@@ -81,12 +80,11 @@ def profile_inference(port=8000, prompt="Hello, how are you?", max_tokens=64,
         }
         results.append(run_result)
         print(f"  Run {run + 1}: {completion_tokens} tokens in {total_time:.3f}s = {tokens_per_sec:.1f} tok/s")
-    
-    # Aggregate
+
     avg_tps = sum(r['tokens_per_sec'] for r in results) / len(results)
     avg_latency = sum(r['total_time_s'] for r in results) / len(results)
     avg_mspt = sum(r['ms_per_token'] for r in results) / len(results)
-    
+
     summary = {
         "port": port,
         "prompt": prompt[:80],
@@ -97,12 +95,12 @@ def profile_inference(port=8000, prompt="Hello, how are you?", max_tokens=64,
         "avg_ms_per_token": round(avg_mspt, 2),
         "runs": results
     }
-    
+
     return summary
 
 
 def _diagnose_linux():
-    """Linux-specific system diagnostics."""
+    """Linux-specific system diagnostics: CPU, memory, swappiness, THP, power profile."""
     findings = []
 
     # CPU info from /proc/cpuinfo
@@ -181,7 +179,6 @@ def _diagnose_macos():
     """macOS-specific system diagnostics using sysctl."""
     findings = []
 
-    # CPU info
     try:
         model_name = subprocess.check_output(['sysctl', '-n', 'machdep.cpu.brand_string'], text=True).strip()
         cores = int(subprocess.check_output(['sysctl', '-n', 'hw.physicalcpu'], text=True).strip())
@@ -189,7 +186,6 @@ def _diagnose_macos():
     except Exception as e:
         findings.append({"check": "cpu", "note": f"Could not read CPU info: {e}"})
 
-    # Memory
     try:
         mem_bytes = int(subprocess.check_output(['sysctl', '-n', 'hw.memsize'], text=True).strip())
         mem_total_gb = mem_bytes / (1024**3)
@@ -230,14 +226,12 @@ def _diagnose_windows():
     """Windows-specific system diagnostics using WMI/psutil."""
     findings = []
 
-    # Try WMI first, fallback to psutil
     try:
         import wmi
         c = wmi.WMI()
         processor = c.Win32_Processor()[0]
         findings.append({"check": "cpu", "model": processor.Name, "cores": processor.NumberOfCores})
     except Exception:
-        # Fallback to environment variable or basic info
         try:
             import psutil
             cores = psutil.cpu_count(logical=False)
@@ -245,7 +239,6 @@ def _diagnose_windows():
         except ImportError:
             findings.append({"check": "cpu", "model": platform.processor(), "cores": os.cpu_count()})
 
-    # Memory
     try:
         import psutil
         vm = psutil.virtual_memory()
@@ -258,7 +251,7 @@ def _diagnose_windows():
     except ImportError:
         findings.append({"check": "memory", "note": "Install psutil for memory info: pip install psutil"})
 
-    # Power plan check (simplified)
+    # Power plan check
     try:
         result = subprocess.run(['powercfg', '/getactivescheme'], capture_output=True, text=True, timeout=3)
         if 'high performance' in result.stdout.lower() or 'ultimate performance' in result.stdout.lower():
@@ -272,10 +265,9 @@ def _diagnose_windows():
 
 
 def diagnose_system():
-    """Check system-level factors that affect inference speed."""
+    """Check system-level factors that affect inference speed. Platform-aware."""
     findings = []
 
-    # Platform-specific diagnostics
     system = platform.system()
     if system == "Linux":
         findings.extend(_diagnose_linux())
@@ -286,7 +278,7 @@ def diagnose_system():
     else:
         findings.append({"check": "platform", "note": f"Unsupported platform: {system}"})
 
-    # Cross-platform GPU checks
+    # Cross-platform GPU availability check
     for cmd_name, cmd in [('nvidia', 'nvidia-smi'), ('vulkan', 'vulkaninfo')]:
         try:
             result = subprocess.run([cmd], capture_output=True, text=True, timeout=5)
@@ -303,10 +295,9 @@ def diagnose_system():
 
 
 def generate_recommendations(diag_results, profile_results):
-    """Generate actionable recommendations based on diagnostics."""
+    """Generate actionable recommendations from diagnostics + profiling data."""
     recs = []
-    
-    # System-level
+
     for d in diag_results:
         if d.get('check') == 'swappiness' and d.get('warning'):
             recs.append({"priority": "high", "action": "Reduce swappiness", "command": "sudo sysctl -w vm.swappiness=1", "reason": d['warning']})
@@ -314,8 +305,7 @@ def generate_recommendations(diag_results, profile_results):
             recs.append({"priority": "high", "action": "Set performance power profile", "command": "powerprofilesctl set performance", "reason": d['warning']})
         if d.get('check') == 'memory' and d.get('usage_pct', 0) > 85:
             recs.append({"priority": "medium", "action": "Free memory before inference", "command": "Run optimize_system.py", "reason": f"Memory usage at {d['usage_pct']}%"})
-    
-    # Inference-level
+
     if profile_results and not profile_results.get('error'):
         avg_tps = profile_results.get('avg_tokens_per_sec', 0)
         if avg_tps < 5:
@@ -325,46 +315,43 @@ def generate_recommendations(diag_results, profile_results):
             recs.append({"priority": "medium", "action": "Enable flash attention", "config_key": "flash_attn", "reason": "Flash attention can speed up long-context inference."})
             recs.append({"priority": "medium", "action": "Increase batch size", "config_key": "batch_size", "reason": "Larger batch sizes (e.g. 512 or 1024) improve prompt processing speed."})
             recs.append({"priority": "medium", "action": "Enable continuous batching", "config_key": "cont_batching", "reason": "Allows parallel request handling."})
-    
+
     return recs
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Inference Diagnostics & Profiler')
     subparsers = parser.add_subparsers(dest='command')
-    
-    # Profile command
+
     profile_parser = subparsers.add_parser('profile', help='Profile inference speed')
     profile_parser.add_argument('--port', type=int, default=8000, help='Model server port')
     profile_parser.add_argument('--prompt', default="Write a short poem about the sea.", help='Test prompt')
     profile_parser.add_argument('--max-tokens', type=int, default=64, help='Max tokens to generate')
     profile_parser.add_argument('--runs', type=int, default=3, help='Number of profiling runs')
-    
-    # Diagnose command
+
     diag_parser = subparsers.add_parser('diagnose', help='Diagnose system-level issues')
-    
-    # Full report
+
     report_parser = subparsers.add_parser('report', help='Full diagnostics + profiling report')
     report_parser.add_argument('--port', type=int, default=8000, help='Model server port')
     report_parser.add_argument('--prompt', type=str, default="Hello, how are you?", help='Prompt for inference profiling')
     report_parser.add_argument('--max-tokens', type=int, default=64, help='Max tokens for profiling')
     report_parser.add_argument('--runs', type=int, default=3, help='Number of profiling runs')
-    
+
     args = parser.parse_args()
-    
+
     if args.command == 'profile':
         if not check_server_health(args.port):
             print(f"Error: No model server responding on port {args.port}")
             sys.exit(1)
-        
+
         print(f"\n🔬 Profiling inference on port {args.port}...")
         print(f"   Prompt: {args.prompt[:60]}...")
         print(f"   Max tokens: {args.max_tokens}, Runs: {args.runs}\n")
-        
+
         result = profile_inference(args.port, args.prompt, args.max_tokens, runs=args.runs)
         print(f"\n📊 Results:")
         print(json.dumps(result, indent=2))
-    
+
     elif args.command == 'diagnose':
         print("\n🔍 Running system diagnostics...\n")
         results = diagnose_system()
@@ -372,19 +359,17 @@ if __name__ == '__main__':
             status = "⚠" if r.get('warning') else "✓" if r.get('ok') else "ℹ"
             print(f"  {status} {r['check']}: {json.dumps({k: v for k, v in r.items() if k != 'check'})}")
         print()
-    
+
     elif args.command == 'report':
         print("\n📋 Full Inference Diagnostics Report\n")
         print("=" * 50)
-        
-        # System diagnostics
+
         print("\n🔍 System Diagnostics:")
         diag = diagnose_system()
         for r in diag:
             status = "⚠" if r.get('warning') else "✓" if r.get('ok') else "ℹ"
             print(f"  {status} {r['check']}: {json.dumps({k: v for k, v in r.items() if k != 'check'})}")
-        
-        # Inference profiling
+
         if check_server_health(args.port):
             print(f"\n🔬 Inference Profiling (port {args.port}):")
             profile = profile_inference(args.port, prompt=args.prompt, max_tokens=args.max_tokens, num_runs=args.runs)
@@ -396,8 +381,7 @@ if __name__ == '__main__':
         else:
             print(f"\n⚠ No model server on port {args.port}, skipping profiling")
             profile = None
-        
-        # Recommendations
+
         print(f"\n💡 Recommendations:")
         recs = generate_recommendations(diag, profile)
         if recs:
@@ -410,8 +394,8 @@ if __name__ == '__main__':
                 print(f"     Reason: {rec['reason']}")
         else:
             print("  No issues detected. System looks good!")
-        
+
         print("\n" + "=" * 50)
-    
+
     else:
         parser.print_help()

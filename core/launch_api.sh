@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
-# Helper function to read from config.json
+# Reads a config.json value with dot-notation support and fallback default
 get_config() {
     local key="$1"
     local default="$2"
@@ -43,7 +43,6 @@ except Exception:
     fi
 }
 
-# Parse arguments
 MODEL=""
 PORT=""
 GPU="vulkan"
@@ -57,7 +56,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Read configuration from config.json
+# Read config values with defaults
 CONFIG_MODEL=$(get_config "model" "")
 CONFIG_PORT=$(get_config "api_port" 8090)
 CTX_SIZE=$(get_config "ctx_size" 16384)
@@ -78,11 +77,10 @@ KV_QUANT=$(get_config "kv_quant" "q4_0")
 KV_CACHE_TYPE_K=$(get_config "kv_cache_type_k" "q4_0")
 KV_CACHE_TYPE_V=$(get_config "kv_cache_type_v" "q4_0")
 
-# Use command-line parameters or fall back to config
 FINAL_MODEL="${MODEL:-$CONFIG_MODEL}"
 FINAL_PORT="${PORT:-$CONFIG_PORT}"
 
-# Determine if macOS (for MLX)
+# Auto-detect macOS for MLX backend
 IS_MAC=false
 if [[ "$(uname -s)" == "Darwin" ]]; then
     IS_MAC=true
@@ -93,13 +91,12 @@ echo "========================================"
 echo "Lumina Edge API Server Launcher"
 echo "========================================"
 
-# Validate model
 if [[ -z "$FINAL_MODEL" ]]; then
     echo "ERROR: No model specified. Add 'model' field to config.json or use --model parameter"
     exit 1
 fi
 
-# Avoid double-prefix: if FINAL_MODEL already starts with models/ use it as-is
+# Avoid double-prefixing models/ if already present in path
 if [[ "$FINAL_MODEL" == models/* || "$FINAL_MODEL" == ./* || "$FINAL_MODEL" == /* || "$FINAL_MODEL" == ..* ]]; then
     MODEL_PATH="$FINAL_MODEL"
 else
@@ -124,7 +121,7 @@ echo "GPU Backend: $GPU"
 echo "Context Size: $CTX_SIZE"
 echo "GPU Layers: $N_GPU_LAYERS"
 
-# Check if port is already in use
+# Check if port is already in use (ss preferred, netstat fallback)
 if command -v ss &>/dev/null; then
     if ss -tlnp 2>/dev/null | grep -q ":$FINAL_PORT "; then
         echo "WARNING: Port $FINAL_PORT is already in use!"
@@ -136,11 +133,10 @@ elif command -v netstat &>/dev/null; then
     fi
 fi
 
-# Ensure logs directory exists
 mkdir -p logs
 LOG_FILE="logs/api_server.log"
 
-# Build llama-server command arguments
+# Build llama-server arguments
 ARGS=(
     "-m" "$MODEL_PATH"
     "--port" "$FINAL_PORT"
@@ -156,7 +152,7 @@ ARGS=(
     "--threads-http" "$HTTP_THREADS"
 )
 
-# Add boolean flags
+# Conditionally add boolean flags
 if [[ "$FLASH_ATTN" == "true" ]]; then
     ARGS+=("--flash-attn")
 fi
@@ -170,12 +166,10 @@ if [[ "$CONT_BATCHING" == "true" ]]; then
     ARGS+=("--cont-batching")
 fi
 
-# Add KV quantization flags from config (default q4_0)
 ARGS+=("--cache-type-k" "$KV_CACHE_TYPE_K" "--cache-type-v" "$KV_CACHE_TYPE_V")
 
-# Find llama-server binary
+# macOS path: use MLX backend instead of llama-server
 if [[ "$IS_MAC" == "true" ]]; then
-    # On macOS, use MLX backend instead
     echo ""
     echo "Starting MLX backend (macOS)..."
     echo "Log file: $LOG_FILE"
@@ -185,17 +179,16 @@ if [[ "$IS_MAC" == "true" ]]; then
     MLX_PID=$!
     echo "MLX backend PID: $MLX_PID"
 
+    # BUG SH-2 FIX: Register a trap so the MLX backend is killed on script exit to avoid orphaned processes
+    trap 'kill $MLX_PID 2>/dev/null || true' EXIT INT TERM
+
     MAX_WAIT=30
     WAITED=0
     READY=false
-    # BUG SH-2 FIX: Register a trap so the MLX backend is killed on script exit
-    # (including on error) and does not become an orphaned process.
-    trap 'kill $MLX_PID 2>/dev/null || true' EXIT INT TERM
     while [[ $WAITED -lt $MAX_WAIT ]]; do
         sleep 1
-        # BUG SH-1 FIX: Use WAITED=$((WAITED + 1)) instead of ((WAITED++)).
-        # With set -o pipefail, bash exits when ((WAITED++)) evaluates to 0
-        # (first iteration), causing the poll loop to exit after 1 second.
+        # BUG SH-1 FIX: Use WAITED=$((WAITED + 1)) instead of ((WAITED++))
+        # ((WAITED++)) returns 0 on first iteration — causes set -o pipefail to exit
         WAITED=$((WAITED + 1))
         if ! kill -0 $MLX_PID 2>/dev/null; then
             echo "ERROR: MLX backend exited unexpectedly!"
@@ -225,6 +218,7 @@ if [[ "$IS_MAC" == "true" ]]; then
         exit 1
     fi
 else
+    # Linux path: use llama-server binary
     BINARY_PATH="bin/llama-server"
     if [[ ! -x "$BINARY_PATH" ]]; then
         echo "ERROR: llama-server not found or not executable at $BINARY_PATH"
@@ -241,39 +235,31 @@ else
     echo "========================================"
     echo ""
 
-    # Start the server
     "$BINARY_PATH" "${ARGS[@]}" >> "$LOG_FILE" 2>&1 &
     SERVER_PID=$!
 
     echo "Server started with PID: $SERVER_PID"
     echo "Waiting for server to initialize..."
 
-    # Wait for server to be ready
     MAX_WAIT=30
     WAITED=0
     READY=false
 
     while [[ $WAITED -lt $MAX_WAIT ]]; do
         sleep 1
-        # BUG SH-1 FIX: Use WAITED=$((WAITED + 1)) instead of ((WAITED++)).
-        # With set -o pipefail, bash exits when ((WAITED++)) evaluates to 0
-        # (first iteration), causing the poll loop to exit after 1 second.
         WAITED=$((WAITED + 1))
 
-        # Check if process is still running
         if ! kill -0 $SERVER_PID 2>/dev/null; then
             echo "ERROR: Server process exited unexpectedly!"
             echo "Check log: $LOG_FILE"
             exit 1
         fi
 
-        # Try to connect to health endpoint
         if curl -s "http://127.0.0.1:$FINAL_PORT/health" >/dev/null 2>&1; then
             READY=true
             break
         fi
 
-        # Show progress
         if [[ $((WAITED % 5)) -eq 0 ]]; then
             echo "  ... waiting ($WAITED/$MAX_WAIT seconds)"
         fi
@@ -290,7 +276,6 @@ else
         echo ""
         echo "Press Ctrl+C to stop the server"
 
-        # Wait for user to press Ctrl+C
         wait $SERVER_PID
     else
         echo "ERROR: Server failed to start within $MAX_WAIT seconds."

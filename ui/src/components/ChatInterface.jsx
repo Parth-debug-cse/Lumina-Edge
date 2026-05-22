@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { Send, Square, Copy, Plus, ExternalLink } from 'lucide-react'
 import { streamChat } from '../utils/api.js'
 
+// Relative timestamp formatting (e.g. "3m ago")
 function formatTime(date) {
   const d = date || new Date()
   const now = new Date()
@@ -12,6 +13,7 @@ function formatTime(date) {
   return d.toLocaleDateString()
 }
 
+// Rough token counter: ~4 chars per token (OpenAI-compatible heuristic)
 function countTokens(text) {
   return Math.ceil(text.length / 4)
 }
@@ -23,9 +25,10 @@ const EMOJI_PREFIX = {
 }
 
 export default function ChatInterface({ serverModel, routerStatus, localModels, toast }) {
+  // Messages array with system prompt; each msg: { role, content, timestamp, streaming?, tokens? }
   const [messages, setMessages] = useState([{ role: 'system', content: 'You are a helpful AI assistant running on Lumina Edge.' }])
   const [input, setInput] = useState('')
-  const [generating, setGenerating] = useState(false)
+  const [generating, setGenerating] = useState(false)  // True while SSE stream is active
   const [selectedModel, setSelectedModel] = useState('')
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
@@ -40,6 +43,7 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  // Core send handler: appends user msg, starts SSE stream, streams chunks into last assistant msg
   const handleSend = useCallback(async () => {
     const text = input.trim()
     if (!text || generating) return
@@ -49,12 +53,14 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
     setInput('')
     setGenerating(true)
 
+    // Insert placeholder assistant msg — streamChat fills it incrementally
     const assistantMsg = { role: 'assistant', content: '', timestamp: new Date(), streaming: true }
     setMessages(prev => [...prev, assistantMsg])
 
     let fullContent = ''
 
     try {
+      // streamChat handles the fetch + ReadableStream reader internally
       await streamChat({
         messages: [...messages, userMsg].filter(m => m.role !== 'system' || m.content).map(m => ({
           role: m.role,
@@ -63,6 +69,7 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
         model: selectedModel || undefined,
         onChunk: (chunk) => {
           fullContent += chunk
+          // Mutate last message in-place via setter spread to avoid stale closures
           setMessages(prev => {
             const updated = [...prev]
             const last = updated[updated.length - 1]
@@ -74,6 +81,7 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
         }
       })
 
+      // Stream finished — mark as complete with token count
       setMessages(prev => {
         const updated = [...prev]
         const last = updated[updated.length - 1]

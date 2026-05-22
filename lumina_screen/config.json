@@ -1,8 +1,19 @@
 {
+  "_comment_resume_folder": "Path to watch for new PDF resumes (relative to lumina_screen/ dir)",
   "resume_folder": "./resumes",
+
+  "_comment_poll_interval": "How often (ms) to scan the folder for new files",
   "poll_interval_ms": 300,
+
+  "_comment_threshold": "Cosine-similarity threshold (0–1). Higher = stricter matching. Default 0.25 is generous",
   "match_threshold": 0.25,
+
+  "_comment_chroma": "Where ChromaDB persists embeddings and collection data",
   "chroma_store_path": "./chroma_store",
+
+  "_comment_jd_path": "Path to the Job Description text file used for scoring",
   "jd_path": "./jd.txt",
+
+  "_comment_page_hit_path": "Append-only log of shortlisted candidates (parsed by ui/api-server.js for display)",
   "page_hit_path": "./page_hit.txt"
 }

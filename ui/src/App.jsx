@@ -11,6 +11,7 @@ import ApiDocs from './components/ApiDocs.jsx'
 import SystemMonitor from './components/SystemMonitor.jsx'
 import { checkServerHealth } from './utils/api.js'
 
+// 9 nav items — each maps to a panel component with a lucide icon
 const NAV = [
   { id: 'chat',       icon: MessageSquare,    label: 'Chat' },
   { id: 'models',     icon: Cpu,              label: 'Models' },
@@ -23,6 +24,7 @@ const NAV = [
   { id: 'settings',   icon: SlidersHorizontal,label: 'Settings' },
 ]
 
+// Panel header metadata — title + subtitle for each nav item
 const PANEL_TITLES = {
   chat:        { title: 'Chat',              sub: 'Chat with your local model' },
   models:      { title: 'Model Manager',     sub: 'Browse, tag, and download GGUF models' },
@@ -35,7 +37,9 @@ const PANEL_TITLES = {
   settings:    { title: 'Settings',          sub: 'Configure hyperparameters and server options' },
 }
 
+// Incremental counter for unique toast IDs — avoids React key collisions
 let _toastId = 0
+// Custom hook: auto-dismiss toasts after 3.5s
 function useToasts() {
   const [toasts, setToasts] = useState([])
   const addToast = useCallback((message, type = 'info', duration = 3500) => {
@@ -52,25 +56,29 @@ export default function App() {
   const [serverModel, setServerModel]   = useState('')
   const [localModels, setLocalModels]   = useState([])
   const [showMonitor, setShowMonitor]   = useState(false)
+  // Persist sidebar collapse state to localStorage — survives page reload
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem('lumina-sidebar-collapsed') === 'true' } catch { return false }
   })
   const [chatUrl, setChatUrl] = useState('http://localhost:8000')
   const { toasts, addToast } = useToasts()
 
+  // Open llama.cpp / OpenWebUI in the system browser via POST /api/open-chat
   const openChat = useCallback(async () => {
     try {
       const res = await fetch('/api/open-chat', { method: 'POST' })
       const data = await res.json()
       if (data.url) setChatUrl(data.url)
-    } catch {}
+    } catch {}  // Silently fail — default URL fallback
   }, [])
 
+  // Selecting Chat nav item triggers external browser launch
   const handleNavClick = useCallback((id) => {
     if (id === 'chat') openChat()
     setActivePanel(id)
   }, [openChat])
 
+  // Fetch the list of available model files from the API
   const fetchLocalModels = useCallback(async () => {
     try {
       const res = await fetch('/api/models/list')
@@ -78,15 +86,17 @@ export default function App() {
         const data = await res.json()
         setLocalModels(data)
       }
-    } catch {}
+    } catch {}  // Silently fail — models list stays empty
   }, [])
 
+  // Check API gateway + llama-server reachability
   const pollHealth = useCallback(async () => {
     const result = await checkServerHealth()
     setServerStatus(result.status)
     if (result.model) setServerModel(result.model)
   }, [])
 
+  // Health polling: rapid every 1s for 10 attempts (startup), then every 8s once server is up
   useEffect(() => {
     pollHealth()
     fetchLocalModels()
@@ -108,12 +118,14 @@ export default function App() {
     };
   }, [pollHealth, fetchLocalModels]);
 
+  // Sync sidebar collapse state to localStorage on change
   useEffect(() => {
     try { localStorage.setItem('lumina-sidebar-collapsed', String(sidebarCollapsed)) } catch {}
   }, [sidebarCollapsed]);
 
   const pt = PANEL_TITLES[activePanel] || PANEL_TITLES.chat
 
+  // Route activePanel ID to the correct panel component
   const renderPanel = () => {
     switch (activePanel) {
       case 'chat':        return (

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Check if Lumina Edge API server is running"""
+"""Check if Lumina Edge API server is running on the configured port."""
 
 import json
 import os
 import sys
 
+
 def check_server():
+    """Ping the /health endpoint of a running Lumina API server. Returns True if alive."""
     try:
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.json')
         config_path = os.path.normpath(config_path)
@@ -45,6 +47,7 @@ def check_server():
         print(f"✗ Connection timed out (server may be starting)")
         return False
     except ImportError:
+        # Fallback to urllib if requests is not installed
         import urllib.request
         import urllib.error
         try:
@@ -61,6 +64,7 @@ def check_server():
         except Exception as e:
             print(f"✗ Error: {e}")
             return False
+
 
 if __name__ == "__main__":
     success = check_server()

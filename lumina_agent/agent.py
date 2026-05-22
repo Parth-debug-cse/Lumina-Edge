@@ -9,9 +9,11 @@ from lumina_agent.prompts import SYSTEM_PROMPT
 from lumina_agent.config import LUMINA_API_BASE, LUMINA_MODEL, MAX_ITERATIONS, REQUEST_TIMEOUT
 
 VALID_TOOLS = {"run_shell", "read_file", "write_file", "http_get", "report"}
+# Map of run_id -> threading.Event for stopping agents in parallel
 _stop_flags: dict[str, threading.Event] = {}
 
 
+# Calls the API with temperature=0 (deterministic) and 1024 max_tokens; non-streaming
 def call_llm(messages: list) -> str:
     url = f"{LUMINA_API_BASE}/chat/completions"
     payload = {
@@ -50,8 +52,8 @@ def parse_tool_call(raw: str) -> dict:
     if first_brace > 0:
         cleaned = cleaned[first_brace:]
 
-    # Extract exactly the outermost JSON object using brace matching.
-    # This correctly handles nested objects and ignores anything appended after.
+    # Brace-matching to extract exactly the outermost JSON object.
+    # Handles nested objects correctly and ignores trailing text after the closing brace.
     depth = 0
     start = None
     end = None
@@ -70,7 +72,7 @@ def parse_tool_call(raw: str) -> dict:
         raise ValueError(f"No complete JSON object found | Raw: {raw[:200]}")
     cleaned = cleaned[start:end]
 
-    # Remove trailing commas before } or ] (common model mistake)
+    # LLMs often add trailing commas before } or ] — strip them so json.loads doesn't choke
     cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)
 
     try:
@@ -84,7 +86,7 @@ def parse_tool_call(raw: str) -> dict:
     if "args" not in parsed:
         parsed["args"] = {}
 
-    # Remap hallucinated/legacy tool names to valid ones
+    # Remap 13+ hallucinated/legacy tool names to valid ones (e.g. netstat->run_shell, done->report)
     tool_remaps = {
         "netstat":       ("run_shell",  {"command": "ss -tlnp"}),
         "port_status":   ("run_shell",  {"command": "ss -tlnp"}),
@@ -130,14 +132,15 @@ def _build_messages(goal: str, steps: list, extra_hint: str = "") -> list:
     ]
 
 
+# Main agent loop: tracks parse_failures (max 3), invalid_tool_strikes (max 3), duplicate_count (max 3)
 def run_agent(goal: str, run_id: str, on_update=None) -> str:
     stop_event = threading.Event()
     _stop_flags[run_id] = stop_event
     steps = []
-    parse_failures = 0
-    invalid_tool_strikes = 0
+    parse_failures = 0      # consecutive JSON parse errors
+    invalid_tool_strikes = 0  # consecutive unknown tool calls
     last_call = None
-    duplicate_count = 0
+    duplicate_count = 0     # consecutive identical tool calls
 
     try:
         for iteration in range(1, MAX_ITERATIONS + 1):
@@ -197,7 +200,7 @@ def run_agent(goal: str, run_id: str, on_update=None) -> str:
 
             invalid_tool_strikes = 0
 
-            # Duplicate detection — re-prompt with a corrective hint instead of silently skipping
+            # Duplicate detection: if the LLM calls the same tool+args, re-prompt with a hint
             this_call = (tool_name, json.dumps(tool_args, sort_keys=True))
             if this_call == last_call:
                 duplicate_count += 1
@@ -225,7 +228,7 @@ def run_agent(goal: str, run_id: str, on_update=None) -> str:
             # Execute the tool
             tool_result = execute_tool(tool_name, tool_args)
 
-            # Truncate long results in history to keep context manageable
+            # Truncate results to 800 chars per step to keep context small for edge LLMs
             display_result = tool_result
             if len(display_result) > 800:
                 display_result = display_result[:800] + "\n...[truncated]"
@@ -251,6 +254,7 @@ def run_agent(goal: str, run_id: str, on_update=None) -> str:
         _stop_flags.pop(run_id, None)
 
 
+# Signal a running agent to stop — checked each iteration via stop_event.is_set()
 def stop_agent(run_id: str):
     if run_id in _stop_flags:
         _stop_flags[run_id].set()

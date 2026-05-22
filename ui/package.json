@@ -1,10 +1,12 @@
 {
+  "//-top": "Lumina Edge UI — Node deps & scripts. Vite 5 + React 18 + Express 5 + Electron shell.",
   "name": "lumina-edge-ui",
   "version": "1.2.0",
   "private": true,
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
+    "//-scripts": "concurrently launches API server, Vite dev server (5173), and Electron window",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
@@ -13,6 +15,7 @@
     "start": "concurrently \"npm run api\" \"npm run dev\" \"wait-on http://localhost:5173 && npm run electron:start\""
   },
   "dependencies": {
+    "//-ui": "Radix UI primitives (dropdown/slider/tooltip), lucide icons, zustand state, shiki syntax highlight",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-slider": "^1.3.6",
     "@radix-ui/react-tooltip": "^1.2.8",
@@ -34,6 +37,7 @@
     "zustand": "^5.0.13"
   },
   "devDependencies": {
+    "//-dev": "Build tooling: Vite 5 with React plugin, Electron 30, concurrently for parallel proc mgmt",
     "@vitejs/plugin-react": "^4.3.1",
     "concurrently": "^8.2.2",
     "electron": "^30.0.0",

@@ -52,18 +52,15 @@ def purge_inactive_memory():
 
 def stop_memory_hungry_services():
     """
-    Temporarily disable macOS services that compete for unified memory.
-    These are re-enabled on next login or can be manually re-enabled.
+    Temporarily stop macOS services that compete for unified memory.
+    These are re-enabled on next login or via resume_services().
     """
     services_to_disable = [
-        # Spotlight indexing — major memory consumer during inference
         ('mds_stores', 'Spotlight indexing'),
-        # Photos analysis — background ML that competes with Metal
         ('com.apple.photoanalysisd', 'Photos analysis'),
-        # Siri suggestions background processing
         ('com.apple.suggestd', 'Siri suggestions'),
     ]
-    
+
     stopped = []
     for service, desc in services_to_disable:
         try:
@@ -76,12 +73,12 @@ def stop_memory_hungry_services():
                 print(f'✓ Paused: {desc}')
         except Exception:
             pass
-    
+
     return stopped
 
 
 def resume_services(stopped_services):
-    """Resume previously stopped services."""
+    """Resume previously stopped background services via SIGCONT."""
     for service in stopped_services:
         try:
             subprocess.run(
@@ -95,18 +92,15 @@ def resume_services(stopped_services):
 def set_high_performance_power_mode():
     """
     Enable macOS High Performance power mode.
-    Keeps Apple Silicon P-cores at maximum frequency during inference.
-    Significant impact on sustained throughput on MacBook Pro/Max.
+    Keeps Apple Silicon P-cores at max frequency for sustained throughput.
     Requires sudo — silently skips if not available.
     """
     strategies = [
-        # macOS 12+ High Performance mode
         ['sudo', '-n', 'pmset', '-a', 'highpowermode', '1'],
-        # Disable CPU throttling for current session
         ['sudo', '-n', 'pmset', '-a', 'powernap', '0'],
         ['sudo', '-n', 'pmset', '-a', 'tcpkeepalive', '0'],
     ]
-    
+
     any_success = False
     for cmd in strategies:
         try:
@@ -115,53 +109,43 @@ def set_high_performance_power_mode():
                 any_success = True
         except Exception:
             pass
-    
+
     if any_success:
         print('✓ High performance power mode enabled')
     else:
         print('⚠ Power mode unchanged (sudo required — run with sudo for max performance)')
-    
+
     return any_success
 
 
 def set_metal_performance_env():
     """
     Set Metal and system environment variables for maximum inference performance.
-    These affect the current process and all children (including mlx_lm).
+    Affects current process and all children (mlx_lm).
     """
     metal_vars = {
-        # Disable Metal API validation (huge perf win, safe for production)
+        # Disabling these gives huge perf wins — they're debug tools, not needed in prod
         'MTL_DEBUG_LAYER': '0',
         'MTL_SHADER_VALIDATION': '0',
         'MTL_HUD_ENABLED': '0',
-        # Disable Metal command buffer debug overhead  
         'METAL_DEVICE_WRAPPER_TYPE': '0',
-        # Maximize Metal memory allocation aggressiveness
         'MTL_LARGE_BUFFERS': '1',
-        # Disable HuggingFace telemetry
         'HF_HUB_DISABLE_TELEMETRY': '1',
         'HF_HUB_DISABLE_PROGRESS_BARS': '1',
-        # Disable tokenizer parallelism warning
         'TOKENIZERS_PARALLELISM': 'false',
-        # Prevent Python from writing bytecode during inference
         'PYTHONDONTWRITEBYTECODE': '1',
     }
-    
+
     for key, val in metal_vars.items():
         os.environ[key] = val
-    
+
     print(f'✓ Metal performance environment configured ({len(metal_vars)} variables)')
     return metal_vars
 
 
 def set_performance_mode():
-    """
-    Set macOS to prioritize performance over efficiency.
-    Uses powermetrics-compatible settings where available.
-    """
+    """Set macOS to prioritize performance over efficiency (App Nap, nice)."""
     try:
-        # Disable App Nap for current process and children
-        # App Nap throttles background processes — we don't want this
         subprocess.run(
             ['defaults', 'write', 'NSGlobalDomain', 'NSAppSleepDisabled', '-bool', 'YES'],
             capture_output=True, timeout=3
@@ -169,17 +153,16 @@ def set_performance_mode():
         print('✓ App Nap disabled for session')
     except Exception:
         pass
-    
+
     try:
-        # Set process priority to high
-        os.nice(-10)  # Requires elevated privileges, will fail silently if not available
+        os.nice(-10)
         print('✓ Process priority elevated')
     except Exception:
         pass
 
 
 def get_metal_device_info():
-    """Get Metal GPU info for display."""
+    """Get Metal GPU info for display via system_profiler."""
     try:
         result = subprocess.run(
             ['system_profiler', 'SPDisplaysDataType', '-json'],
@@ -211,11 +194,12 @@ def get_total_memory_gb():
 def optimize_for_mlx():
     """
     Main optimization function. Returns dict with optimization results.
+    Steps: Metal env -> power mode -> stop services -> purge if needed -> performance mode
     """
     if not is_apple_silicon():
         print('Not Apple Silicon — skipping MLX optimization')
         return {'skipped': True}
-    
+
     results = {
         'platform': 'apple_silicon',
         'memory_pressure_before': get_memory_pressure(),
@@ -223,53 +207,47 @@ def optimize_for_mlx():
         'total_memory_gb': get_total_memory_gb(),
         'actions': []
     }
-    
+
     print(f'\n[Lumina Edge MLX Optimizer]')
     print(f'Device: {results["metal_device"]}')
     print(f'Total Memory: {results["total_memory_gb"]:.1f}GB unified')
     print(f'Memory Pressure: {results["memory_pressure_before"]}')
     print()
-    
-    # 1. Metal environment variables
+
     set_metal_performance_env()
     results['actions'].append('metal_env_set')
-    
-    # 2. High performance power mode
+
     power_set = set_high_performance_power_mode()
     if power_set:
         results['actions'].append('high_performance_power_mode')
-    
-    # 3. Stop competing background services
+
     stopped = stop_memory_hungry_services()
     if stopped:
         results['actions'].append(f'paused_services')
         results['stopped_services'] = stopped
-    
-    # 4. Purge memory if under pressure
+
     if results['memory_pressure_before'] in ('warning', 'critical'):
         purged = purge_inactive_memory()
         if purged:
             results['actions'].append('memory_purged')
-    
-    # 5. Set performance mode (App Nap, nice)
+
     set_performance_mode()
     results['actions'].append('performance_mode_set')
-    
+
     results['memory_pressure_after'] = get_memory_pressure()
-    
+
     print(f'\nMemory Pressure After: {results["memory_pressure_after"]}')
     print(f'✓ MLX optimization complete — {len(results["actions"])} optimizations applied\n')
-    
+
     return results
 
 
 def cleanup_after_inference(stopped_services=None):
-    """Call this when model is unloaded to restore system state."""
+    """Restore system state after inference completes."""
     if stopped_services:
         resume_services(stopped_services)
         print('✓ Background services resumed')
-    
-    # Re-enable App Nap
+
     try:
         subprocess.run(
             ['defaults', 'delete', 'NSGlobalDomain', 'NSAppSleepDisabled'],
@@ -285,7 +263,7 @@ if __name__ == '__main__':
     parser.add_argument('command', choices=['optimize', 'cleanup'], default='optimize', nargs='?')
     parser.add_argument('--json', action='store_true', help='Output as JSON')
     args = parser.parse_args()
-    
+
     if args.command == 'optimize':
         results = optimize_for_mlx()
         if args.json:

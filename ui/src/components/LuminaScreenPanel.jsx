@@ -12,14 +12,15 @@ const SECTION_STYLE = {
 const POLL_INTERVAL_OPTIONS = [250, 300, 400]
 
 export default function LuminaScreenPanel({ toast }) {
+  // Pipeline lifecycle: idle → running → stopped
   const [pipelineStatus, setPipelineStatus] = useState('idle')
-  const [hits, setHits] = useState([])
+  const [hits, setHits] = useState([])  // Shortlisted candidates from backend
   const [config, setConfig] = useState({
     resume_folder: './resumes',
     poll_interval_ms: 300,
     match_threshold: 0.25,
   })
-  const [jdText, setJdText] = useState('')
+  const [jdText, setJdText] = useState('')  // Job description text for matching
   const [saving, setSaving] = useState(false)
   const [rescanning, setRescanning] = useState(false)
   const [clearingHits, setClearingHits] = useState(false)
@@ -28,6 +29,7 @@ export default function LuminaScreenPanel({ toast }) {
   const [connectionError, setConnectionError] = useState(null)
   const pollingRef = useRef(null)
 
+  // Initial status fetch; cleanup interval on unmount
   useEffect(() => {
     fetchStatus(true)
     return () => {
@@ -35,6 +37,7 @@ export default function LuminaScreenPanel({ toast }) {
     }
   }, [])
 
+  // Auto-poll every 2s only while pipeline is running
   useEffect(() => {
     if (pollingRef.current) clearInterval(pollingRef.current)
     if (pipelineStatus === 'running') {

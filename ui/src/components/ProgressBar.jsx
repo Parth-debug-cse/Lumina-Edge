@@ -1,3 +1,4 @@
+// Reusable progress bar with clamped 0-100 range and optional status text
 export default function ProgressBar({ percent = 0, status = '' }) {
   const value = Math.max(0, Math.min(100, Number(percent) || 0))
   return (

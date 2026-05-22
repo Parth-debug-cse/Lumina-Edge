@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Lumina Aider agent — calls the local Lumina Edge API with a tool-use prompt.
-
 Usage: python3 scripts/lumina_agent.py [prompt text]
 """
+
 import json
 import os
 import shlex
@@ -22,6 +22,7 @@ _CONFIG_PATH = os.path.normpath(os.path.join(_ROOT, "config.json"))
 
 
 def _load_config():
+    """Load config.json — returns empty dict on failure (non-fatal)."""
     try:
         with open(_CONFIG_PATH) as f:
             return json.load(f)
@@ -37,9 +38,9 @@ def _get_api_url(config):
 
 def _get_model_name(config, api_url):
     """
-    BUG LA-1 FIX: Do not hardcode the model name. Query /v1/models to discover
-    what the running server actually has loaded, then use that name.
-    Falls back to the 'model' key in config.json, then to a sensible default.
+    BUG LA-1 FIX: Query /v1/models to discover what the server has loaded.
+    Falls back to config.json 'model' key, then a sensible default.
+    Old code hardcoded the model name which broke when the loaded model changed.
     """
     models_url = api_url.replace("/v1/chat/completions", "/v1/models")
     try:
@@ -54,12 +55,10 @@ def _get_model_name(config, api_url):
     except Exception as e:
         print(f"WARNING: Could not query /v1/models: {e}")
 
-    # Fall back to config.json 'model' key
     config_model = config.get("model", "").strip()
     if config_model:
         return config_model
 
-    # Last-resort default
     return "lumina-model"
 
 
@@ -70,7 +69,6 @@ user_input = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "run git status"
 
 print(f">>> Prompt: {user_input}")
 
-# BUG LA-1 FIX: Discover the model name dynamically rather than hardcoding.
 MODEL = _get_model_name(config, API)
 print(f">>> Model: {MODEL}")
 
@@ -106,7 +104,7 @@ except requests.exceptions.Timeout:
     print("ERROR: Request timed out after 60 seconds.")
     sys.exit(1)
 
-# BUG LA-2 FIX: Check HTTP status and validate JSON structure before indexing.
+# BUG LA-2 FIX: Validate HTTP status and JSON structure before indexing
 if resp.status_code != 200:
     print(f"ERROR: API returned HTTP {resp.status_code}: {resp.text[:300]}")
     sys.exit(1)
@@ -132,7 +130,7 @@ if choice.get("finish_reason") != "tool_calls":
     print("Model response:", choice.get("message", {}).get("content", "No tool call"))
     sys.exit(0)
 
-# BUG LA-2 FIX: Guard access to tool_calls list.
+# BUG LA-2 FIX: Guard access to tool_calls list
 tool_calls = choice.get("message", {}).get("tool_calls")
 if not tool_calls:
     print("ERROR: finish_reason is 'tool_calls' but no tool_calls in message.")
@@ -155,8 +153,7 @@ if not cmd:
 print(f">>> Executing: {cmd}")
 print("---")
 
-# BUG LA-3 FIX: Wrap shlex.split in try/except — it raises ValueError on
-# unmatched quotes, which would otherwise crash with a confusing traceback.
+# BUG LA-3 FIX: Try/except shlex.split — it raises ValueError on unmatched quotes
 try:
     cmd_args = shlex.split(cmd)
 except ValueError as e:

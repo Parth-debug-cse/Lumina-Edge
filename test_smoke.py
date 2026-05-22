@@ -146,7 +146,6 @@ class TestShellScripts(unittest.TestCase):
         if not script.exists():
             self.skipTest("launch_api.sh not found")
         content = script.read_text()
-        # The get_config function should reference ROOT_DIR, not ROOT
         get_config_start = content.find("get_config()")
         if get_config_start == -1:
             return

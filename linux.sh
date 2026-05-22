@@ -6,6 +6,8 @@
 # ==============================================================================
 
 cd "$(dirname "$0")" || { echo "[Lumina] ✗ Failed to cd to script directory"; exit 1; }
+# Using __file__-equivalent pattern: dirname of script path, not cwd
+# cwd depends on where you launch from, this always points to repo root
 ROOT="$(pwd)"
 SCRIPTS="$ROOT/scripts"
 UI_DIR="$ROOT/ui"
@@ -36,6 +38,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Runtime directory — stores PIDs, logs, anything transient
 RUNDIR="$ROOT/.lumina_run"
 mkdir -p "$RUNDIR"
 PID_FILE="$RUNDIR/pids.txt"
@@ -48,6 +51,8 @@ log()    { echo "[Lumina] $*" | tee -a "$RUNDIR/startup.log"; }
 log_ok() { echo "[Lumina] ✓ $*" | tee -a "$RUNDIR/startup.log"; }
 log_err(){ echo "[Lumina] ✗ $*" | tee -a "$RUNDIR/startup.log" >&2; }
 
+# Reads a key from config.json with a fallback default
+# Supports dot-notation keys like "startup.default_model"
 get_config() {
     local key="$1"
     local default="$2"
@@ -70,12 +75,14 @@ except Exception: print(default)
     fi
 }
 
+# Sets API_PORT and UI_PORT from env var or config.json
 resolve_ports() {
     API_PORT="${LUMINA_API_PORT:-$(get_config api_port 8090)}"
     UI_PORT="${LUMINA_UI_PORT:-$(get_config ui_port 5173)}"
     export LUMINA_API_PORT="$API_PORT"
 }
 
+# Kills all tracked Lumina processes + any orphan llama-server/vite/node processes
 stop_existing() {
     log "Stopping any existing Lumina processes..."
     if [[ -f "$PID_FILE" ]]; then
@@ -92,6 +99,7 @@ stop_existing() {
     sleep 1
 }
 
+# Handles graceful teardown (re-enables swap if we disabled it)
 cleanup_components() {
     log "Shutting down started components..."
     stop_existing
@@ -101,6 +109,7 @@ cleanup_components() {
     fi
 }
 
+# Run cleanup on Ctrl+C, SIGTERM, or script exit
 trap cleanup_components INT TERM EXIT
 
 # ==============================================================================
@@ -110,6 +119,7 @@ trap cleanup_components INT TERM EXIT
 optimize_system() {
     log "Optimizing system for inference..."
 
+    # Drop kernel filesystem cache to free memory for model weights
     sync && echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1 || true
 
     if [[ "${LUMINA_NOSWAP:-0}" == "1" ]]; then
@@ -117,23 +127,28 @@ optimize_system() {
         sudo swapoff -a 2>/dev/null || true
     fi
 
+    # Lower swappiness = keep model weights in RAM, don't page them out
     sudo sysctl -w vm.swappiness=10 2>/dev/null || true
+    # Lower vfs_cache_pressure = keep dentry/inode caches longer
     sudo sysctl -w vm.vfs_cache_pressure=50 2>/dev/null || true
 
+    # Give this script a nice boost (less likely to be preempted by background tasks)
     renice -n -10 $$ 2>/dev/null || true
 
+    # Force all CPU cores to performance governor (no power-saving downclocking)
     for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
         echo performance | sudo tee "$f" > /dev/null 2>&1 || true
     done
 
-    # Vulkan env
+    # Vulkan env: ACO compiler + GPL for AMD RADV
     if lspci 2>/dev/null | grep -qi 'amd.*radeon\|amd.*gpu'; then
         export RADV_PERFTEST=aco,gpl
         export AMD_VULKAN_ICD=RADV
     fi
+    # Clear Vulkan layer path to avoid potential overhead from validation layers
     export VK_LAYER_PATH=""
 
-    # Kill memory hogs
+    # Kill GNOME/KDE background indexers that waste CPU/RAM
     for proc in tracker-miner tracker-store zeitgeist-datahub evolution-calendar-factory \
                 snapd packagekitd apt-daily apt-daily-upgrade; do
         pkill -f "$proc" 2>/dev/null || true
@@ -181,6 +196,7 @@ start_api_server() {
     log "  API server PID: $api_pid"
     cd "$_prev_dir"
 
+    # Poll both primary and secondary ports for up to 30 seconds
     log "  Waiting for API server..."
     for i in $(seq 1 30); do
         if curl -s --max-time 2 "http://127.0.0.1:$SECONDARY_PORT/api/health" 2>/dev/null | grep -q 'ok'; then
@@ -218,6 +234,7 @@ start_ui() {
     echo "$ui_pid vite" >> "$PID_FILE"
     log "  Vite PID: $ui_pid"
 
+    # Poll for Vite dev server HTML response (up to 20 seconds)
     log "  Waiting for Vite dev server..."
     for i in $(seq 1 20); do
         if curl -s --max-time 2 "http://localhost:$UI_PORT/" 2>/dev/null | grep -q '<html'; then
@@ -251,6 +268,7 @@ print_summary() {
     echo "============================================================"
     echo ""
 
+    # Open browser on Linux (xdg-open is the generic desktop opener)
     xdg-open "http://localhost:$UI_PORT" 2>/dev/null || true
 }
 

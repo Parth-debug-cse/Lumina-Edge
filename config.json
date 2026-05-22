@@ -19,7 +19,7 @@
   "_comment_threading": "threads: CPU threads for generation. threads_batch: CPU threads for prompt processing.",
   "threads": 2,
   "threads_batch": 4,
-  "_comment_sampling": "Sampling parameters for llama.cpp (ignored on macOS \u2014 use mlx_sampling instead).",
+  "_comment_sampling": "Sampling parameters for llama.cpp (ignored on macOS — use mlx_sampling instead).",
   "temperature": 0.7,
   "top_p": 0.9,
   "repeat_penalty": 1.1,
@@ -44,7 +44,7 @@
   "http_threads": 2,
   "json_output": false,
   "routing_policy": "round-robin",
-  "_comment_llama_cpp": "MoE (Mixture of Experts) and memory-mapping flags \u2014 for llama.cpp only.",
+  "_comment_llama_cpp": "MoE (Mixture of Experts) and memory-mapping flags — for llama.cpp only.",
   "moe_model": false,
   "moe_override_tensor": "",
   "no_mmap": true,
@@ -59,7 +59,7 @@
   "mlx_stop_tokens": "",
   "mlx_adapter_path": "",
   "trust_remote_code": false,
-  "_comment_mlx_a": "KV cache size cap \u2014 prevents unbounded growth (null = unlimited/model default).",
+  "_comment_mlx_a": "KV cache size cap — prevents unbounded growth (null = unlimited/model default).",
   "mlx_max_kv_size": 8192,
   "_comment_mlx_b": "Sampling parameters exposed for UI control (macOS/MLX only).",
   "mlx_sampling": {
@@ -80,20 +80,20 @@
   "kv_bits": 4,
   "_comment_mlx_e2": "MLX KV group size (64 by default). Overrides mlx_kv_quant_native.kv_group_size if set.",
   "kv_group_size": 64,
-  "_comment_mlx_e": "Native KV quantization \u2014 mutually exclusive with asymmetric mlx_kv_quant.",
+  "_comment_mlx_e": "Native KV quantization — mutually exclusive with asymmetric mlx_kv_quant.",
   "mlx_kv_quant_native": {
     "enabled": false,
     "kv_bits": 4,
     "kv_group_size": 64,
     "quantized_kv_start": 0
   },
-  "_comment_mlx_f": "Asymmetric KV quantization (K bits / V bits) \u2014 mutual exclusive with mlx_kv_quant_native.",
+  "_comment_mlx_f": "Asymmetric KV quantization (K bits / V bits) — mutual exclusive with mlx_kv_quant_native.",
   "mlx_kv_quant": {
     "key_bits": 8,
     "value_bits": 4
   },
   "_comment_reserved": "--- Reserved / Future Use ---",
-  "_comment_reserved_multi_model": "multi_model: Reserved \u2014 not currently active.",
+  "_comment_reserved_multi_model": "multi_model: Reserved — not currently active.",
   "multi_model": {
     "base_port": 9000,
     "max_parallel_loads": 4,

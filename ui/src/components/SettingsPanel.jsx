@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { getLocalConfig, saveLocalConfig, DEFAULT_CONFIG } from '../utils/storage.js'
 
 // Detect if running on macOS (Apple Silicon) - client-side fallback
+// Used when server-side /api/system-info is unreachable
 const isMacOSClient = () => {
   if (typeof navigator === 'undefined') return false
   return navigator.platform?.toLowerCase().includes('mac') ||
@@ -119,13 +120,14 @@ const MLX_SECTIONS = [
 ]
 
 export default function SettingsPanel({ toast }) {
+  // Config loaded from localStorage; saved flag for ✓ feedback
   const [cfg, setCfg] = useState(getLocalConfig)
   const [saved, setSaved] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [macPlatform, setMacPlatform] = useState(false)
   const [platformInfo, setPlatformInfo] = useState({ platform: 'unknown', arch: 'unknown', backend: 'unknown' })
 
-  // Detect platform on mount - prefer server-side detection, fallback to client-side
+  // Detect platform on mount - prefer server-side /api/system-info, fallback to client-side
   useEffect(() => {
     // Try server-side detection first (authoritative)
     fetch('/api/system-info')

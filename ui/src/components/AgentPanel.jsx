@@ -2,14 +2,15 @@ import { useState, useEffect, useRef } from 'react';
 import { Play, Square, Terminal, CheckCircle, AlertCircle, Loader } from 'lucide-react';
 
 export default function LuminaAgentPanel({ toast }) {
+  // Agent lifecycle: goal text, running state, run ID from backend
   const [goal, setGoal] = useState('');
   const [running, setRunning] = useState(false);
   const [runId, setRunId] = useState(null);
   const [steps, setSteps] = useState([]);
   const [finalReport, setFinalReport] = useState(null);
   const [error, setError] = useState(null);
-  const pollRef = useRef(null);
-  const stepsEndRef = useRef(null);
+  const pollRef = useRef(null);       // Holds setInterval ID for status polling
+  const stepsEndRef = useRef(null);   // Ref for auto-scrolling the steps log
 
   // Auto-scroll steps log to bottom
   useEffect(() => {
@@ -19,6 +20,7 @@ export default function LuminaAgentPanel({ toast }) {
   // Cleanup poll on unmount
   useEffect(() => () => clearInterval(pollRef.current), []);
 
+  // Polls backend every 1.5s for agent step updates and terminal status
   const pollStatus = async (id) => {
     try {
       const res = await fetch(`/api/lumina-agent/status/${id}`);
@@ -32,6 +34,7 @@ export default function LuminaAgentPanel({ toast }) {
       }
       const data = await res.json();
       setSteps(data.steps || []);
+      // Terminal states: done, error, stopped — kill poll and update UI
       if (data.status === 'done' || data.status === 'error' || data.status === 'stopped') {
         clearInterval(pollRef.current);
         setRunning(false);
@@ -45,6 +48,7 @@ export default function LuminaAgentPanel({ toast }) {
     }
   };
 
+  // POST goal to backend, then start polling for status
   const handleRun = async () => {
     if (!goal.trim() || running) return;
     setRunning(true);
@@ -73,6 +77,7 @@ export default function LuminaAgentPanel({ toast }) {
     }
   };
 
+  // POST stop signal to backend, then clean up poll interval
   const handleStop = async () => {
     if (!runId) return;
     try {

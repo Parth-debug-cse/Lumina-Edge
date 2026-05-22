@@ -1,5 +1,6 @@
 """System prompt for Lumina Agent."""
 
+# Instructs the LLM to output single JSON tool calls. No markdown, no extra text.
 SYSTEM_PROMPT = """You are an IT agent. Each turn, output ONE JSON object and nothing else.
 
 Available tools:

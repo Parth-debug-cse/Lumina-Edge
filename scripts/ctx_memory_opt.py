@@ -17,7 +17,7 @@ from pathlib import Path
 def estimate_model_memory(model_path, ctx_size=4096, kv_quant="q8_0", gpu_layers=99):
     """
     Estimate memory required for a model at a given context size.
-    
+
     Approximations:
     - Model weights: file size on disk (roughly equals RAM usage for GGUF)
     - KV cache: 2 * n_layers * n_heads * head_dim * ctx_size * bytes_per_element
@@ -37,11 +37,11 @@ def estimate_model_memory(model_path, ctx_size=4096, kv_quant="q8_0", gpu_layers
     weight_mem_gb = total_size / (1024 ** 3)
 
     # Try to read model metadata for KV cache estimation
-    n_layers = 32  # Default for 7B
+    # Fallback to 7B-model defaults if config.json not found
+    n_layers = 32
     n_kv_heads = 32
     head_dim = 128
 
-    # Try to get actual model config
     if model_path.is_dir():
         config_path = model_path / 'config.json'
     else:
@@ -60,7 +60,7 @@ def estimate_model_memory(model_path, ctx_size=4096, kv_quant="q8_0", gpu_layers
 
     # KV cache memory per token
     kv_bytes_per_element = {"q8_0": 1, "q4_0": 0.5, "f16": 2, "q5_0": 0.625}.get(kv_quant, 1)
-    # KV cache = 2 (K+V) * n_layers * n_kv_heads * head_dim * bytes_per_element
+    # KV cache = 2 (K + V) * n_layers * n_kv_heads * head_dim * bytes_per_element
     kv_bytes_per_token = 2 * n_layers * n_kv_heads * head_dim * kv_bytes_per_element
     kv_mem_gb = (kv_bytes_per_token * ctx_size) / (1024 ** 3)
 
@@ -70,10 +70,10 @@ def estimate_model_memory(model_path, ctx_size=4096, kv_quant="q8_0", gpu_layers
     # Total estimated memory = weights + KV cache + overhead
     total_estimated_gb = weight_mem_gb + kv_mem_gb + overhead_gb
 
-    # Apply GPU layer offloading factor
+    # Adjust for GPU offloading: GPU handles ~30% of memory when fully offloaded
     if gpu_layers > 0:
-        gpu_ratio = min(1.0, gpu_layers / 80.0)  # rough: 80 layers ~ full offload
-        total_estimated_gb *= (1.0 - gpu_ratio * 0.3)  # GPU handles ~30% of memory
+        gpu_ratio = min(1.0, gpu_layers / 80.0)
+        total_estimated_gb *= (1.0 - gpu_ratio * 0.3)
 
     return {
         "model_path": str(model_path),
@@ -93,8 +93,8 @@ def estimate_model_memory(model_path, ctx_size=4096, kv_quant="q8_0", gpu_layers
 def recommend_ctx_size(model_path, available_mem_gb, kv_quant="q8_0", gpu_layers=99, headroom_pct=15):
     """
     Recommend maximum context size that fits in available memory.
+    Rounds down to nearest common size (512, 1024, 2048, 4096, etc.).
     """
-    # Start with a baseline estimate at ctx=4096
     baseline = estimate_model_memory(model_path, 4096, kv_quant, gpu_layers)
     if "error" in baseline:
         return baseline
@@ -114,10 +114,10 @@ def recommend_ctx_size(model_path, available_mem_gb, kv_quant="q8_0", gpu_layers
             "deficit_gb": round(-available_for_kv, 3)
         }
 
-    # Max ctx = available_for_kv / kv_bytes_per_token * 1024^3
+    # Max ctx = available_for_kv in bytes / kv_bytes_per_token
     max_ctx = int(available_for_kv * (1024 ** 3) / kv_per_token)
 
-    # Round down to common context sizes
+    # Round down to the nearest common context size
     common_sizes = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
     recommended = common_sizes[0]
     for size in common_sizes:
@@ -126,7 +126,6 @@ def recommend_ctx_size(model_path, available_mem_gb, kv_quant="q8_0", gpu_layers
         else:
             break
 
-    # Verify with estimate
     verify = estimate_model_memory(model_path, recommended, kv_quant, gpu_layers)
 
     return {
@@ -143,7 +142,7 @@ def recommend_ctx_size(model_path, available_mem_gb, kv_quant="q8_0", gpu_layers
 
 
 def get_system_memory():
-    """Get available system memory in GB - cross-platform."""
+    """Get available system memory in GB — cross-platform."""
     system = platform.system()
 
     try:
@@ -153,8 +152,8 @@ def get_system_memory():
                     if line.startswith('MemAvailable:'):
                         return int(line.split()[1]) * 1024 / (1024 ** 3)
 
-        elif system == "Darwin":  # macOS
-            # Get available memory via vm_stat
+        elif system == "Darwin":
+            # macOS: parse vm_stat output for free pages
             vm_output = subprocess.check_output(['vm_stat'], text=True)
             page_size = 4096
             free_pages = 0
@@ -177,28 +176,25 @@ def get_system_memory():
     except Exception:
         pass
 
-    return 8.0  # Default assumption
+    return 8.0  # safe fallback if detection fails
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Context Window & Memory Optimization')
     subparsers = parser.add_subparsers(dest='command')
 
-    # Estimate command
     est_parser = subparsers.add_parser('estimate', help='Estimate memory for a model at given ctx size')
     est_parser.add_argument('model_path', help='Path to model file')
     est_parser.add_argument('--ctx-size', type=int, default=4096, help='Context size')
     est_parser.add_argument('--kv-quant', default='q8_0', choices=['q8_0', 'q4_0', 'f16', 'q5_0'], help='KV cache quantization')
     est_parser.add_argument('--gpu-layers', type=int, default=99, help='GPU layers')
 
-    # Recommend command
     rec_parser = subparsers.add_parser('recommend', help='Recommend optimal ctx size')
     rec_parser.add_argument('model_path', help='Path to model file')
     rec_parser.add_argument('--available-mem', type=float, help='Available memory in GB (auto-detect if not specified)')
     rec_parser.add_argument('--kv-quant', default='q8_0', choices=['q8_0', 'q4_0', 'f16', 'q5_0'], help='KV cache quantization')
     rec_parser.add_argument('--headroom', type=float, default=15, help='Headroom percentage')
 
-    # Compare quantizations
     cmp_parser = subparsers.add_parser('compare-kv', help='Compare KV cache quantizations')
     cmp_parser.add_argument('model_path', help='Path to model file')
     cmp_parser.add_argument('--ctx-size', type=int, default=4096, help='Context size')

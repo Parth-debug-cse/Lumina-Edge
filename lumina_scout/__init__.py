@@ -1,0 +1,1 @@
+"""Lumina Scout: fetches, detects hardware, ranks, and recommends edge-ready LLMs from HuggingFace."""

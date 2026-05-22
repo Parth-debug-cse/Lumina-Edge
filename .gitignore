@@ -1,8 +1,9 @@
 # ==============================================================================
 # Lumina Edge .gitignore
+# Things you should NEVER commit: large binaries, cache, build output, secrets
 # ==============================================================================
 
-# Model files (all formats)
+# Model files (all formats) — these are 500MB-10GB+ each
 models/*.gguf
 models/*.safetensors
 models/*.bin
@@ -76,7 +77,7 @@ Thumbs.db
 .eggs/
 .aider*
 
-# Environment files
+# Environment files — could contain real secrets
 .env
 .env.*
 

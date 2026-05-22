@@ -6,4 +6,4 @@ Or from lumina_screen/ directory: python3 main.py
 
 if __name__ == "__main__":
     from .main import main
-    main()
+    main()  # Delegate to main.py's orchestrator — this module is just the CLI trampoline

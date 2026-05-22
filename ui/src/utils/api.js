@@ -5,6 +5,7 @@
 const API_PORT = import.meta.env.VITE_LUMINA_API_PORT || 8090;
 const BASE_URL = `http://127.0.0.1:${API_PORT}/v1`
 
+// Cache the direct llama-server port — bypasses the API proxy for lower latency
 let _directPort = null;
 
 export async function getActivePort() {
@@ -55,7 +56,7 @@ export async function streamChat({ messages, model, temperature = 0.7, topP = 0.
   let buffer = '';
   let totalBytes = 0;
 
-  // Timeout after 2 minutes to prevent hanging
+  // Hard 2-minute timeout — prevents stream from hanging forever on a stalled connection
   const timeoutMs = 120000;
   const startTime = Date.now();
 
@@ -367,7 +368,7 @@ export async function fetchHFFiles(repo) {
         const errorData = await res.json()
         errorMsg = errorData.error || errorMsg
       } catch {
-        // Response wasn't JSON, use HTTP status as error
+        // Response body wasn't valid JSON — silently fall through to HTTP status error
       }
       return { error: errorMsg }
     }
@@ -508,7 +509,7 @@ export async function setRoutingPolicy(policy) {
  */
 export async function streamChatWithRouting({ messages, routerSelection = 'auto', temperature = 0.7, topP = 0.9, onChunk, signal }) {
   try {
-    // If auto, use direct port or fallback to proxy. Otherwise, specify model endpoint
+    // Auto: use cached direct port or fall back to proxy. Manual: use provided endpoint URL directly
     let endpoint;
     if (routerSelection === 'auto') {
       const port = _directPort || await getActivePort();
@@ -884,6 +885,7 @@ export async function unloadAllModels() {
  * @returns {Promise<Object>} - { status, hits }
  * @throws {Error} if request fails or server returns error
  */
+// Deliberately throws on failure (unlike other API helpers) — component handles error state
 export async function getLuminaScreenStatus() {
   const res = await fetch('/api/lumina-screen/status')
   if (!res.ok) throw new Error(`Status error ${res.status}`)

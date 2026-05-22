@@ -13,10 +13,11 @@ $ErrorActionPreference = "Stop"
 
 # Get script directory
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# If script is in core/, go up one level to project root
 $RootDir = if ($ScriptDir -match '[\\/]core$') { Split-Path -Parent $ScriptDir } else { $ScriptDir }
 Set-Location $RootDir
 
-# Helper function to read from config.json
+# Reads a config.json value with dot-notation support and fallback default
 function Get-ConfigValue {
     param(
         [string]$Key,
@@ -77,7 +78,7 @@ if (-not $FinalModel) {
     exit 1
 }
 
-# FIX: Resolve model path correctly — only prepend models\ if not already absolute
+# Resolve model path correctly — only prepend models\ if not already absolute
 if ([System.IO.Path]::IsPathRooted($FinalModel) -or
     $FinalModel -match '^models[\\/]' -or
     $FinalModel -match '^\.[\\/]' -or
@@ -124,7 +125,7 @@ $LogFile = Join-Path $LogsDir "api_server.log"
 $Arguments = @(
     "-m", $ModelPath,
     "--port", $FinalPort,
-    "--host", "127.0.0.1",
+    "--host", "127.0.0.1",  # localhost only — don't expose externally
     "--ctx-size", $CtxSize,
     "--n-gpu-layers", $NGpuLayers,
     "--batch-size", $BatchSize,
@@ -134,10 +135,10 @@ $Arguments = @(
     "--top-p", $TopP,
     "--repeat-penalty", $RepeatPenalty,
     "--threads-http", $HttpThreads,
-    "--jinja"
+    "--jinja"  # Jinja2 chat template support
 )
 
-# Add boolean flags
+# Add conditional boolean flags
 if ($FlashAttn) { $Arguments += "--flash-attn" }
 # FIX: --mlock is not supported on Windows; skip it entirely
 # if ($UseMlock) { $Arguments += "--mlock" }
@@ -147,7 +148,7 @@ if ($ContBatching) { $Arguments += "--cont-batching" }
 # Add KV quantization flags from config (default q4_0)
 $Arguments += @("--cache-type-k", $KvCacheTypeK, "--cache-type-v", $KvCacheTypeV)
 
-# Add MoE flags
+# Add MoE flags for Mixture of Experts model support
 if ($MoeModel) {
     if ($MoeOverride) {
         $Arguments += @("-ot", $MoeOverride)
@@ -183,18 +184,17 @@ Write-Host "Log file: $LogFile" -ForegroundColor Gray
 Write-Host "`nCommand: $BinaryPath $($Arguments -join ' ')" -ForegroundColor DarkGray
 Write-Host "`n========================================" -ForegroundColor Cyan
 
-# Start the server
+# Start the server with separate stdout/stderr log files
+# (PowerShell crashes if both go to same file)
 $Process = $null
 try {
-    # FIX: Redirect stderr to a separate log file to avoid Start-Process crash
-    # when both stdout and stderr point to the same file
     $ErrorLogFile = "$LogFile.err"
     $Process = Start-Process -FilePath $BinaryPath -ArgumentList $Arguments -RedirectStandardOutput $LogFile -RedirectStandardError $ErrorLogFile -WindowStyle Hidden -PassThru
 
     Write-Host "Server started with PID: $($Process.Id)" -ForegroundColor Green
     Write-Host "Waiting for server to initialize..." -ForegroundColor Yellow
 
-    # Wait for server to be ready
+    # Wait for server to be ready (poll /v1/models up to 30 seconds)
     $MaxWait = 30
     $Waited = 0
     $Ready = $false
@@ -203,13 +203,11 @@ try {
         Start-Sleep -Seconds 1
         $Waited++
 
-        # Check if process is still running
         if ($Process.HasExited) {
             Write-Error "Server process exited unexpectedly!`nCheck log: $LogFile"
             exit 1
         }
 
-        # Try to connect to health endpoint
         try {
             $Response = Invoke-WebRequest -Uri "http://127.0.0.1:$FinalPort/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction SilentlyContinue
             if ($Response.StatusCode -eq 200) {
@@ -217,10 +215,9 @@ try {
                 break
             }
         } catch {
-            # Not ready yet, continue waiting
+            # Not ready yet, keep waiting
         }
 
-        # Show progress
         if ($Waited % 5 -eq 0) {
             Write-Host "  ... waiting ($Waited/$MaxWait seconds)" -ForegroundColor DarkGray
         }

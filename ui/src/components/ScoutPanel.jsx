@@ -4,17 +4,20 @@ import { Scan, Search, Ruler, Loader2, AlertCircle } from 'lucide-react'
 const API = '/api'
 
 export default function ScoutPanel({ toast }) {
+  // Hardware scan result from /api/lumina-scout/hardware
   const [hardware, setHardware] = useState(null)
   const [hwLoading, setHwLoading] = useState(false)
 
+  // Model recommendations from /api/lumina-scout/recommend
   const [recs, setRecs] = useState([])
   const [recLoading, setRecLoading] = useState(false)
   const [recTop, setRecTop] = useState(10)
   const [recProfile, setRecProfile] = useState('general')
   const [recQuant, setRecQuant] = useState('')
   const [recMinSpeed, setRecMinSpeed] = useState('')
-  const [recRefresh, setRecRefresh] = useState(false)
+  const [recRefresh, setRecRefresh] = useState(false)  // Force re-fetch cached recommendations
 
+  // Hardware planning for a specific model via /api/lumina-scout/plan
   const [planModel, setPlanModel] = useState('')
   const [planQuant, setPlanQuant] = useState('')
   const [planCtx, setPlanCtx] = useState('4096')

@@ -19,6 +19,7 @@ except ImportError:
 
 
 def get_hardware_info() -> dict:
+    """Return a dict describing the current machine's hardware."""
     hw = _detect_hardware()
     return {
         "gpu_name":  hw.gpu.name     if hw.gpu else "CPU Only",
@@ -41,13 +42,15 @@ def get_recommendations(
     cpu_only: bool = False,
     refresh: bool = False,
 ) -> list:
+    """Get top-N model recommendations for the current (or overridden) hardware."""
     top = int(top)
     hw = _detect_hardware()
 
     if cpu_only:
-        hw.gpu = None
+        hw.gpu = None  # Force CPU-only mode regardless of detected GPU.
 
     if gpu_override:
+        # Simulate a hypothetical GPU for "what-if" planning.
         try:
             from hardware import GPUInfo
         except ImportError:
@@ -74,12 +77,13 @@ def get_recommendations(
             "quant":            m.quant or "N/A",
             "downloads":        m.downloads,
             "likes":            m.likes,
-            "benchmark_source": "",
+            "benchmark_source": "",  # Placeholder for future real benchmark data.
         })
     return result
 
 
 def get_plan(model_query: str, quant: str = None, context_length: int = 4096) -> dict:
+    """Given a model query like 'llama 3 70b', return per-quant VRAM, KV cache, and GPU compat table."""
     m = re.search(r'(\d+\.?\d*)\s*[bB]', model_query, re.IGNORECASE)
     if not m:
         return {
@@ -88,6 +92,7 @@ def get_plan(model_query: str, quant: str = None, context_length: int = 4096) ->
 
     params_b = float(m.group(1))
 
+    # Build VRAM needed for every known quant.
     vram_by_quant = {}
     for q, bpw in sorted(BYTES_PER_WEIGHT.items(), key=lambda x: x[1]):
         vram_by_quant[q] = round(params_b * bpw * OVERHEAD, 2)
@@ -95,6 +100,7 @@ def get_plan(model_query: str, quant: str = None, context_length: int = 4096) ->
     target_quant = quant if quant in BYTES_PER_WEIGHT else "Q4_K_M"
     recommended = round(params_b * BYTES_PER_WEIGHT[target_quant] * OVERHEAD, 2)
 
+    # Smallest VRAM that can run the model fully on GPU (tries Q4_K_M → Q3_K_M → Q2_K).
     min_full_gpu = None
     for q in ("Q4_K_M", "Q3_K_M", "Q2_K"):
         v = vram_by_quant.get(q)
@@ -103,6 +109,7 @@ def get_plan(model_query: str, quant: str = None, context_length: int = 4096) ->
             break
 
     hw = _detect_hardware()
+    # Reference GPUs for the compatibility table.
     gpu_list = [
         ("NVIDIA RTX 4090",    24.0, 1008.0),
         ("NVIDIA RTX 4080",    16.0,  717.0),
@@ -122,6 +129,7 @@ def get_plan(model_query: str, quant: str = None, context_length: int = 4096) ->
         ("Apple M3",           24.0,  100.0),
     ]
 
+    # Insert the user's actual GPU at the top if it's not already in the reference list.
     if hw.gpu is not None and hw.gpu.name != "CPU Only":
         existing_names = [g[0] for g in gpu_list]
         if hw.gpu.name not in existing_names:
@@ -131,6 +139,7 @@ def get_plan(model_query: str, quant: str = None, context_length: int = 4096) ->
     bpw_target = BYTES_PER_WEIGHT.get(target_quant, 0.55)
     model_vram = params_b * bpw_target * OVERHEAD
 
+    # Rough KV cache estimate: 0.00003 GB per param × token × bpw.
     kv_cache_gb = round(params_b * context_length * 0.00003 * bpw_target, 2)
 
     gpu_compatibility = []
@@ -151,6 +160,7 @@ def get_plan(model_query: str, quant: str = None, context_length: int = 4096) ->
             "estimated_tok_per_sec": est_tps,
         })
 
+    # Sort GPUs: best fit first, then most VRAM.
     fit_order = {"full_gpu": 0, "partial_offload": 1, "cpu_only": 2}
     gpu_compatibility.sort(key=lambda g: (fit_order.get(g["fit_type"], 3), -g["vram_gb"]))
 

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import List, Optional
 
 class Colors:
-    """ANSI color codes"""
+    """ANSI color codes for terminal output."""
     GREEN = '\033[0;32m'
     YELLOW = '\033[1;33m'
     CYAN = '\033[0;36m'
@@ -26,16 +26,21 @@ class Colors:
     NC = '\033[0m'
 
 class ModelManager:
+    """Interactive CLI to list, download, and delete models.
+
+    Platform-aware: shows MLX models on macOS (safetensors dirs),
+    GGUF models on Linux/Windows. Downloads from HuggingFace.
+    """
+
     def __init__(self):
-        # Detect project root
         script_dir = Path(__file__).parent
         self.root = script_dir.parent
         self.models_dir = self.root / 'models'
         self.config_file = self.root / 'config.json'
-        
-        # Ensure models directory exists
+
         self.models_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # Platform-specific model suggestions
         is_mac = platform.system() == "Darwin" and platform.machine() == "arm64"
         if is_mac:
             self.popular_models = [
@@ -88,33 +93,29 @@ class ModelManager:
                     'file': 'zephyr-7b-beta.Q4_K_M.gguf'
                 }
             ]
-    
+
     def log_info(self, msg: str):
-        """Info message"""
         print(f"{Colors.CYAN}ℹ{Colors.NC} {msg}")
-    
+
     def log_success(self, msg: str):
-        """Success message"""
         print(f"{Colors.GREEN}✓{Colors.NC} {msg}")
-    
+
     def log_warn(self, msg: str):
-        """Warning message"""
         print(f"{Colors.YELLOW}⚠{Colors.NC} {msg}")
-    
+
     def log_error(self, msg: str):
-        """Error message"""
         print(f"{Colors.RED}✗{Colors.NC} {msg}")
-    
+
     def print_banner(self):
-        """Print banner"""
         print(f"\n{Colors.BOLD}{Colors.CYAN}⚡ LUMINA EDGE{Colors.NC} {Colors.GRAY}|{Colors.NC} Model Manager\n")
-    
+
     def get_models(self) -> List[Path]:
-        """Get list of existing models (files + MLX directories)"""
+        """Scan models/ directory for model files and MLX model directories."""
         models = []
+        # Match standard model file extensions
         for ext in ['*.gguf', '*.safetensors', '*.bin', '*.pt']:
             models.extend(self.models_dir.glob(ext))
-        # Also find MLX model directories (dir with safetensors+config, or 'mlx' in name)
+        # Find MLX model directories (dir with safetensors+config, or 'mlx' in name)
         for d in self.models_dir.iterdir():
             if d.is_dir():
                 has_safetensors = bool(list(d.glob('*.safetensors')))
@@ -123,20 +124,20 @@ class ModelManager:
                 if 'mlx' in d.name.lower() or (has_safetensors and (has_config or has_tokenizer)):
                     models.append(d)
         return sorted(models)
-    
+
     def get_human_size(self, size_bytes: int) -> str:
-        """Convert bytes to human-readable format"""
+        """Convert bytes to human-readable KB/MB/GB."""
         for unit in ['B', 'KB', 'MB', 'GB']:
             if size_bytes < 1024:
                 return f"{size_bytes:.1f} {unit}"
             size_bytes /= 1024
         return f"{size_bytes:.1f} TB"
-    
+
     def download_file(self, url: str, dest_path: Path) -> bool:
-        """Download file with progress"""
+        """Download file with progress bar using urllib."""
         try:
             self.log_info(f"Downloading: {url}")
-            
+
             def download_progress(block_num, block_size, total_size):
                 downloaded = block_num * block_size
                 percent = min(downloaded * 100 // total_size, 100)
@@ -145,51 +146,50 @@ class ModelManager:
                 bar = '█' * filled + '░' * (bar_length - filled)
                 sys.stdout.write(f'\r[{bar}] {percent}%')
                 sys.stdout.flush()
-            
+
             urllib.request.urlretrieve(url, dest_path, download_progress)
-            print()  # New line after progress
+            print()
             return True
         except Exception as e:
             self.log_error(f"Download failed: {e}")
             return False
-    
+
     def list_models_menu(self):
-        """Display existing models"""
+        """Display existing models with sizes."""
         self.print_banner()
         print(f"{Colors.GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.NC}\n")
         print(f"{Colors.BOLD}Your Models{Colors.NC}\n")
-        
+
         models = self.get_models()
         if not models:
             self.log_warn("No models found")
             print(f"\nGet started by downloading a model below.\n")
             return
-        
+
         for i, model_path in enumerate(models, 1):
             if model_path.is_dir():
-                # Get size of directory contents
                 size_b = sum(f.stat().st_size for f in model_path.rglob('*') if f.is_file())
                 size = self.get_human_size(size_b)
             else:
                 size = self.get_human_size(model_path.stat().st_size)
             print(f"  {Colors.BOLD}{i}{Colors.NC}. {Colors.GREEN}{model_path.name}{Colors.NC}")
             print(f"      {Colors.GRAY}Size: {size}{Colors.NC}\n")
-    
+
     def download_model_menu(self):
-        """Display download options"""
+        """Show popular model choices and let user pick or enter custom repo."""
         self.print_banner()
         print(f"{Colors.GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.NC}\n")
         print(f"{Colors.BOLD}Download Models{Colors.NC}\n")
-        
+
         for i, model in enumerate(self.popular_models, 1):
             print(f"  {Colors.BOLD}{i}{Colors.NC}. {model['name']}")
             print(f"      {Colors.GRAY}{model['repo']}{Colors.NC}\n")
-        
+
         print(f"  {Colors.BOLD}C{Colors.NC}. Custom HuggingFace repo")
         print(f"  {Colors.BOLD}0{Colors.NC}. Back\n")
-        
+
         choice = input(f"{Colors.CYAN}lumina@edge>{Colors.NC} ").strip()
-        
+
         if choice == '0':
             return
         elif choice.upper() == 'C':
@@ -202,45 +202,45 @@ class ModelManager:
                 self.download_hf_model(model['repo'], model['file'])
         else:
             self.log_error("Invalid selection")
-    
+
     def custom_download_menu(self):
-        """Download from custom HuggingFace repo"""
+        """Download from custom HuggingFace repo."""
         print()
         repo = input(f"{Colors.CYAN}Enter HuggingFace repo (e.g., TheBloke/model-GGUF): {Colors.NC}").strip()
-        
+
         if not repo:
             self.log_error("Repository required")
             return
-            
+
+        # On macOS, download entire repo as MLX directory
         is_mac = platform.system() == "Darwin" and platform.machine() == "arm64"
         if is_mac:
             print(f"\n{Colors.GRAY}Since you are on Mac, the entire repo will be downloaded as an MLX directory.{Colors.NC}")
             dir_name = repo.split('/')[-1] + ".mlx"
             self.download_hf_repo(repo, dir_name)
             return
-        
+
         print()
         filename = input(f"{Colors.CYAN}Enter model filename (e.g., model.Q4_K_M.gguf): {Colors.NC}").strip()
-        
+
         if not filename:
             self.log_error("Filename required")
             return
-        
+
         self.download_hf_model(repo, filename)
-    
+
     def download_hf_repo(self, repo: str, dir_name: str):
-        """Download entire HuggingFace repo (for MLX)"""
+        """Download entire HuggingFace repo as a directory (used for MLX models on macOS)."""
         dest_path = self.models_dir / dir_name
-        
+
         if dest_path.exists():
             self.log_warn(f"Model already exists: {dir_name}")
             overwrite = input(f"{Colors.CYAN}Overwrite? (y/n): {Colors.NC}").strip().lower()
             if overwrite != 'y':
                 return
-                
+
         try:
             self.log_info(f"Downloading MLX repository from {repo}...")
-            # Use huggingface_hub to download entire directory
             try:
                 import huggingface_hub
             except ImportError:
@@ -254,48 +254,48 @@ class ModelManager:
             self.log_error(f"Download failed: {e}")
 
     def download_hf_model(self, repo: str, filename: str):
-        """Download model from HuggingFace"""
+        """Download single model file from HuggingFace (used for GGUF on Win/Linux)."""
         url = f"https://huggingface.co/{repo}/resolve/main/{filename}"
         dest_path = self.models_dir / filename
-        
+
         if dest_path.exists():
             self.log_warn(f"Model already exists: {filename}")
             overwrite = input(f"{Colors.CYAN}Overwrite? (y/n): {Colors.NC}").strip().lower()
             if overwrite != 'y':
                 return
-        
+
         print()
         if self.download_file(url, dest_path):
             self.log_success(f"Downloaded: {filename}")
             print(f"\n{Colors.GRAY}Models can now be used with Lumina Edge!{Colors.NC}\n")
         else:
+            # Clean up partial download on failure
             if dest_path.exists():
                 dest_path.unlink()
             self.log_error("Download failed")
-    
+
     def delete_model_menu(self):
-        """Delete a model"""
+        """Interactive model deletion with confirmation."""
         self.print_banner()
         print(f"{Colors.GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.NC}\n")
         print(f"{Colors.BOLD}Delete Model{Colors.NC}\n")
-        
+
         models = self.get_models()
         if not models:
             self.log_warn("No models to delete")
             return
-        
+
         for i, model_path in enumerate(models, 1):
             if model_path.is_dir():
-                # Get size of directory contents (same logic as list_models_menu)
                 size_b = sum(f.stat().st_size for f in model_path.rglob('*') if f.is_file())
                 size = self.get_human_size(size_b)
             else:
                 size = self.get_human_size(model_path.stat().st_size)
             print(f"  {Colors.BOLD}{i}{Colors.NC}. {model_path.name} ({size})\n")
-        
+
         print(f"  {Colors.BOLD}0{Colors.NC}. Cancel\n")
         choice = input(f"{Colors.CYAN}lumina@edge>{Colors.NC} ").strip()
-        
+
         if choice == '0':
             return
         elif choice.isdigit() and 1 <= int(choice) <= len(models):
@@ -310,22 +310,22 @@ class ModelManager:
                 self.log_success(f"Deleted: {model_to_delete.name}")
         else:
             self.log_error("Invalid selection")
-    
+
     def main_menu(self):
-        """Main menu loop"""
+        """Main interactive loop."""
         while True:
             self.print_banner()
             print(f"{Colors.GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.NC}\n")
-            
+
             models = self.get_models()
             print(f"{Colors.BOLD}Models{Colors.NC} ({len(models)} available)\n")
             print(f"  {Colors.BOLD}L{Colors.NC}. List models")
             print(f"  {Colors.BOLD}D{Colors.NC}. Download model")
             print(f"  {Colors.BOLD}R{Colors.NC}. Delete model")
             print(f"  {Colors.BOLD}0{Colors.NC}. Exit\n")
-            
+
             choice = input(f"{Colors.CYAN}lumina@edge>{Colors.NC} ").strip().upper()
-            
+
             if choice == '0':
                 print()
                 break
@@ -342,13 +342,12 @@ class ModelManager:
                 self.log_error("Invalid selection")
 
 def main():
-    """Main entry point"""
-    # Clear screen (cross-platform)
+    """Clear screen and launch model manager."""
     try:
         subprocess.run(['cls' if os.name == 'nt' else 'clear'], check=False)
     except Exception:
         pass
-    
+
     manager = ModelManager()
     try:
         manager.main_menu()

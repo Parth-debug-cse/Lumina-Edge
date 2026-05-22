@@ -16,6 +16,7 @@ SCOUT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 @dataclass
 class GPUInfo:
+    """Describes a single GPU: name, VRAM in GB, and type (nvidia/amd/apple)."""
     name: str
     vram_gb: float
     gpu_type: str
@@ -23,6 +24,7 @@ class GPUInfo:
 
 @dataclass
 class HardwareInfo:
+    """Complete hardware snapshot: GPU, RAM, CPU, platform string, and inferred backend."""
     gpu: "GPUInfo | None"
     ram_gb: float
     cpu_name: str
@@ -32,6 +34,7 @@ class HardwareInfo:
 
 
 def detect() -> HardwareInfo:
+    """Main entry point — probe the current machine and return a HardwareInfo."""
     try:
         plat = _detect_platform()
         cpu_name, cpu_cores = _detect_cpu()
@@ -47,6 +50,7 @@ def detect() -> HardwareInfo:
             backend=backend,
         )
     except Exception:
+        # Last-resort fallback — never crash hardware detection.
         return HardwareInfo(
             gpu=None,
             ram_gb=0.0,
@@ -58,6 +62,7 @@ def detect() -> HardwareInfo:
 
 
 def _detect_platform() -> str:
+    """Normalize platform.system() into our enum: macOS / Windows / Linux."""
     s = platform.system()
     if s == "Darwin":
         return "macOS"
@@ -67,6 +72,7 @@ def _detect_platform() -> str:
 
 
 def _detect_cpu() -> tuple:
+    """Return (cpu_name, physical_core_count)."""
     try:
         import psutil
         cores = psutil.cpu_count(logical=False)
@@ -79,6 +85,7 @@ def _detect_cpu() -> tuple:
 
     name = platform.processor() or ""
 
+    # On Apple Silicon platform.processor() returns empty — fall back to sysctl.
     if platform.system() == "Darwin" and not name.strip():
         try:
             out = subprocess.check_output(
@@ -97,6 +104,7 @@ def _detect_cpu() -> tuple:
 
 
 def _detect_ram() -> float:
+    """Total system RAM in GB, rounded to 1 decimal."""
     try:
         import psutil
         return round(psutil.virtual_memory().total / (1024 ** 3), 1)
@@ -105,16 +113,18 @@ def _detect_ram() -> float:
 
 
 def _detect_gpu(plat: str):
+    """Platform-specific GPU detection — tries each method, returns first hit or None."""
     if plat == "macOS":
         result = _detect_apple_silicon()
         if result is not None:
             return result
-        return _detect_nvidia_smi()
+        return _detect_nvidia_smi()            # unlikely on macOS, but covers eGPU
     if plat == "Windows":
         result = _detect_nvidia_smi()
         if result is not None:
             return result
         return _detect_amd_windows()
+    # Linux
     result = _detect_nvidia_smi()
     if result is not None:
         return result
@@ -122,6 +132,7 @@ def _detect_gpu(plat: str):
 
 
 def _detect_apple_silicon():
+    """Detect Apple Silicon GPU via system_profiler, fall back to sysctl + total RAM for VRAM."""
     try:
         out = subprocess.check_output(
             ["system_profiler", "SPHardwareDataType", "-json"],
@@ -134,6 +145,7 @@ def _detect_apple_silicon():
         hw = hw_list[0]
         chip = hw.get("chip_type", "") or hw.get("cpu_type", "")
 
+        # system_profiler returns physical_memory as "32 GB" — parse the number.
         mem_str = hw.get("physical_memory", "")
         vram_gb = 0.0
         if mem_str:
@@ -149,6 +161,7 @@ def _detect_apple_silicon():
     except Exception:
         pass
 
+    # Fallback: if system_profiler fails (e.g. headless), try sysctl + use total RAM as VRAM.
     try:
         chip = subprocess.check_output(
             ["sysctl", "-n", "machdep.cpu.brand_string"],
@@ -168,6 +181,7 @@ def _detect_apple_silicon():
 
 
 def _detect_nvidia_smi():
+    """Probe NVIDIA GPUs via nvidia-smi. Returns first GPU found."""
     try:
         out = subprocess.check_output(
             ["nvidia-smi",
@@ -189,6 +203,8 @@ def _detect_nvidia_smi():
 
 
 def _detect_amd_windows():
+    """Probe AMD GPUs on Windows via wmic."""
+
     try:
         out = subprocess.check_output(
             ["wmic", "path", "win32_VideoController",
@@ -212,6 +228,7 @@ def _detect_amd_windows():
 
 
 def _detect_amd_linux():
+    """Probe AMD GPUs on Linux — first try rocm-smi, then fall back to sysfs."""
     try:
         out = subprocess.check_output(
             ["rocm-smi", "--showmeminfo", "vram", "--json"],
@@ -229,6 +246,7 @@ def _detect_amd_linux():
     except Exception:
         pass
 
+    # Fallback: read VRAM from /sys/class/drm/*/device/mem_info_vram_total (kernel 5.7+).
     try:
         drm = "/sys/class/drm"
         if not os.path.isdir(drm):
@@ -258,8 +276,9 @@ def _detect_amd_linux():
 
 
 def _infer_backend(plat: str, gpu) -> str:
+    """Pick the best inference backend based on platform + GPU type."""
     if plat == "macOS" and gpu is not None and gpu.gpu_type == "apple":
-        return "mlx"
+        return "mlx"        # Apple Silicon → MLX
     if gpu is not None and gpu.gpu_type in ("nvidia", "amd"):
-        return "llama.cpp"
-    return "cpu"
+        return "llama.cpp"  # Discrete GPU → llama.cpp (CUDA/Vulkan)
+    return "cpu"            # Fallback: CPU-only inference

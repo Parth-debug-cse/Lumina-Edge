@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { X, RotateCw, Zap } from 'lucide-react'
 import { getSystemResources } from '../utils/api.js'
 
+// SVG polyline sparkline — 280px wide, 24px tall, normalized to min/max range
 function Sparkline({ data, color = '#10b981' }) {
   if (!data || data.length < 2) return null
   const w = 280; const h = 24
@@ -20,6 +21,7 @@ function Sparkline({ data, color = '#10b981' }) {
   )
 }
 
+// Color thresholds for usage bars: green < 70%, amber < 85%, red above
 function getColor(pct) {
   if (pct > 85) return 'red'
   if (pct > 70) return 'amber'
@@ -35,8 +37,9 @@ function formatTime(seconds) {
 export default function SystemMonitor({ onClose, toast }) {
   const [resources, setResources] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [cpuHistory, setCpuHistory] = useState([])
+  const [cpuHistory, setCpuHistory] = useState([])  // Last 60 samples for sparkline
 
+  // Fetch resources and keep rolling 60-point CPU history for the sparkline
   const fetchResources = useCallback(async () => {
     setLoading(true)
     try {

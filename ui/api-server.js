@@ -9,6 +9,7 @@ import { createServer } from 'net';
 import http from 'http';
 import { Router } from 'express';
 
+// Separate router for /api/* routes — can be mounted on both primary and secondary servers
 const apiRouter = Router();
 
 const app = express();
@@ -26,6 +27,7 @@ const modelsDir = path.join(rootDir, 'models');
 const binDir = path.join(rootDir, 'bin');
 
 // Get Python executable - prefer venv if it exists
+// Pick python vs python3 depending on platform
 function getPythonCmd() {
   return os.platform() === 'win32' ? 'python' : 'python3';
 }
@@ -34,7 +36,7 @@ console.log('[API Server] Starting Lumina Edge API Gateway');
 console.log('[API Server] Root directory:', rootDir);
 console.log('[API Server] Models directory:', modelsDir);
 
-// Vulkan capability check - caches result to avoid repeated checks
+// _vulkanCapable cache — checked once via `strings | grep -i vulkan` on llama-server binary, cached forever
 let _vulkanCapable = null;
 
 async function checkVulkanCapability() {
@@ -45,7 +47,7 @@ async function checkVulkanCapability() {
     const llamaServer = path.join(binDir, 'llama-server');
     if (!fs.existsSync(llamaServer)) { _vulkanCapable = false; return false; }
     
-    // Check if binary has Vulkan symbols
+    // Grep binary strings for Vulkan symbols — slow check, but runs exactly once
     const { execSync } = await import('child_process');
     const symbols = execSync(`strings "${llamaServer}" 2>/dev/null | grep -i vulkan | head -5`, {
       timeout: 3000
@@ -54,13 +56,13 @@ async function checkVulkanCapability() {
     _vulkanCapable = symbols.toLowerCase().includes('vulkan');
     console.log(`[Router] Vulkan capability: ${_vulkanCapable}`);
   } catch (e) {
-    _vulkanCapable = false;
+    _vulkanCapable = false; // Silent failure — fall back to CPU-only
   }
   
   return _vulkanCapable;
 }
 
-// Run system optimizer on startup for dynamic hardware detection
+// Spawns system_optimizer.py, reloads config on completion
 function runSystemOptimizer() {
   const optimizerPath = getScriptPath('system_optimizer.py');
   if (!fs.existsSync(optimizerPath)) {
@@ -93,7 +95,7 @@ function runSystemOptimizer() {
     result.on('close', (code) => {
       if (code === 0) {
         console.log('[Optimizer] ✓ Dynamic hardware optimization completed');
-        // Reload config after optimization
+        // Reload config after optimization (cache will pick up mtime change)
         const newConfig = loadConfig();
         console.log('[Optimizer] Detected settings:', {
           threads: newConfig.threads,
@@ -114,7 +116,7 @@ function runSystemOptimizer() {
 // Run optimizer on startup
 runSystemOptimizer();
 
-// Run Linux system optimizations on startup
+// Linux prelaunch script — runs system-level tunables on startup
 (async () => {
   if (os.platform() === 'linux') {
     const prelaunchScript = path.join(scriptsDir, 'linux_prelaunch.sh');
@@ -134,7 +136,7 @@ runSystemOptimizer();
   }
 })();
 
-// Process cleanup handlers to prevent zombie processes
+// Cleanup handlers — kill llama-server processes on exit to prevent orphans
 process.on('exit', killAllModels);
 process.on('SIGINT', () => { killAllModels(); process.exit(0); });
 process.on('SIGTERM', () => { killAllModels(); process.exit(0); });
@@ -144,6 +146,7 @@ process.on('uncaughtException', (err) => {
   process.exit(1); 
 });
 
+// Nuke all model processes — clears intervals, timers, then SIGKILL
 function killAllModels() {
   for (const [, m] of routerModels) {
     if (m.readyCheckInterval) clearInterval(m.readyCheckInterval);
@@ -152,6 +155,7 @@ function killAllModels() {
   }
 }
 
+// Test port availability by creating a temporary listening socket
 function isPortFree(port) {
   return new Promise(resolve => {
     const s = createServer();
@@ -161,9 +165,9 @@ function isPortFree(port) {
   });
 }
 
-// Kill any process occupying a port (zombie llama-server from previous session)
+// Kill zombie llama-server from previous session using lsof/ss
 async function killProcessOnPort(port) {
-  if (os.platform() === 'win32') return false;
+  if (os.platform() === 'win32') return false; // lsof/ss not available, skip
   try {
     const result = execSync(`lsof -ti :${port} 2>/dev/null || ss -tlnp sport = :${port} 2>/dev/null | grep -oP 'pid=\\K\\d+' | head -1`, { timeout: 3000 }).toString().trim();
     if (result) {
@@ -178,7 +182,7 @@ async function killProcessOnPort(port) {
   return false;
 }
 
-// Clear stale model state from previous session on startup
+// Clean up models stuck in error/loading from a previous process crash
 function clearStaleModelState() {
   for (const [id, modelInfo] of routerModels) {
     if (modelInfo.status === 'error' || modelInfo.status === 'loading') {
@@ -197,14 +201,14 @@ if (!fs.existsSync(modelsDir)) {
   console.log('[API Server] Created models directory');
 }
 
-// State maps
+// Global state maps
 const conversionJobs = new Map(); // file -> status
 const downloadJobs = new Map(); // filename -> { status, error, progress }
 const routerModels = new Map(); // id -> model info
 let routingPolicy = 'round-robin';
 let nextPort = 8000;
 
-// Find an available port for model loading
+// Find next available port in the 8000-9000 range
 async function findAvailablePort() {
   let port = nextPort;
   while (!(await isPortFree(port))) {
@@ -220,18 +224,20 @@ async function findAvailablePort() {
 const configPath = path.join(rootDir, 'config.json');
 const convertibleExtensions = ['.gguf', '.safetensors', '.bin', '.pt'];
 
-// Load config to get port settings (after loadConfig is defined)
+// Load config to get port settings (loadConfig needs to be hoisted above usage)
 const config = loadConfig();
+// Dual-port setup: PRIMARY_PORT (8090) for inference+management, SECONDARY_PORT (8081) for management-only
 const PRIMARY_PORT = parseInt(process.env.LUMINA_API_PORT) || config.api_port || 8090;
 const SECONDARY_PORT = parseInt(process.env.LUMINA_API_PORT_SECONDARY) || config.api_port_secondary || 8081;
 
-// Config caching to avoid repeated file reads
+// Config caching — checks mtime for hot reload, avoids repeated file reads
 var cachedConfig = null;
 var configTimestamp = 0;
 
 function loadConfig() {
   try {
     const stats = fs.existsSync(configPath) ? fs.statSync(configPath) : null;
+    // Only re-read if file was modified since last load
     if (stats && stats.mtimeMs > configTimestamp) {
       cachedConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       configTimestamp = stats.mtimeMs;
@@ -250,7 +256,7 @@ function saveConfigData(config) {
   try {
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
     cachedConfig = config;
-    configTimestamp = Date.now();
+    configTimestamp = Date.now(); // Reset cache timestamp so next loadConfig() returns this
     return true;
   } catch (err) {
     console.error('[Config] Failed to save config:', err.message);
@@ -262,6 +268,7 @@ function isConvertibleFile(filename) {
   return convertibleExtensions.includes(path.extname(filename).toLowerCase());
 }
 
+// Target format depends on platform: macOS/ARM64 → MLX, everything else → GGUF
 function getTargetFormat() {
   return os.platform() === 'darwin' && os.arch() === 'arm64' ? 'mlx' : 'gguf';
 }
@@ -276,10 +283,12 @@ function getBinPath(binaryName) {
   return os.platform() === 'win32' ? binPath + '.exe' : binPath;
 }
 
+// Convenience helper — is this macOS ARM64?
 function isMac() {
   return os.platform() === 'darwin' && os.arch() === 'arm64';
 }
 
+// Spawns model-converter.py, parses PROGRESS: N% from stdout for UI progress bar
 function createConversionJob(input_file, quantization = 'Q4_K_M', targetFormat = null) {
   const outputExt = targetFormat || getTargetFormat();
   const inputPath = path.join(modelsDir, path.basename(input_file));
@@ -338,11 +347,13 @@ function createConversionJob(input_file, quantization = 'Q4_K_M', targetFormat =
 }
 
 // === HEALTH CHECK ===
+// Simple liveness probe — no auth, no DB dependency
 
 apiRouter.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Report which model formats this platform supports
 apiRouter.get('/supported-formats', (req, res) => {
   res.json({
     formats: isMac() ? ['safetensors', 'mlx'] : ['gguf', 'safetensors', 'bin', 'pt'],
@@ -351,6 +362,7 @@ apiRouter.get('/supported-formats', (req, res) => {
 });
 
 // === SYSTEM INFO ===
+// Platform detection, backend type (mlx vs llama.cpp), and chat URL resolution
 
 apiRouter.get('/system-info', (req, res) => {
   const mac = isMac();
@@ -362,6 +374,8 @@ apiRouter.get('/system-info', (req, res) => {
   });
 });
 
+// Tell the frontend which URL to open for chat
+// macOS → OpenWebUI on port 3000; Linux → llama-server port of first ready model
 apiRouter.get('/chat-url', (req, res) => {
   const mac = isMac();
   let chatUrl;
@@ -380,7 +394,7 @@ apiRouter.get('/chat-url', (req, res) => {
   res.json({ url: chatUrl, platform: os.platform(), modelLoaded: !!Array.from(routerModels.values()).find(m => m.status === 'ready') });
 });
 
-// Open chat URL in system browser (platform-aware)
+// Open chat URL in system browser — platform-aware dispatch
 apiRouter.post('/open-chat', (req, res) => {
   const platform = os.platform();
   const url = platform === 'darwin'
@@ -406,7 +420,7 @@ apiRouter.post('/open-chat', (req, res) => {
   }
 });
 
-// Get current optimized configuration
+// Get current optimized configuration from cached config
 apiRouter.get('/optimized-config', (req, res) => {
   const config = loadConfig();
   res.json({
@@ -468,8 +482,7 @@ apiRouter.post('/reoptimize', (req, res) => {
 });
 
 // === CONTEXT SIZE MANAGEMENT ===
-
-// Get current context size configuration
+// Get current context size and memory-based safe upper bound
 apiRouter.get('/context-config', (req, res) => {
   const config = loadConfig();
   const totalMem = os.totalmem();
@@ -489,7 +502,8 @@ apiRouter.get('/context-config', (req, res) => {
   });
 });
 
-// Adjust context size at runtime (requires model restart)
+// Adjust context size at runtime — enforces 4096 min, sanity checks vs free RAM
+// NOTE: requires model restart to take effect
 apiRouter.post('/adjust-context', (req, res) => {
   const { ctx_size } = req.body;
 
@@ -531,7 +545,7 @@ apiRouter.post('/adjust-context', (req, res) => {
   }
 });
 
-// Get detailed hardware information
+// Get detailed hardware information — runs system_optimizer.py --print-info, falls back to os.*
 apiRouter.get('/hardware-info', async (req, res) => {
   const hwInfoPath = path.join(scriptsDir, 'system_optimizer.py');
 
@@ -590,6 +604,7 @@ apiRouter.get('/hardware-info', async (req, res) => {
 });
 
 // === HUGGINGFACE REPO BROWSING ===
+// Fetches HF API repo tree, filters for model weights + JSON configs
 
 apiRouter.get('/hf-files', async (req, res) => {
   try {
@@ -646,6 +661,7 @@ apiRouter.get('/hf-files', async (req, res) => {
   }
 });
 
+// Scan models/ for MLX directories (config.json + weights) and loose GGUF/safetensors files
 apiRouter.get('/models/list', (req, res) => {
   try {
     const files = fs.readdirSync(modelsDir);
@@ -656,7 +672,7 @@ apiRouter.get('/models/list', (req, res) => {
       const stats = fs.statSync(fullPath);
       
       if (stats.isDirectory()) {
-        // Check if it's an MLX model directory (has config.json and weights)
+        // Detect MLX model directory: has config.json + .safetensors or .npz files
         const hasConfig = fs.existsSync(path.join(fullPath, 'config.json'));
         // Check for model.safetensors, weights.*.safetensors, or weights.npz
         const modelFiles = fs.readdirSync(fullPath).filter(n => n.endsWith('.safetensors') || n.endsWith('.npz'));
@@ -705,6 +721,7 @@ apiRouter.get('/models/list', (req, res) => {
   }
 });
 
+// Config CRUD — read/write config.json
 apiRouter.get('/config', (req, res) => {
   const config = loadConfig();
   res.json(config);
@@ -723,6 +740,7 @@ apiRouter.post('/save-config', (req, res) => {
   }
 });
 
+// Check whether a given file path exists on disk
 apiRouter.get('/model-exists', (req, res) => {
   try {
     const filePath = req.query.path;
@@ -736,6 +754,7 @@ apiRouter.get('/model-exists', (req, res) => {
   }
 });
 
+// List files convertible to target format — filters by convertibleExtensions
 apiRouter.get('/models/convertible', (req, res) => {
   try {
     const files = fs.readdirSync(modelsDir);
@@ -755,6 +774,7 @@ apiRouter.get('/models/convertible', (req, res) => {
   }
 });
 
+// Convert a model via model-converter.py
 apiRouter.post('/convert-model', (req, res) => {
   const { input_file, quantization, format } = req.body;
   if (!input_file) return res.status(400).send('input_file required');
@@ -763,7 +783,7 @@ apiRouter.post('/convert-model', (req, res) => {
   res.json(result);
 });
 
-// Quantization endpoint (macOS only - uses mlx-lm)
+// Quantization endpoint — uses mlx-lm on macOS, llama.cpp quantize elsewhere
 apiRouter.post('/quantize-model', (req, res) => {
   const { input_file, bits, output_name } = req.body;
   if (!input_file) return res.status(400).json({ error: 'input_file required' });
@@ -824,6 +844,7 @@ apiRouter.post('/quantize-model', (req, res) => {
   res.json({ status: 'started', output: outName });
 });
 
+// Poll conversion job status
 apiRouter.get('/conversion-status', (req, res) => {
   const input = req.query.input;
   if (!input) return res.status(400).send('input required');
@@ -832,6 +853,7 @@ apiRouter.get('/conversion-status', (req, res) => {
   res.json({ status: 'unknown' });
 });
 
+// Estimate conversion memory requirements
 apiRouter.post('/convert/memory-estimate', (req, res) => {
   try {
     const { model_path } = req.body;
@@ -855,6 +877,7 @@ apiRouter.post('/convert/memory-estimate', (req, res) => {
   }
 });
 
+// Convert model with shard-aware handling
 apiRouter.post('/convert/sharded', (req, res) => {
   const { model_path, output_path, quantization } = req.body;
   if (!model_path || !output_path) {
@@ -878,6 +901,7 @@ apiRouter.post('/convert/sharded', (req, res) => {
 });
 
 // === SHARD DETECTION ===
+// Determine if a model is sharded (multiple .safetensors files) and its memory footprint
 
 apiRouter.post('/convert/detect-shards', (req, res) => {
   const { model_path } = req.body;
@@ -896,6 +920,7 @@ apiRouter.post('/convert/detect-shards', (req, res) => {
 });
 
 // === SYSTEM OPTIMIZATION ===
+// Run optimize_system.py and return output
 
 apiRouter.post('/system/optimize', (req, res) => {
   const pythonCmd = getPythonCmd();
@@ -929,6 +954,7 @@ apiRouter.post('/system/optimize', (req, res) => {
 
 // === INFERENCE DIAGNOSTICS ===
 
+// Benchmark inference speed by sending N runs to a loaded model and reporting tokens/sec
 apiRouter.post('/inference/profile', async (req, res) => {
   const { model_id, prompt = 'Write a short poem about the sea.', max_tokens = 64, runs = 3 } = req.body;
   
@@ -997,8 +1023,10 @@ apiRouter.post('/inference/profile', async (req, res) => {
   res.json(summary);
 });
 
+// 3-second cache for resource monitor to avoid hammering Python subprocess
 let resourceCache = { data: null, ts: 0 };
 
+// Spawn resource_monitor.py, cached for 3s
 apiRouter.get('/system/resources', (req, res) => {
   const now = Date.now();
   if (resourceCache.data && now - resourceCache.ts < 3000) {
@@ -1031,6 +1059,7 @@ apiRouter.get('/system/resources', (req, res) => {
   });
 });
 
+// Run inference diagnostics script
 apiRouter.get('/inference/diagnose', (req, res) => {
   const pythonCmd = getPythonCmd();
   const scriptPath = path.join(scriptsDir, 'inference_diagnostics.py');
@@ -1048,6 +1077,7 @@ apiRouter.get('/inference/diagnose', (req, res) => {
   });
 });
 
+// Generate inference benchmark report
 apiRouter.get('/inference/report', async (req, res) => {
   const port = parseInt(req.query.port) || 8000;
   const maxTokens = parseInt(req.query.max_tokens) || 64;
@@ -1068,6 +1098,7 @@ apiRouter.get('/inference/report', async (req, res) => {
 });
 
 // === GPU BENCHMARK ===
+// Full GPU benchmark with configurable layer counts — tests [0, 10, 20, 30, 50, 99] layers by default
 
 apiRouter.post('/benchmark/gpu', (req, res) => {
   const { model_path, gpu_layers, ctx_size = 2048, threads = 4, max_tokens = 64, runs = 3 } = req.body;
@@ -1109,6 +1140,7 @@ apiRouter.post('/benchmark/gpu', (req, res) => {
   });
 });
 
+// Quick single-run benchmark
 apiRouter.post('/benchmark/quick', (req, res) => {
   const { model_path, ctx_size = 2048, threads = 4 } = req.body;
   if (!model_path) return res.status(400).json({ error: 'model_path required' });
@@ -1147,6 +1179,7 @@ apiRouter.post('/benchmark/quick', (req, res) => {
 
 // === CONTEXT & MEMORY OPTIMIZATION ===
 
+// Estimate memory usage for a given model + context config
 apiRouter.post('/memory/estimate', (req, res) => {
   const { model_path, ctx_size = 4096, kv_quant = 'q8_0' } = req.body;
   if (!model_path) return res.status(400).json({ error: 'model_path required' });
@@ -1165,6 +1198,7 @@ apiRouter.post('/memory/estimate', (req, res) => {
   });
 });
 
+// Recommend optimal ctx_size given available memory
 apiRouter.post('/memory/recommend-ctx', (req, res) => {
   const { model_path, available_mem, kv_quant = 'q8_0', headroom = 15 } = req.body;
   if (!model_path) return res.status(400).json({ error: 'model_path required' });
@@ -1186,6 +1220,7 @@ apiRouter.post('/memory/recommend-ctx', (req, res) => {
   });
 });
 
+// Compare KV cache quantization strategies side by side
 apiRouter.post('/memory/compare-kv', (req, res) => {
   const { model_path, ctx_size = 4096 } = req.body;
   if (!model_path) return res.status(400).json({ error: 'model_path required' });
@@ -1202,6 +1237,7 @@ apiRouter.post('/memory/compare-kv', (req, res) => {
 
 // === ROUTER BACKEND ===
 
+// Status of all loaded models — enriched view for the UI
 apiRouter.get('/router/status', (req, res) => {
   const models = Array.from(routerModels.values());
   res.json({
@@ -1220,6 +1256,7 @@ apiRouter.get('/router/status', (req, res) => {
   });
 });
 
+// Minimal model list (no PIDs, no inference count)
 apiRouter.get('/router/models', (req, res) => {
   const models = Array.from(routerModels.values()).map(m => ({
     id: m.id,
@@ -1231,13 +1268,14 @@ apiRouter.get('/router/models', (req, res) => {
   res.json({ models });
 });
 
+// Get the port of the first ready model (quick check for the frontend)
 apiRouter.get('/router/active-port', (req, res) => {
   const ready = Array.from(routerModels.values()).find(m => m.status === 'ready');
   if (!ready) return res.status(502).json({ error: 'No model ready' });
   res.json({ port: ready.port, model: ready.name, id: ready.id });
 });
 
-// SSE clients for real-time model status updates
+// SSE client management — broadcasts model status changes in real time to connected UIs
 const sseClients = new Set();
 
 function broadcastModelStatus(modelId, status, port, error = null) {
@@ -1247,6 +1285,7 @@ function broadcastModelStatus(modelId, status, port, error = null) {
   }
 }
 
+// SSE endpoint for real-time model status updates
 apiRouter.get('/router/events', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -1265,6 +1304,7 @@ apiRouter.get('/router/events', (req, res) => {
   });
 });
 
+// List available routes (ready model endpoints)
 apiRouter.get('/router/routes', (req, res) => {
   const routes = Array.from(routerModels.values())
     .filter(m => m.status === 'ready')
@@ -1277,6 +1317,7 @@ apiRouter.get('/router/routes', (req, res) => {
   res.json({ routes });
 });
 
+// Set routing policy (round-robin, load-balanced, first-available)
 apiRouter.post('/router/policy', (req, res) => {
   const { policy } = req.body;
   if (['round-robin', 'load-balanced', 'first-available'].includes(policy)) {
@@ -1286,6 +1327,11 @@ apiRouter.post('/router/policy', (req, res) => {
     res.status(400).json({ error: 'Invalid policy' });
   }
 });
+
+// === LOAD MODEL (THE KEY ENDPOINT) ===
+// Loads a model via MLX backend (macOS) or llama-server (Linux/Windows).
+// Handles: path validation, port allocation, Vulkan check, NUMA detection,
+// taskset pinning, OpenMP env vars, priority tuning, ready polling (60s timeout).
 
 apiRouter.post('/router/load', async (req, res) => {
   console.log(`[DEBUG] /api/router/load called with body:`, JSON.stringify(req.body));
@@ -1307,7 +1353,7 @@ apiRouter.post('/router/load', async (req, res) => {
   
   if (!fs.existsSync(targetPath)) return res.status(404).json({ error: 'Model not found' });
 
-  // macOS MLX specific path handling
+  // macOS path validation: verify MLX model dir has config.json + .safetensors
   let stats;
   if (isMacPlatform) {
     stats = fs.statSync(targetPath);
@@ -1342,10 +1388,10 @@ apiRouter.post('/router/load', async (req, res) => {
     flash_attn: config.flash_attn
   });
 
-  // Find available port
+  // Find available port (starts at nextPort, searches upward)
   let port = await findAvailablePort();
 
-  // If port is not free, try to kill zombie process and retry
+  // If port is occupied, kill zombie process and retry once
   if (!await isPortFree(port)) {
     console.log(`[Router Load] Port ${port} is occupied, attempting cleanup...`);
     await killProcessOnPort(port);
@@ -1358,7 +1404,7 @@ apiRouter.post('/router/load', async (req, res) => {
   }
   console.log(`[Router Load] Using port: ${port}`);
 
-  // Store model info
+  // Create model entry in state map — status starts at 'loading'
   const id = Math.random().toString(36).substring(7);
   const modelInfo = { 
     id, 
@@ -1372,10 +1418,12 @@ apiRouter.post('/router/load', async (req, res) => {
 
   let proc;
 
+  // macOS branch: spawn MLX Python backend
   if (isMacPlatform) {
     const pythonCmd = getPythonCmd();
     const modelDir = stats.isFile() ? path.dirname(targetPath) : targetPath;
 
+    // Spawn MLX backend with stable env (strip OMP vars — MLX doesn't use them)
     try {
       proc = spawn(pythonCmd, [
         path.join(scriptsDir, 'mlx_backend.py'),
@@ -1414,6 +1462,7 @@ apiRouter.post('/router/load', async (req, res) => {
       let lastError = null;
       let mlxStderr = '';
 
+      // Accumulate stderr for error reporting if startup fails
       proc.stderr.on('data', (data) => {
         mlxStderr += data.toString();
       });
@@ -1430,7 +1479,7 @@ apiRouter.post('/router/load', async (req, res) => {
                   backendReady = true;
                   resolve();
                 } else {
-                  // Try to extract the actual MLX error from the response body
+                  // Try to extract the actual MLX error from the response body for better diagnostics
                   let detail = `Status ${resp.statusCode}`;
                   try {
                     const parsed = JSON.parse(body);
@@ -1474,6 +1523,7 @@ apiRouter.post('/router/load', async (req, res) => {
       });
     }
   } else {
+    // Linux/Windows branch: spawn llama-server
     let llamaServer = path.join(binDir, 'llama-server');
     if (os.platform() === 'win32') llamaServer += '.exe';
     
@@ -1485,7 +1535,7 @@ apiRouter.post('/router/load', async (req, res) => {
       });
     }
 
-    // Ubuntu/Linux: verify execute permission
+    // Verify llama-server is executable (chmod +x check on Linux)
     if (os.platform() === 'linux') {
       try {
         fs.accessSync(llamaServer, fs.constants.X_OK);
@@ -1498,7 +1548,7 @@ apiRouter.post('/router/load', async (req, res) => {
       }
     }
     
-    // Helper to read config values with enforced safety limits
+    // Context size safety clamp: min 512, max 32768 (prevents OOM on 16GB machines)
 const ctxSize = (() => {
   const val = parseInt(config.ctx_size);
   if (!val || isNaN(val) || val < 512) return 4096; // safe minimum
@@ -1506,7 +1556,7 @@ const ctxSize = (() => {
 })();
 const batchSize = parseInt(config.batch_size) || 256;
 const ubatchSize = parseInt(config.ubatch_size) || 256;
-const nGpuLayers = parseInt(config.n_gpu_layers) || 999; // 999 = offload max layers GPU can hold, rest CPU
+const nGpuLayers = parseInt(config.n_gpu_layers) || 999; // 999 = offload as many layers as GPU can hold, rest fall back to CPU
 const kvCacheTypeK = config.kv_cache_type_k || config.kv_cache_quant || 'q4_0';
 const kvCacheTypeV = config.kv_cache_type_v || config.kv_cache_quant || 'q4_0';
 const splitMode = config.split_mode || 'row';
@@ -1736,6 +1786,7 @@ modelInfo.process = proc;
   res.json({ status: 'success', id, port });
 });
 
+// Graceful unload: SIGTERM → 5s → SIGKILL escalation
 apiRouter.delete('/router/unload/:id', (req, res) => {
   const modelInfo = routerModels.get(req.params.id);
   if (!modelInfo) return res.status(404).json({ error: 'Not found' });
@@ -1780,6 +1831,7 @@ apiRouter.delete('/router/unload/:id', (req, res) => {
   res.json({ status: 'unloading', id: req.params.id });
 });
 
+// Bulk unload all models
 apiRouter.delete('/router/unload-all', (req, res) => {
   const ids = Array.from(routerModels.keys());
   let unloaded = 0;
@@ -1810,6 +1862,9 @@ apiRouter.delete('/router/unload-all', (req, res) => {
 });
 
 // === MODEL DOWNLOAD ===
+// Handles single file downloads (fetch + ReadableStream → fs.createWriteStream)
+// and full repo downloads (huggingface_hub snapshot_download via inline Python).
+// macOS: rejects GGUF files (must use MLX/safetensors).
 
 apiRouter.post('/download-model', async (req, res) => {
   const { url, filename, autoConvert = false, downloadRepo = false } = req.body;
@@ -1884,7 +1939,7 @@ apiRouter.post('/download-model', async (req, res) => {
   downloadInBackground(url, outputPath, filename, autoConvert);
 });
 
-// Get download status for a specific file
+// Get download status for a specific file (progress, error, complete)
 apiRouter.get('/download-status', (req, res) => {
   const { filename } = req.query;
   if (!filename) return res.status(400).json({ error: 'filename required' });
@@ -1910,6 +1965,7 @@ apiRouter.get('/download-jobs', (req, res) => {
   res.json({ jobs });
 });
 
+// Single file download: uses fetch + ReadableStream → fs.createWriteStream with 30-min timeout
 async function downloadInBackground(url, outputPath, filename, autoConvert) {
   downloadJobs.set(filename, { status: 'downloading', progress: 0, error: null });
   
@@ -1961,6 +2017,7 @@ async function downloadInBackground(url, outputPath, filename, autoConvert) {
   }
 }
 
+// Full repo download: uses huggingface_hub snapshot_download via inline Python script
 async function downloadRepoInBackground(repoId, outputDir, dirName) {
   const pythonCmd = getPythonCmd();
   const escapedRepoId = repoId.replace(/"/g, '\\"');
@@ -2030,11 +2087,14 @@ except Exception as e:
 }
 
 // === LUMINA SCREEN PIPELINE ===
+// Resume screening pipeline. Manages main.py subprocess lifecycle.
+// Reads hits from page_hit.txt, config from config.json, JD from jd.txt.
 
 const luminaScreenDir = path.join(rootDir, 'lumina_screen');
 let luminaScreenProcess = null;
 let luminaScreenState = 'idle'; // 'idle' | 'running' | 'stopped'
 
+// Get pipeline state: hits, config, JD text
 apiRouter.get('/lumina-screen/status', (req, res) => {
   const hits = [];
   const hitPath = path.join(luminaScreenDir, 'page_hit.txt');
@@ -2067,6 +2127,7 @@ apiRouter.get('/lumina-screen/status', (req, res) => {
   res.json({ status: luminaScreenState, hits, config, jd_text });
 });
 
+// Start the Lumina Screen pipeline (spawns main.py as subprocess)
 apiRouter.post('/lumina-screen/start', (req, res) => {
   if (luminaScreenProcess) {
     return res.json({ status: 'already_running' });
@@ -2103,6 +2164,7 @@ apiRouter.post('/lumina-screen/start', (req, res) => {
   res.json({ status: 'started' });
 });
 
+// Stop the pipeline — SIGTERM → 3s → SIGKILL escalation
 apiRouter.post('/lumina-screen/stop', (req, res) => {
   const proc = luminaScreenProcess;
   if (!proc) {
@@ -2122,7 +2184,7 @@ apiRouter.post('/lumina-screen/stop', (req, res) => {
   res.json({ status: 'stopped' });
 });
 
-// Validate resume folder path: existence, type, readability, and containment within home dir.
+// SECURITY: Validate resume folder path against path traversal and home directory containment
 function validateResumeFolderPath(folderPath) {
   if (!folderPath || !folderPath.trim()) {
     return { valid: false, error: "Resume folder path cannot be empty." };
@@ -2161,6 +2223,7 @@ function validateResumeFolderPath(folderPath) {
   return { valid: true, resolved };
 }
 
+// Save Lumina Screen config — validates resume folder path, normalizes to avoid double-nesting
 apiRouter.post('/lumina-screen/config', (req, res) => {
   const { resume_folder, poll_interval_ms, match_threshold, jd_text } = req.body;
   const configPath = path.join(luminaScreenDir, 'config.json');
@@ -2206,7 +2269,7 @@ apiRouter.post('/lumina-screen/config', (req, res) => {
   }
 });
 
-// Clear processed.json dedup state so existing resumes in the folder are re-evaluated.
+// Rescan: delete processed.json so all resumes are re-evaluated from scratch
 apiRouter.post('/lumina-screen/rescan', (req, res) => {
   const processedPath = path.join(luminaScreenDir, 'processed.json');
   try {
@@ -2221,6 +2284,7 @@ apiRouter.post('/lumina-screen/rescan', (req, res) => {
   }
 });
 
+// Get all hits from page_hit.txt
 apiRouter.get('/lumina-screen/hits', (req, res) => {
   const hitPath = path.join(luminaScreenDir, 'page_hit.txt');
   const hits = [];
@@ -2244,7 +2308,7 @@ apiRouter.get('/lumina-screen/hits', (req, res) => {
   res.json(hits);
 });
 
-// FIXED: Clear page_hit.txt on disk so UI "Clear Results" persists across restarts
+// Clear all hits from page_hit.txt on disk (persists across restarts)
 apiRouter.post('/lumina-screen/clear-hits', (req, res) => {
   const hitPath = path.join(luminaScreenDir, 'page_hit.txt');
   try {
@@ -2260,12 +2324,15 @@ apiRouter.post('/lumina-screen/clear-hits', (req, res) => {
 });
 
 // === LUMINA AGENT ===
+// Runs an AI agent in a subprocess. Goal is passed via env var (no shell injection).
+// Agent streams JSON-delimited steps back via stdout. Runs are stored in-memory with
+// periodic cleanup to cap at MAX_AGENT_RUNS and prevent memory leaks.
 
 const luminaAgentDir = path.join(rootDir, 'lumina_agent');
 const agentRuns = new Map(); // runId -> { steps[], status, finalReport, error, proc }
-const MAX_AGENT_RUNS = 100; // Prevent memory leak — cap stored runs
+const MAX_AGENT_RUNS = 100; // Cap to prevent memory leak
 
-// Periodic cleanup of old completed runs to prevent memory leak
+// Periodic cleanup of old completed runs (trims oldest 25% when at capacity)
 function cleanupAgentRuns() {
   if (agentRuns.size <= MAX_AGENT_RUNS) return;
   const toRemove = [];
@@ -2278,6 +2345,7 @@ function cleanupAgentRuns() {
   }
 }
 
+// Run Lumina Agent — goal passed via env var (security: prevents shell injection from malicious input)
 apiRouter.post('/lumina-agent/run', async (req, res) => {
   const { goal } = req.body;
   if (!goal || typeof goal !== 'string' || goal.trim().length === 0) {
@@ -2368,6 +2436,7 @@ print(json.dumps({"type": "done", "data": result}), flush=True)
   res.json({ runId });
 });
 
+// Get agent run status (steps, finalReport, error)
 apiRouter.get('/lumina-agent/status/:runId', (req, res) => {
   const run = agentRuns.get(req.params.runId);
   if (!run) return res.status(404).json({ error: 'Run not found' });
@@ -2379,6 +2448,7 @@ apiRouter.get('/lumina-agent/status/:runId', (req, res) => {
   });
 });
 
+// Stop agent run — kills subprocess directly (SIGTERM → 3s → SIGKILL)
 apiRouter.post('/lumina-agent/stop/:runId', (req, res) => {
   const run = agentRuns.get(req.params.runId);
   if (!run) return res.status(404).json({ error: 'Run not found' });
@@ -2401,10 +2471,13 @@ apiRouter.post('/lumina-agent/stop/:runId', (req, res) => {
 });
 
 // === LUMINA SCOUT ===
+// Hardware detection, model recommendations, and deployment planning.
+// Uses spawnScoutEndpoint helper: passes all args via SCOUT_ARG_* env vars
+// (zero string interpolation of user input into code — no shell injection).
 
 const luminaScoutDir = path.join(rootDir, 'lumina_scout');
 
-// Helper: spawn Python with env vars for safe parameter passing (no code injection)
+// Helper: spawn Python with args passed as env vars (SCOUT_ARG_*) — no string interpolation, no injection risk
 function spawnScoutEndpoint(args, callback) {
   const pythonCmd = getPythonCmd();
   const scoutScript = path.join(luminaScoutDir, 'scout.py');
@@ -2418,7 +2491,7 @@ function spawnScoutEndpoint(args, callback) {
     env[`SCOUT_ARG_${key.toUpperCase()}`] = val !== null && val !== undefined ? String(val) : '';
   }
 
-  // Python script reads args from environment — zero string interpolation of user input
+// Inline Python reads SCOUT_ARG_* env vars and calls scout.py functions accordingly — zero string interpolation
   const pyScript = `
 import sys, os, json
 sys.path.insert(0, os.environ.get('SCOUT_ARG_SCOUT_DIR', ''))
@@ -2484,6 +2557,7 @@ print(json.dumps(result))
   });
 }
 
+// Get hardware info from scout.py
 apiRouter.get('/lumina-scout/hardware', (req, res) => {
   spawnScoutEndpoint({
     scout_dir: luminaScoutDir,
@@ -2494,6 +2568,7 @@ apiRouter.get('/lumina-scout/hardware', (req, res) => {
   });
 });
 
+// Get model recommendations from scout.py
 apiRouter.get('/lumina-scout/recommend', (req, res) => {
   const top = parseInt(req.query.top) || 10;
   const profile = req.query.profile || 'general';
@@ -2520,6 +2595,7 @@ apiRouter.get('/lumina-scout/recommend', (req, res) => {
   });
 });
 
+// Get deployment plan for a specific model
 apiRouter.get('/lumina-scout/plan', (req, res) => {
   const model = req.query.model;
   if (!model) return res.status(400).json({ error: 'model query parameter required' });
@@ -2540,6 +2616,10 @@ apiRouter.get('/lumina-scout/plan', (req, res) => {
 });
 
 // === STARTUP PIPELINE ===
+// Runs at server boot:
+//   1. System optimization (non-blocking background spawn)
+//   1b. macOS MLX optimization (blocking execSync)
+//   2. Auto-load model (only if startup.auto_load_model == true)
 
 async function runStartupPipeline() {
   const config = loadConfig();
@@ -2973,8 +3053,10 @@ if (os.platform() === 'linux' && proc.pid) {
 }
 
 // ===== DUAL-PORT SERVER STARTUP =====
+// Secondary (8081): management-only, no /v1 proxy
+// Primary (8090): inference + management + /v1 proxy
 
-// Secondary server: management-only (no /v1 proxy)
+// Secondary management-only server — no /v1 routes exposed
 const mgmtOnlyApp = express();
 mgmtOnlyApp.use(cors());
 mgmtOnlyApp.use(express.json());
@@ -2994,8 +3076,10 @@ secondaryServer.on('error', (err) => {
 app.use('/api', apiRouter);
 
 // ===== /V1 ENDPOINTS FOR EXTENSION COMPATIBILITY =====
+// Enriched /v1/models and /v1/chat/completions for Continue/Cline/OpenAI-compatible clients
 
-// === Enriched /v1/models endpoint (for Continue/Cline) ===
+// === Enriched /v1/models endpoint (for Continue/Cline compatibility) ===
+// Returns router models if loaded, otherwise probes direct backend ports
 app.get('/v1/models', async (req, res) => {
   try {
     const readyModels = Array.from(routerModels.values()).filter(m => m.status === 'ready');
@@ -3050,7 +3134,8 @@ app.get('/v1/models', async (req, res) => {
 
 // === Tool-calling middleware and /v1/chat/completions route ===
 
-// Helper: Parse tool_calls from model response text
+// Parse tool_calls from model response text using regex
+// Looks for JSON: {"tool_call": {"name": "...", "arguments": {...}}}
 function extractToolCall(text) {
   // Look for JSON pattern: {"tool_call": {"name": "...", "arguments": {...}}}
   // More robust regex that handles nested objects
@@ -3074,7 +3159,7 @@ function extractToolCall(text) {
   return null;
 }
 
-// Helper: Format system message with tools
+// Format system message with tools injected as text prompt (no native tool_calls API)
 function formatToolSystemPrompt(tools) {
   if (!tools || tools.length === 0) return '';
   
@@ -3096,6 +3181,10 @@ function formatToolSystemPrompt(tools) {
   return toolDesc;
 }
 
+// === THE MAIN INFERENCE ENDPOINT ===
+// Routes to first ready router model. If no router models loaded, falls back to
+// direct backend (MLX on LUMINA_MLX_PORT or llama-server).
+// Tool-call injection: if tools array is present, injects as system prompt, forces non-streaming.
 app.post('/v1/chat/completions', async (req, res) => {
   try {
     const readyModel = Array.from(routerModels.values()).find(m => m.status === 'ready');
@@ -3291,7 +3380,8 @@ app.post('/v1/chat/completions', async (req, res) => {
   }
 });
 
-// Proxy /v1 requests to the first ready model
+// Generic /v1/* proxy to first ready model
+// MLX models: translates 'local' model name to full path for mlx_lm
 app.all(/^\/v1\/.*/, async (req, res) => {
   const readyModel = Array.from(routerModels.values()).find(m => m.status === 'ready');
   if (!readyModel) {
@@ -3349,7 +3439,7 @@ app.all(/^\/v1\/.*/, async (req, res) => {
 });
 
 // =============================================================================
-// Proxy non-API requests to the chat web UI.
+// Non-API request proxy to chat web UI.
 // Linux → llama-server built-in web UI (port MLX_PORT).
 // macOS → OpenWebUI (port OW_PORT) since MLX has no built-in web UI.
 // =============================================================================
@@ -3395,9 +3485,10 @@ app.use((req, res, next) => {
   }
 });
 
-// Clear stale model state from previous session before accepting connections
+// Clear stale models before accepting connections
 clearStaleModelState();
 
+// Start primary server — models load async via startup pipeline
 const server = app.listen(PRIMARY_PORT, '127.0.0.1', () => {
   console.log(`[API Server] ✓ Primary (inference + management) listening on http://127.0.0.1:${PRIMARY_PORT}`);
   console.log(`[API Server] Running startup pipeline...`);
@@ -3406,7 +3497,7 @@ const server = app.listen(PRIMARY_PORT, '127.0.0.1', () => {
   });
 });
 
-// Handle startup errors
+// Handle startup errors (port already in use, etc.)
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`[API Server] ✗ Port ${PRIMARY_PORT} is already in use`);
@@ -3417,7 +3508,7 @@ server.on('error', (err) => {
   process.exit(1);
 });
 
-// Graceful shutdown
+// Graceful shutdown: unloads all models, closes both servers
 process.on('SIGTERM', () => {
   console.log('[API Server] Shutting down...');
   // Unload all models first

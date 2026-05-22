@@ -11,7 +11,7 @@ import signal
 import sys
 
 
-CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))  # Script dir — anchor for relative paths & sys.path
 
 # BUG LS-4 FIX: Ensure lumina_screen/ is on sys.path so that bare module
 # imports (watcher, dedup, etc.) work regardless of the CWD the caller uses.
@@ -20,6 +20,7 @@ if CONFIG_DIR not in sys.path:
 
 
 def load_config():
+    """Load config.json from the script directory. Exits on missing/malformed file."""
     config_path = os.path.join(CONFIG_DIR, "config.json")
     if not os.path.exists(config_path):
         print(f"[Lumina Screen] ERROR: config.json not found at {config_path}")
@@ -43,7 +44,7 @@ def resolve(path):
 # SECURITY: Path validation to prevent directory traversal and invalid paths.
 # Lumina Screen is designed for end-user resume screening, so we restrict
 # paths to the user's home directory to prevent scanning arbitrary system paths.
-SAFE_BASE = os.path.realpath(os.path.expanduser("~"))
+SAFE_BASE = os.path.realpath(os.path.expanduser("~"))  # Canonical home — security boundary for path containment
 
 
 def validate_resume_folder(path: str) -> tuple:
@@ -126,6 +127,7 @@ def process_file(filepath, embedder, matcher, page_hit_path,
 
 
 def main():
+    """Orchestrator entry: load config, validate, startup scan, then poll loop."""
     config = load_config()
 
     # BUG LS-1 FIX: Use .get() with sensible defaults for every config key so

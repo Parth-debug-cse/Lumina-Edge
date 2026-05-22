@@ -1,5 +1,9 @@
+/* Lumina Edge UI — dark-theme CSS. Green accent (#10b981), terminal aesthetic. Variables-based theming. */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ========================================================
+   CSS CUSTOM PROPERTIES — color, spacing, typography tokens
+   ======================================================== */
 :root {
   --bg-app: #0d0d0d;
   --bg-surface: #1a1a1a;
@@ -80,7 +84,7 @@ body {
 
 ::selection { background: var(--accent-dim); color: var(--text-primary); }
 
-.bg-noise { display: none; }
+.bg-noise { display: none; }  /* Noise/scanlines overlay — disabled by default */
 
 /* ========================================================
    SIDEBAR
@@ -224,6 +228,7 @@ body {
 .status-dot.checking { background: var(--yellow); animation: pulse-yellow 1s infinite; }
 .status-dot.ready   { background: var(--yellow); animation: pulse-yellow 1.5s infinite; }
 
+/* Pulsing green dot — draws attention to the server status indicator */
 @keyframes pulse-green  { 0%,100%{opacity:1} 50%{opacity:0.5} }
 @keyframes pulse-yellow { 0%,100%{opacity:1} 50%{opacity:0.4} }
 
@@ -410,6 +415,7 @@ input[type="range"]::-webkit-slider-thumb {
 }
 input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 
+/* CSS fill via gradient — the --pct variable is set by JS, avoids extra DOM elements */
 /* CSS-based range fill */
 input[type="range"] {
   background: linear-gradient(to right, var(--accent) var(--pct, 50%), var(--bg-elevated) var(--pct, 50%));
@@ -757,6 +763,7 @@ input[type="range"] {
   font-family: var(--font-mono);
 }
 .model-size { font-size: 0.65rem; color: var(--text-tertiary); margin-top: 1px; }
+/* Actions hidden by default, revealed on card hover — keeps the card clean */
 .model-card-actions { display: flex; gap: 4px; opacity: 0; transition: opacity var(--t-fast); }
 .model-card:hover .model-card-actions { opacity: 1; }
 
@@ -898,6 +905,7 @@ input[type="range"] {
 .history-title { font-size: 0.78rem; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); }
 .history-meta  { font-size: 0.64rem; color: var(--text-tertiary); margin-top: 2px; }
 .history-preview { font-size: 0.7rem; color: var(--text-secondary); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Same hover-reveal pattern as model-card-actions */
 .history-actions { display: flex; gap: 4px; opacity: 0; transition: opacity var(--t-fast); }
 .history-card:hover .history-actions { opacity: 1; }
 
@@ -1258,8 +1266,8 @@ input[type="range"] {
 }
 
 /* ========================================================
-   SCANLINE EFFECT (optional)
-   ======================================================== */
+    SCANLINE EFFECT (optional) — disabled by default
+    ======================================================== */
 .scanlines {
   pointer-events: none;
   position: fixed; inset: 0; z-index: 9999;

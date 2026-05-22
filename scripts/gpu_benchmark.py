@@ -20,7 +20,7 @@ from typing import Optional, Dict, List
 
 
 def find_llama_server(bin_dir: str) -> Optional[str]:
-    """Find llama-server binary."""
+    """Find llama-server binary in the given directory."""
     if sys.platform == 'win32':
         path = os.path.join(bin_dir, 'llama-server.exe')
     else:
@@ -30,7 +30,7 @@ def find_llama_server(bin_dir: str) -> Optional[str]:
 
 def start_server(bin_dir: str, model_path: str, port: int, gpu_layers: int,
                  ctx_size: int = 2048, threads: int = 4) -> Optional[subprocess.Popen]:
-    """Start llama-server with specified GPU layers."""
+    """Start llama-server on a given port with specified GPU layer count."""
     server_path = find_llama_server(bin_dir)
     if not server_path:
         return None
@@ -53,7 +53,6 @@ def start_server(bin_dir: str, model_path: str, port: int, gpu_layers: int,
     try:
         lf = open(log_file, 'w')
         proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, text=True)
-        # Keep lf open until subprocess finishes — caller must call proc.wait() then lf.close()
         return (proc, lf)
     except Exception as e:
         print(f"Error starting server: {e}")
@@ -61,7 +60,7 @@ def start_server(bin_dir: str, model_path: str, port: int, gpu_layers: int,
 
 
 def wait_for_server(port: int, timeout: int = 60) -> bool:
-    """Wait for server to become ready."""
+    """Poll /health endpoint until server responds or timeout reached."""
     start = time.time()
     while time.time() - start < timeout:
         try:
@@ -77,7 +76,7 @@ def wait_for_server(port: int, timeout: int = 60) -> bool:
 
 def run_inference(port: int, prompt: str = "Write a short poem about the sea.",
                   max_tokens: int = 64, temperature: float = 0.7) -> Dict:
-    """Run a single inference request and return timing data."""
+    """Send one chat completion request and return timing data."""
     payload = {
         "model": "local",
         "messages": [{"role": "user", "content": prompt}],
@@ -117,7 +116,7 @@ def run_inference(port: int, prompt: str = "Write a short poem about the sea.",
 
 
 def stop_server(proc: subprocess.Popen):
-    """Stop a server process with escalation."""
+    """Kill a subprocess with escalation: terminate, wait, then kill."""
     try:
         proc.terminate()
         try:
@@ -136,8 +135,7 @@ def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
                          prompt: str = "Write a short poem about the sea.") -> Dict:
     """
     Benchmark model with different GPU layer counts.
-    gpu_configs: list of n-gpu-layers values to test (e.g. [0, 10, 20, 30, 99])
-    0 = CPU only, 99 = all layers on GPU
+    Starts a new server for each config, runs warmup + benchmark queries.
     """
     if gpu_configs is None:
         gpu_configs = [0, 10, 20, 30, 50, 99]
@@ -175,7 +173,7 @@ def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
             results.append({"gpu_layers": gpu_layers, "label": mode_label, "error": "Server startup timeout"})
             continue
 
-        # Warmup
+        # Warmup: short 16-token run to prime GPU/caches
         for _ in range(warmup_runs):
             run_inference(port, prompt, max_tokens=16)
 
@@ -212,7 +210,7 @@ def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
         results.append(entry)
         print(f"  ✓ {mode_label}: {entry.get('avg_tokens_per_sec', 'N/A')} tok/s\n")
 
-    # Summary
+    # Generate summary with best config and speedup vs CPU
     valid_results = [r for r in results if 'avg_tokens_per_sec' in r]
     if valid_results:
         best = max(valid_results, key=lambda r: r['avg_tokens_per_sec'])
@@ -235,7 +233,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CPU vs iGPU/GPU Benchmark')
     subparsers = parser.add_subparsers(dest='command')
 
-    # Benchmark command
     bench_parser = subparsers.add_parser('run', help='Run GPU benchmark')
     bench_parser.add_argument('--bin-dir', required=True, help='Path to bin directory with llama-server')
     bench_parser.add_argument('--model', required=True, help='Path to model file')
@@ -248,7 +245,6 @@ if __name__ == '__main__':
     bench_parser.add_argument('--warmup', type=int, default=1, help='Warmup runs')
     bench_parser.add_argument('--runs', type=int, default=3, help='Benchmark runs per config')
 
-    # Quick test command
     quick_parser = subparsers.add_parser('quick', help='Quick CPU vs GPU comparison')
     quick_parser.add_argument('--bin-dir', required=True, help='Path to bin directory')
     quick_parser.add_argument('--model', required=True, help='Path to model file')

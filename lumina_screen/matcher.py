@@ -4,8 +4,8 @@ class Matcher:
     """
 
     def __init__(self, embedder, threshold=0.65):
-        self.embedder = embedder
-        self.threshold = threshold
+        self.embedder = embedder  # Embedder instance with get_match_score() and JD embedding
+        self.threshold = threshold  # Configurable cutoff — score >= threshold means shortlisted
 
     def evaluate(self, resume_embedding):
         """
