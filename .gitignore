@@ -79,8 +79,13 @@ Thumbs.db
 # Environment files
 .env
 .env.*
+
+# Lumina Scout auto-generated model cache
+lumina_scout/cache/
+
 # Lumina Screen runtime / generated artifacts
 lumina_screen/chroma_store/
+lumina_screen/jd.txt
 lumina_screen/page_hit.txt
 lumina_screen/processed.json
 lumina_screen/resumes/test_*.pdf
