@@ -24,8 +24,11 @@ def notify(entry):
 
     try:
         if system == "Darwin":
-            safe_title = title.replace('"', '\\"')
-            safe_msg = msg.replace('"', '\\"')
+            # BUG-LS8 FIX: Escape backslashes BEFORE double-quotes; previously a backslash
+            # in entry['name'] or entry['filename'] produced malformed osascript syntax that
+            # silently dropped the notification without raising any exception.
+            safe_title = title.replace('\\', '\\\\').replace('"', '\\"')
+            safe_msg = msg.replace('\\', '\\\\').replace('"', '\\"')
             subprocess.run(
                 [
                     "osascript",

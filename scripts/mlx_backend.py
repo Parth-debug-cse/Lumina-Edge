@@ -629,7 +629,10 @@ def launch_api_direct(model_path, port):
 
         def _handle_post(self):
             """Parse chat completion request, apply tool injection if needed, generate."""
-            if not any(p in self.path for p in ['/chat/completions', '/v1']):
+            # BUG-C7 FIX: The previous check `not any(p in self.path for p in ['/chat/completions', '/v1'])`
+            # used substring matching: '/v1' matches ANY path containing those chars (e.g. /v12/).
+            # This silently routed POST /v1/models through the chat handler instead of returning 404.
+            if '/v1/chat/completions' not in self.path:
                 self._send_json(404, json.dumps({"error": "not found"}))
                 return
 
@@ -639,8 +642,14 @@ def launch_api_direct(model_path, port):
                 return
 
             try:
-                content_length = int(self.headers.get('Content-Length', 0))
-                body = self.rfile.read(content_length)
+                # BUG-C8 FIX: When Content-Length is absent (valid for chunked transfer
+                # encoding), the previous code did rfile.read(0) → b'' → JSONDecodeError.
+                # Any HTTP client using chunked encoding got a 400 for a valid request body.
+                raw_cl = self.headers.get('Content-Length')
+                if raw_cl is not None:
+                    body = self.rfile.read(int(raw_cl))
+                else:
+                    body = self.rfile.read()  # chunked or missing header — read until EOF
                 request = json.loads(body)
             except Exception as e:
                 self._send_json(400, json.dumps({"error": f"Invalid request: {e}"}))

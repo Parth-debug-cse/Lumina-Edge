@@ -76,12 +76,17 @@ def validate_resume_folder(path: str) -> tuple:
 def process_file(filepath, embedder, matcher, page_hit_path,
                  compute_hash, is_processed, mark_processed,
                  parse, notify, log_hit):
-    """Parse, embed, match, and log a single resume file. Respects dedup state."""
+    """Parse, embed, match, and log a single resume file. Respects dedup state.
+
+    Returns True if the resume was shortlisted, False otherwise (including
+    already-processed, parse failures, embed errors, and below-threshold matches).
+    BUG-LS2 FIX: return value enables the caller to detect a zero-match startup scan.
+    """
     filename = os.path.basename(filepath)
     file_hash = compute_hash(filepath)
 
     if is_processed(file_hash):
-        return
+        return False
 
     mark_processed(file_hash, filename)
 
@@ -89,19 +94,19 @@ def process_file(filepath, embedder, matcher, page_hit_path,
         parsed = parse(filepath)
     except Exception as e:
         print(f"[Lumina Screen] Parse failed for {filename}: {e}")
-        return
+        return False
 
     # Guard: Skip resume if no text was extracted (empty PDF, image-only, corrupted, etc.)
     if not parsed["raw_text"].strip():
         print(f"[Lumina Screen] WARNING: {filename} — No text extracted (empty PDF?). Skipping.")
-        return
+        return False
 
     try:
         embedding = embedder.embed_resume(file_hash, parsed["raw_text"])
         score, shortlisted = matcher.evaluate(embedding)
     except Exception as e:
         print(f"[Lumina Screen] Embed/evaluate failed for {filename}: {e}")
-        return
+        return False
 
     try:
         # DIAGNOSTIC LOG: Show score, threshold, and pass/fail status for debugging
@@ -124,6 +129,9 @@ def process_file(filepath, embedder, matcher, page_hit_path,
             print(f"[Lumina Screen] Skipped     : {filename} ({score:.4f})")
     except Exception as e:
         print(f"[Lumina Screen] Notify/log failed for {filename}: {e}")
+
+    # Return whether this resume was shortlisted (even if notify/log failed)
+    return shortlisted
 
 
 def main():
@@ -162,7 +170,7 @@ def main():
 
     # Lazy imports so missing dependencies fail fast with a clear traceback
     from watcher import Watcher
-    from dedup import compute_hash, is_processed, mark_processed
+    from dedup import compute_hash, is_processed, mark_processed, processed_count
     from pdf_parser import parse
     from embedder import Embedder
     from matcher import Matcher
@@ -178,6 +186,17 @@ def main():
 
     matcher = Matcher(embedder, threshold)
 
+    # BUG-LS1 FIX: Log dedup state at startup so operators can tell immediately if
+    # all resumes are already processed (which silently produces zero output otherwise).
+    _n_processed = processed_count()
+    if _n_processed:
+        print(
+            f"[Lumina Screen] Dedup state    : {_n_processed} hash(es) in processed.json "
+            "— these will be skipped (use Re-scan to reset)"
+        )
+    else:
+        print(f"[Lumina Screen] Dedup state    : empty (all resumes will be evaluated)")
+
     # STARTUP SCAN: Process any PDFs already present in the folder that have
     # not yet been evaluated (i.e. not in processed.json).  This means files
     # dropped before the pipeline started — or files re-enabled after the user
@@ -189,11 +208,21 @@ def main():
     )
     if existing_pdfs:
         print(f"[Lumina Screen] Startup scan   : {len(existing_pdfs)} PDF(s) found")
+        # BUG-LS2 FIX: Count shortlisted resumes during startup scan and warn when
+        # zero pass threshold — previously silent zero-output gave no indication why.
+        n_shortlisted = 0
         for filepath in existing_pdfs:
-            process_file(
+            if process_file(
                 filepath, embedder, matcher, page_hit_path,
                 compute_hash, is_processed, mark_processed,
                 parse, notify, log_hit,
+            ):
+                n_shortlisted += 1
+        if n_shortlisted == 0:
+            print(
+                f"[Lumina Screen] WARNING: 0/{len(existing_pdfs)} resume(s) passed "
+                f"threshold {threshold:.2f}. Check DIAG lines above, or lower "
+                "'match_threshold' in config.json if scores are consistently below it."
             )
     else:
         print(f"[Lumina Screen] Startup scan   : folder empty, waiting for drops")
@@ -229,13 +258,24 @@ def main():
         except Exception as e:
             print(f"[Lumina Screen] Warning: Failed to check/reload JD: {e}")
 
-        new_files = watcher.poll()
-        for filepath in new_files:
-            process_file(
-                filepath, embedder, matcher, page_hit_path,
-                compute_hash, is_processed, mark_processed,
-                parse, notify, log_hit,
-            )
+        # BUG-LS4 FIX: Wrap watcher.poll() and file processing in try/except.
+        # Previously a transient PermissionError or OSError (e.g., from a momentarily
+        # unmounted NFS share or locked file) propagated unhandled out of the while-True
+        # loop and permanently killed the process with no restart signal.
+        try:
+            new_files = watcher.poll()
+            for filepath in new_files:
+                process_file(
+                    filepath, embedder, matcher, page_hit_path,
+                    compute_hash, is_processed, mark_processed,
+                    parse, notify, log_hit,
+                )
+        except KeyboardInterrupt:
+            raise  # let signal handler take over
+        except Exception as e:
+            import time as _time
+            print(f"[Lumina Screen] ERROR in poll loop: {e}. Retrying in {poll_interval}ms.")
+            _time.sleep(poll_interval / 1000.0)
 
 
 if __name__ == "__main__":

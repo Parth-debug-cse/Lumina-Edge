@@ -1412,6 +1412,7 @@ apiRouter.post('/router/load', async (req, res) => {
     path: targetPath, 
     port, 
     status: 'loading',
+    inference_count: 0,  // BUG-C1 FIX: was missing — caused NaN in /api/router/status total_inferences
     loaded_at: new Date().toISOString()
   };
   routerModels.set(id, modelInfo);
@@ -2117,7 +2118,12 @@ apiRouter.get('/lumina-screen/status', (req, res) => {
   let config = {};
   const configPath = path.join(luminaScreenDir, 'config.json');
   if (fs.existsSync(configPath)) {
-    try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
+    try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch (e) {
+      // BUG-UI2 FIX: Silent catch meant a malformed config.json returned empty config
+      // to the UI with no error signal, hiding the root cause from the operator.
+      console.error(`[LuminaScreen] config.json parse error: ${e.message}`);
+      config = { _parse_error: e.message };
+    }
   }
   let jd_text = '';
   const jdPath = path.join(luminaScreenDir, 'jd.txt');
@@ -2402,7 +2408,13 @@ print(json.dumps({"type": "done", "data": result}), flush=True)
           r.status = 'done';
           r.finalReport = msg.data;
         }
-      } catch (_) {}
+      } catch (e) {
+        // BUG-UI1 FIX: Silent swallow meant any non-JSON stdout line (e.g. a Python
+        // warning or print() from an imported library) silently dropped the line.
+        // If the final {"type":"done",...} chunk shared a buffer with a warning,
+        // the split could break it and the run would stay 'running' forever.
+        console.warn(`[LuminaAgent] Non-JSON stdout from agent: ${line.substring(0, 120)}`);
+      }
     }
   });
 
@@ -2734,7 +2746,10 @@ async function runStartupPipeline() {
         
         // Use the /api/router/load logic inline
         const id = Math.random().toString(36).substring(7);
-        const port = nextPort++;
+        // BUG-C3 FIX: Was `const port = nextPort++` — no availability check.
+        // If the startup port was already in use, llama-server/MLX would fail silently
+        // and the model would be stuck in status:'error' with no diagnostic.
+        const port = await findAvailablePort();
         
         const modelInfo = {
           id,
@@ -3213,11 +3228,17 @@ app.post('/v1/chat/completions', async (req, res) => {
         }
 
         try {
+          // BUG-C5 FIX (no-model streaming path): No timeout meant a hung backend held
+          // the connection open indefinitely, leaking a file descriptor and response object.
+          const _ac_s1 = new AbortController();
+          const _at_s1 = setTimeout(() => _ac_s1.abort(), 300_000); // 5-min max
           const response = await fetch(targetUrl, {
             method: 'POST',
             headers: headers,
-            body: JSON.stringify(body)
+            body: JSON.stringify(body),
+            signal: _ac_s1.signal,
           });
+          clearTimeout(_at_s1);
 
           if (!response.ok) {
             const errorText = await response.text();
@@ -3314,11 +3335,17 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
 
       try {
+        // BUG-C5 FIX (ready-model streaming path): No timeout meant a hung backend held
+        // the connection open indefinitely, leaking a file descriptor and response object.
+        const _ac_s2 = new AbortController();
+        const _at_s2 = setTimeout(() => _ac_s2.abort(), 300_000); // 5-min max
         const response = await fetch(targetUrl, {
           method: 'POST',
           headers: headers,
-          body: JSON.stringify(body)
+          body: JSON.stringify(body),
+          signal: _ac_s2.signal,
         });
+        clearTimeout(_at_s2);
 
         if (!response.ok) {
           const errorText = await response.text();
@@ -3357,6 +3384,15 @@ app.post('/v1/chat/completions', async (req, res) => {
       headers: headers,
       body: JSON.stringify(body)
     });
+
+    // BUG-C6 FIX: response.json() was called before checking response.ok.
+    // If the backend returned a non-JSON error body (e.g. plain-text '503 Service Unavailable'),
+    // response.json() would throw and the outer catch would return 500 — losing the original
+    // status code.  Now we forward the raw error text with the correct status.
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.status(response.status).json({ error: errText });
+    }
 
     const responseData = await response.json();
 
@@ -3408,9 +3444,18 @@ app.all(/^\/v1\/.*/, async (req, res) => {
         if (isMac) {
           // For MLX on Mac, use the full model path
           bodyToUse.model = path.join(modelsDir, readyModel.name);
-          // strip .safetensors/.npz extension if present — mlx_lm expects dir names
+          // Strip .safetensors/.npz extension if present — mlx_lm expects dir names.
+          // BUG-C2 FIX: Previous code called fs.statSync(modelBase) unconditionally;
+          // if the model name had no extension, modelBase was unchanged and statSync
+          // would throw ENOENT for non-existent paths, crashing the proxy request.
           const modelBase = bodyToUse.model.replace(/\.(safetensors|npz)$/i, '');
-          bodyToUse.model = fs.statSync(modelBase).isDirectory() ? modelBase : path.dirname(modelBase);
+          try {
+            bodyToUse.model = fs.existsSync(modelBase) && fs.statSync(modelBase).isDirectory()
+              ? modelBase
+              : path.dirname(modelBase);
+          } catch {
+            bodyToUse.model = path.dirname(modelBase);
+          }
         }
       }
       fetchOptions.body = JSON.stringify(bodyToUse);

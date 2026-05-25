@@ -7,10 +7,10 @@
 [![MLX](https://img.shields.io/badge/Apple_MLX-Native-000000?style=flat-square&logo=apple&logoColor=white)](https://github.com/Parth-debug-cse/Lumina-Edge)
 [![Vulkan](https://img.shields.io/badge/Vulkan-Supported-AC162C?style=flat-square&logo=vulkan&logoColor=white)](https://github.com/Parth-debug-cse/Lumina-Edge)
 [![CUDA](https://img.shields.io/badge/CUDA-535%2B-76B900?style=flat-square&logo=nvidia&logoColor=white)](https://github.com/Parth-debug-cse/Lumina-Edge)
-[![Goose](https://img.shields.io/badge/Goose-Agentic-7C3AED?style=flat-square&logo=go&logoColor=white)](https://github.com/block/goose)
+[![Aider](https://img.shields.io/badge/Aider-Integrated-7C3AED?style=flat-square&logo=git&logoColor=white)](https://github.com/Aider-AI/aider)
 <br/>
 
-**[Quick Start](#-quick-start) · [API Docs](#-openai-compatible-api) · [Goose Agent](#use-case-1---agentic-coding-assistant-with-goose) · [Benchmarks](#-benchmarks) · [Roadmap](#-roadmap) · [Contributing](#contributing)**
+**[Quick Start](#-quick-start) · [API Docs](#-openai-compatible-api) · [Lumina Aider](#use-case-1---agentic-coding-with-lumina-aider) · [Lumina Screen](#use-case-2---hr--legal-resume-screening-with-lumina-screen) · [Lumina Agent](#use-case-3---autonomous-it-ops-with-lumina-agent) · [Lumina Scout](#use-case-4---model-discovery--hardware-planning-with-lumina-scout) · [Benchmarks](#-benchmarks) · [Roadmap](#-roadmap) · [Contributing](#contributing)**
 
 </div>
 
@@ -22,6 +22,9 @@ You have a normal laptop. You want to run a local LLM — for privacy, offline a
 
 **Lumina Edge is built for that user.** It uses `llama.cpp` — the fastest open-source inference engine available — with OS-level memory reclamation that frees 1–2 GB before inference begins. The result is a fully operational local LLM with an OpenAI-compatible API endpoint, ready to drop into any existing codebase without touching a single credit.
 
+On Apple Silicon, Lumina Edge uses Apple's native **MLX framework** instead of llama.cpp, giving you unified memory access across CPU and GPU with zero overhead.
+
+---
 
 ## Architecture
 
@@ -75,7 +78,7 @@ Download the latest release from [ggml-org/llama.cpp](https://github.com/ggml-or
 
 ### Step 1B — Mac (Apple Silicon) Setup
 
-Apple silicon chips use **Unified Memory**, so Lumina Edge uses Apple's **MLX Framework**.
+Apple silicon chips use **Unified Memory**, so Lumina Edge uses Apple's **MLX Framework** instead of llama.cpp.
 
 **⚠️ Requirements:**
 - **Apple Silicon (M1/M2/M3/M4)** — Intel Macs are not supported
@@ -121,7 +124,7 @@ start_lumina.bat
 ```
 
 The launcher automatically:
-- Optimizes system for inference
+- Optimizes system memory for inference (frees 1–2 GB)
 - Starts the appropriate backend (MLX for Mac, llama-server for Windows/Linux)
 - Launches the API gateway and web UI
 - Opens your browser to the interface
@@ -338,7 +341,6 @@ On Linux, ensure executables have permission: `chmod +x bin/llama-*`
 The launcher scans `models/*.gguf` (Linux/Windows) or model directories (macOS). Run the web UI, go to the **Model Manager** tab and click **Download**, or use the API directly:
 
 ```bash
-# Download via API (put model file in models/ first)
 curl -X POST http://localhost:8090/api/download-model \
   -H "Content-Type: application/json" \
   -d '{"url": "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/mistral-7b-instruct-v0.2.Q4_K_M.gguf", "filename": "mistral-7b-instruct-v0.2.Q4_K_M.gguf"}'
@@ -373,9 +375,6 @@ export RADV_PERFTEST=gpu    # optional: enables AMD-specific optimizations
 # Verify installation
 vulkaninfo | grep "GPU id"
 ```
-
-
-Install the Vulkan Runtime from [vulkan.lunarg.com](https://vulkan.lunarg.com), then update your GPU drivers. Verify with: `vulkaninfo | grep "GPU id"`. A missing or outdated runtime is the most common cause on Windows laptops.
 </details>
 
 <details>
@@ -448,150 +447,378 @@ A full system reboot also restores all services automatically.
 - [x] KV cache quantization comparison (f16, q8_0, q5_0, q4_0)
 - [x] CPU vs iGPU benchmark module
 - [x] PowerShell scripts for Windows (`.ps1` launchers)
+- [x] **Lumina Aider** — agentic coding via Aider pointed at Lumina Edge's local API (USE CASE 1)
+- [x] **Lumina Screen** — HR/Legal RAG resume screening pipeline with ChromaDB + embeddings (USE CASE 2)
+- [x] **Lumina Agent** — local autonomous IT ops agent with tool loop and plain-English goal input (USE CASE 3)
+- [x] **Lumina Scout** — hardware-aware model discovery, ranking, and VRAM/quant planning from HuggingFace (USE CASE 4)
 - [ ] Advanced scheduling for multi-GPU setups
 - [ ] Model ensemble routing (combine outputs from multiple models)
 - [ ] Python SDK wrapper for programmatic lifecycle control
-- [x] Goose agentic coding assistant integration (USE CASE 1)
 
 ---
 
-## USE CASE 1 - Agentic Coding Assistant with Goose
+## USE CASE 1 - Agentic Coding with Lumina Aider
 
-Integrate [Goose](https://github.com/block/goose) (by Block/AAIF) as an autonomous coding agent on top of Lumina Edge's local API. Goose connects to `http://localhost:8090/v1`, reads/writes files, runs shell commands, observes output, and self-corrects — all without any cloud API calls or API keys.
+**Lumina Aider** connects [Aider](https://github.com/Aider-AI/aider) — a terminal-based AI coding assistant — to Lumina Edge's local OpenAI-compatible API. Aider reads your codebase, edits files, runs tests, and iterates on your behalf. Lumina Aider replaces the need for cloud API keys entirely: Aider talks to `http://localhost:8090/v1` instead of OpenAI.
 
 ### Architecture
 
 ```
 ┌────────────────────────────────────────────────────┐
-│  Goose (agentic coding layer)                      │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────┐ │
-│  │  Developer   │  │   Shell     │  │  File    │ │
-│  │  Extension   │  │  Extension  │  │  System  │ │
-│  └──────┬───────┘  └──────┬───────┘  └─────┬────┘ │
-│         └─────────────────┼─────────────────┘      │
-│                           │                        │
-│              OpenAI-compatible API call             │
-└───────────────────────────┼────────────────────────┘
-                            │
-                  ┌─────────▼─────────┐
-                  │  localhost:8090    │
-                  │  (Lumina Edge API) │
-                  ├────────────────────┤
-                  │  macOS: MLX        │
-                  │  Linux: llama.cpp  │
-                  │  Win:   llama.cpp  │
-                  └────────────────────┘
+│  Aider (agentic coding layer)                      │
+│  - Reads full repo context                         │
+│  - Edits files directly                            │
+│  - Runs shell commands & tests                     │
+│  - Observes output and self-corrects               │
+└───────────────────┬────────────────────────────────┘
+                    │  OpenAI-compatible API call
+          ┌─────────▼─────────┐
+          │  localhost:8090    │
+          │  (Lumina Edge API) │
+          ├────────────────────┤
+          │  macOS: MLX        │
+          │  Linux: llama.cpp  │
+          │  Win:   llama.cpp  │
+          └────────────────────┘
 ```
 
 ### Prerequisites
 
-- Lumina Edge installed and configured
-- At least one model in `models/` (GGUF for Linux/Win, MLX/safetensors for macOS)
-- Goose installed (use the install scripts below)
+- Lumina Edge installed and running with at least one model loaded
+- Aider installed: `pip install aider-chat`
 
-### Installation
+### Usage
 
-**Option 1 — Install scripts (recommended):**
+Point Aider at Lumina Edge's local API with a single flag:
 
 ```bash
 # macOS / Linux
-chmod +x install-goose.sh
-./install-goose.sh
+aider --openai-api-base http://localhost:8090/v1 \
+      --openai-api-key lumina-edge \
+      --model <your-loaded-model-name>
 
 # Windows PowerShell
-.\install-goose.ps1
+aider --openai-api-base http://localhost:8090/v1 `
+      --openai-api-key lumina-edge `
+      --model <your-loaded-model-name>
 ```
-> **Note:** The `install-goose.sh` and `install-goose.ps1` scripts are `<TODO>` and coming soon.
 
-The installer:
-1. Downloads and installs Goose if not already present
-2. Creates `~/.config/goose/config.yaml` (or `%APPDATA%\Block\goose\config\config.yaml` on Windows) pointing at `http://localhost:8090/v1`
-3. Enables the **developer** builtin extension (shell + file system tools)
-4. Creates a custom provider JSON for Goose Desktop GUI support
-5. Optionally verifies the connection if Lumina Edge is already running
+Or set environment variables to make it permanent:
 
-**Option 2 — Manual config:**
+```bash
+export OPENAI_API_BASE="http://localhost:8090/v1"
+export OPENAI_API_KEY="lumina-edge"
+aider --model <your-loaded-model-name>
+```
 
-```yaml
-# ~/.config/goose/config.yaml  (macOS/Linux)
-# %APPDATA%\Block\goose\config\config.yaml  (Windows)
-GOOSE_PROVIDER: "openai"
-GOOSE_MODE: "auto"
-GOOSE_MAX_TURNS: 1000
-OPENAI_API_KEY: "lumina-edge"
-OPENAI_HOST: "http://localhost:8090/v1"
+Aider will read your repo, accept plain-English instructions, and edit files directly — all powered by your local model, with no data leaving your machine.
 
-extensions:
-  developer:
-    bundled: true
-    enabled: true
-    name: developer
-    timeout: 300
-    type: builtin
+### Platform Rules
+
+| Platform | Backend | Notes |
+|----------|---------|-------|
+| macOS | MLX (`mlx_lm`) | Use MLX-format model; safetensors or quantized MLX |
+| Linux | llama.cpp + Vulkan | Use GGUF model |
+| Windows | llama.cpp | Use GGUF model |
+
+---
+
+## USE CASE 2 - HR / Legal Resume Screening with Lumina Screen
+
+**Lumina Screen** is a privacy-first, offline resume screening pipeline built into the Lumina Edge UI. Drop a job description and a folder of resumes (PDF) — Lumina Screen embeds them, scores candidates against the JD using semantic similarity, and alerts you when a strong match is found. No cloud, no vendor, no data leaving your machine.
+
+### Architecture
+
+```
+lumina_screen/
+├── jd.txt                  ← Active job description (watched by pipeline)
+├── resumes/                ← Drop PDFs here; pipeline picks them up automatically
+├── chroma_store/           ← Persistent ChromaDB vector store (auto-created)
+└── page_hit.txt            ← Log of shortlisted candidates with match scores
+
+Pipeline:
+  PDF → pdfplumber (text extraction)
+      → all-MiniLM-L6-v2 (sentence-transformer embeddings)
+      → ChromaDB (cosine similarity matching vs JD embedding)
+      → threshold filter (≥ configured score)
+      → OS popup notification + page_hit.txt log entry
+```
+
+### Stack
+
+| Component | Library | Notes |
+|-----------|---------|-------|
+| PDF parsing | `pdfplumber` | No OCR / tesseract required — text-layer PDFs only |
+| Embeddings | `sentence-transformers` (`all-MiniLM-L6-v2`) | Runs fully locally |
+| Vector store | `ChromaDB` | Persistent on disk; survives restarts |
+| Matching | Cosine similarity | No LLM in the matching path — fast, deterministic |
+| Notifications | OS-native popups | macOS, Windows, Linux all supported |
+| Polling interval | 250–400 ms | Watches the resumes folder for new drops |
+| LLM (optional) | 1B param non-reasoning model | Used for candidate summary generation only |
+
+### Setup
+
+Lumina Screen lives in `lumina_screen/` at the repo root and is accessible from the Lumina Edge UI under the **Lumina Screen** section. No separate install is required — just ensure the Lumina Screen dependencies are installed:
+
+```bash
+# Linux / Windows
+pip install --break-system-packages pdfplumber torch sentence-transformers
+
+# macOS
+pip install --break-system-packages -r scripts/requirements-macos.txt
+# (pdfplumber, torch, sentence-transformers are included)
 ```
 
 ### Usage
 
-**Single-command launcher (starts Lumina + Goose):**
+1. **Set your job description** — paste it into `lumina_screen/jd.txt` (or use the UI editor)
+2. **Drop resumes** — copy PDFs into `lumina_screen/resumes/`
+3. **Start the pipeline** — click **Start Screening** in the Lumina Screen UI section
+4. **Get notified** — OS popup fires when a candidate exceeds the similarity threshold; `page_hit.txt` logs every match with score
 
-```bash
-# macOS / Linux
-./start-goose.sh
+### Threshold Tuning
 
-# Windows PowerShell
-.\start-goose.ps1
+The similarity threshold controls how strict matching is. It is configurable in the UI.
+
+| Dataset size | Recommended starting threshold |
+|-------------|-------------------------------|
+| Small (< 60 resumes) | ~0.25 |
+| Medium (100–500) | ~0.35 |
+| Large (500+) | ~0.45 |
+
+Start lower and tune up. A threshold set too high will produce zero matches silently — if nothing fires, lower the threshold before debugging elsewhere.
+
+### Known Limitations
+
+- **Image-based PDFs** (scanned documents without a text layer) return empty text from `pdfplumber`. Lumina Screen does not include OCR. Validate that your PDFs are text-layer PDFs before troubleshooting match logic.
+- **Deduplication** — the pipeline tracks already-processed resumes in `processed.json`. If you re-run on the same folder without resetting this file, previously seen resumes will be skipped silently.
+
+---
+
+## USE CASE 3 - Autonomous IT Ops with Lumina Agent
+
+**Lumina Agent** is a local autonomous agent for IT operations tasks. Give it a plain-English goal — "find all services consuming more than 500 MB RAM and write a summary report" — and it will plan and execute the steps itself, using a loop of tool calls powered by your local Lumina Edge model. No cloud, no frameworks, no orchestration overhead.
+
+Built as a ~150-line raw Python agent, Lumina Agent demonstrates that meaningful autonomous capability does not require LangChain, AutoGen, or any heavyweight framework.
+
+### Architecture
+
 ```
-> **Note:** The `start-goose.sh` and `start-goose.ps1` scripts are `<TODO>` and coming soon.
-
-The launcher:
-1. Auto-detects your platform (MLX on macOS, llama-server on Linux/Win)
-2. Auto-detects the first available model in `models/`
-3. Starts the Lumina Edge API on port 8090
-4. Waits for the server to be ready
-5. Sets `OPENAI_API_KEY`, `OPENAI_HOST`, and `GOOSE_PROVIDER` env vars
-6. Launches `goose session start`
-
-**Or run Goose independently (Lumina must already be running):**
-
-```bash
-export OPENAI_API_KEY="lumina-edge"
-export OPENAI_HOST="http://localhost:8090/v1"
-goose session start
-```
-
-### What Goose Can Do
-
-With the developer extension enabled, Goose can autonomously:
-- **Read and write files** across the codebase
-- **Execute shell commands** (build, test, lint, git)
-- **Observe command output** and self-correct
-- **Loop until the task is complete** — no manual intervention
-
-### Platform Rules (automatically enforced by all scripts)
-
-| Platform | Backend | Script type | Config path |
-|----------|---------|-------------|-------------|
-| macOS    | MLX (`mlx_lm`) | `.sh` | `~/.config/goose/config.yaml` |
-| Linux    | llama.cpp + Vulkan | `.sh` | `~/.config/goose/config.yaml` |
-| Windows  | llama.cpp | `.ps1` | `%APPDATA%\Block\goose\config\config.yaml` |
-
-### Files
-
-| File | Purpose | Status |
-|------|---------|--------|
-| `.goosehints` | Project context injected as Goose system prompt automatically | `<TODO>` |
-| `install-goose.sh` | macOS/Linux installer | `<TODO>` |
-| `install-goose.ps1` | Windows installer | `<TODO>` |
-| `start-goose.sh` | macOS/Linux launcher (Lumina + Goose) | `<TODO>` |
-| `start-goose.ps1` | Windows launcher (Lumina + Goose) | `<TODO>` |
-
-### Verify Configuration
-
-```bash
-goose info -v
+User: plain-English goal
+        │
+        ▼
+┌──────────────────────────────────────────┐
+│  Lumina Agent loop                       │
+│                                          │
+│  1. Send goal + history to local LLM     │
+│  2. LLM responds with tool call          │
+│  3. Execute tool, capture output         │
+│  4. Append result to history             │
+│  5. Repeat until LLM calls report()     │
+└──────────────────────────────────────────┘
+        │
+        ▼
+  Final report delivered to user
 ```
 
-This shows the active provider, model, extensions, and all settings.
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `run_shell` | Execute any shell command and capture stdout/stderr |
+| `read_file` | Read a file from disk |
+| `write_file` | Write content to a file |
+| `http_get` | Make an HTTP GET request and return the response body |
+| `report` | Deliver the final answer / report to the user — terminates the loop |
+
+### Setup
+
+Lumina Agent lives in `lumina_agent/` at the repo root and is accessible from the Lumina Edge UI under the **Lumina Agent** section.
+
+```bash
+# No extra dependencies — uses only the Python standard library
+# plus the Lumina Edge API already running on port 8090
+```
+
+### Usage
+
+1. **Start Lumina Edge** with a model loaded (any capable model; 7B+ recommended for reliable tool use)
+2. **Open the Lumina Agent section** in the UI
+3. **Enter a plain-English goal**, for example:
+   - `List all running processes sorted by memory usage and save the top 10 to a file`
+   - `Check disk usage on all mounted volumes and alert me if any is above 80%`
+   - `Fetch the latest releases from the llama.cpp GitHub API and summarize what changed`
+4. **Click Run** — the agent loop starts, tool calls execute, and the final report appears when the LLM calls `report()`
+
+### Platform Rules
+
+| Platform | Shell available | Notes |
+|----------|----------------|-------|
+| macOS | `/bin/bash` | Full tool support |
+| Linux | `/bin/bash` | Full tool support |
+| Windows | `cmd.exe` / PowerShell | `run_shell` uses `cmd.exe` by default |
+
+### Security Note
+
+`run_shell` executes commands with the same privileges as the process running Lumina Agent. Use on trusted local machines only. Do not expose the Lumina Edge API port to untrusted networks when Lumina Agent is active.
+
+---
+
+## Benchmarks
+
+![Benchmark chart](assets/lumina_edge_benchmarks.svg)
+
+*Tokens/sec measured on Intel Core i5-8250U · 8 GB DDR4 · Deepseek 7b Q4\_K\_M.*
+
+---
+
+## USE CASE 4 - Model Discovery & Hardware Planning with Lumina Scout
+
+**Lumina Scout** tells you exactly which models from HuggingFace will run on your hardware, how fast they'll be, and what quantization to use — before you download anything. It detects your GPU, RAM, and platform automatically, fetches live model data from the HuggingFace Hub, and ranks candidates using a weighted scoring model that accounts for fit, estimated throughput, parameter count, popularity, and quantization quality.
+
+Accessible from the **Lumina Scout** section in the Lumina Edge UI.
+
+### Architecture
+
+```
+lumina_scout/
+├── scout.py        ← Public API consumed by Lumina Edge UI routes
+├── hardware.py     ← Platform-aware GPU/CPU/RAM detection
+├── fetcher.py      ← HuggingFace Hub API client with 6-hour cache + stale fallback
+├── ranker.py       ← Scoring engine: fit × speed × size × popularity × quant quality
+├── cache/          ← Auto-created; stores per-profile JSON cache files
+└── requirements.txt
+```
+
+### Three Core Features
+
+#### 1. Model Recommendations
+
+Fetches the top models from HuggingFace for a chosen profile, scores each against your hardware, and returns a ranked list with per-model VRAM requirements, estimated tokens/sec, recommended quantization, and fit type.
+
+**Profiles:**
+
+| Profile | What it fetches |
+|---------|----------------|
+| `general` | Broad text-generation + GGUF models |
+| `coding` | Code and coder-specific models |
+| `math` | Math-focused text-generation models |
+| `vision` | Image-to-text / multimodal models |
+
+**Fit types:**
+
+| Fit Type | Meaning |
+|----------|---------|
+| `full_gpu` | Model fits entirely in VRAM — fastest |
+| `partial_offload` | Model partially offloaded to CPU RAM — still usable |
+| `cpu_only` | Too large for VRAM; runs on CPU — slow |
+
+#### 2. Hardware Detection
+
+Lumina Scout auto-detects your machine before ranking. It probes platform-specific sources in priority order and returns the best available result.
+
+| Platform | GPU Detection Method |
+|----------|---------------------|
+| macOS | `system_profiler SPHardwareDataType` → `sysctl` fallback |
+| Windows | `nvidia-smi` → `wmic` (AMD) |
+| Linux | `nvidia-smi` → `rocm-smi` → `/sys/class/drm` sysfs |
+
+On Apple Silicon, total unified memory is used as VRAM (since the GPU and CPU share the same pool). Backend is inferred automatically: `mlx` for Apple Silicon, `llama.cpp` for discrete GPU, `cpu` for CPU-only.
+
+#### 3. Model Planner (`get_plan`)
+
+Given a model name like `"llama 3 70b"`, Scout generates a full compatibility and planning report without fetching anything from HuggingFace:
+
+- **VRAM required** at every supported quantization (Q2\_K through F16)
+- **KV cache estimate** for your chosen context length
+- **GPU compatibility table** — a ranked list of reference GPUs (NVIDIA, AMD, Apple) showing fit type and estimated tokens/sec for each
+- Your actual GPU is inserted at the top of the table if it isn't already in the reference list
+
+### Scoring Model
+
+Each candidate model receives a score out of 100:
+
+| Component | Weight | Logic |
+|-----------|--------|-------|
+| Fit score | 40% | Full GPU = 40pts; partial offload = scaled by VRAM ratio; CPU-only = 5pts |
+| Speed score | 20% | `bandwidth_GBs / (params_B × bytes_per_weight)`, capped at 200 tps → scaled to 20pts |
+| Size score | 20% | Log-scaled reward for fitting more parameters within available VRAM |
+| Popularity | 10% | Log-scaled downloads + likes from HuggingFace |
+| Quant quality | 10% | Higher bitrate quants score higher (Q2\_K = 3/10 → F16/BF16 = 10/10) |
+
+**Quantization auto-selection:** Scout picks the highest-quality quant that fits your VRAM (trying Q5\_K\_M → Q4\_K\_M → Q3\_K\_M → Q2\_K). You can override this with an explicit `quant` filter.
+
+### Stack
+
+| Component | Library | Notes |
+|-----------|---------|-------|
+| HF API client | `httpx` | Raw HTTP only — no HuggingFace SDK |
+| Hardware probing | `psutil` + subprocess | stdlib subprocess for GPU; psutil for RAM/CPU |
+| Cache | JSON files in `cache/` | 6-hour TTL; stale fallback if API is unreachable |
+
+Dependencies are minimal by design: `httpx>=0.27` and `psutil>=5.9` only.
+
+### Setup
+
+```bash
+# Linux / Windows
+pip install --break-system-packages httpx psutil
+
+# macOS
+pip install --break-system-packages -r scripts/requirements-macos.txt
+# (httpx and psutil are included)
+```
+
+No model download required. Lumina Scout works immediately after install.
+
+### UI Usage
+
+1. Open the **Lumina Scout** section in the Lumina Edge UI
+2. Your hardware is detected and displayed automatically (GPU, VRAM, RAM, inferred backend)
+3. **Recommendations tab** — pick a profile, set how many results you want, optionally filter by quant or minimum speed, and click **Find Models**
+4. **Planner tab** — type a model name (e.g. `mistral 7b`, `llama 3 70b`), set context length, and get the full compatibility table and per-quant VRAM breakdown
+5. Click any recommended model's **Download** button to hand it off directly to Lumina Edge's model downloader
+
+### API Usage (direct)
+
+Scout's public API (`scout.py`) can also be called directly from Python or wired into other tooling:
+
+```python
+from lumina_scout.scout import get_hardware_info, get_recommendations, get_plan
+
+# Detect hardware
+hw = get_hardware_info()
+# {'gpu_name': 'Apple M3 Pro', 'vram_gb': 36.0, 'backend': 'mlx', ...}
+
+# Get top 5 coding models for this machine
+recs = get_recommendations(top=5, profile="coding")
+for r in recs:
+    print(f"#{r['rank']} {r['model_id']}  score={r['score']}  "
+          f"quant={r['quant']}  ~{r['speed_tps']} tps  fit={r['fit_type']}")
+
+# Plan a specific model
+plan = get_plan("llama 3 70b", quant="Q4_K_M", context_length=8192)
+print(f"VRAM needed: {plan['recommended_vram_gb']} GB")
+print(f"KV cache: {plan['kv_cache_estimate_gb']} GB")
+for gpu in plan['gpu_compatibility'][:5]:
+    print(f"  {gpu['name']}: {gpu['fit_type']}  ~{gpu['estimated_tok_per_sec']} tps")
+```
+
+**Optional overrides:**
+
+```python
+# Force CPU-only mode (useful for machines without a discrete GPU)
+get_recommendations(cpu_only=True)
+
+# Simulate a hypothetical GPU ("what if I had an RTX 4090?")
+get_recommendations(gpu_override="NVIDIA RTX 4090")
+
+# Force a cache refresh (bypass the 6-hour TTL)
+get_recommendations(refresh=True)
+
+# Filter: only models that can do at least 15 tokens/sec on your hardware
+get_recommendations(min_speed=15.0)
+```
 
 ---
 

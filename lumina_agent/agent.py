@@ -17,7 +17,7 @@ _stop_flags: dict[str, threading.Event] = {}
 def call_llm(messages: list) -> str:
     url = f"{LUMINA_API_BASE}/chat/completions"
     payload = {
-        "model": LUMINA_MODEL,
+        "model": LUMINA_MODEL(),  # callable — resolves lazily on first LLM call (BUG-LA4 fix)
         "messages": messages,
         "temperature": 0,
         "max_tokens": 1024,  # bumped for 3B model
@@ -219,14 +219,28 @@ def run_agent(goal: str, run_id: str, on_update=None) -> str:
                     tool_args = tool_call["args"]
                     thought = tool_call.get("thought", "")
                     this_call = (tool_name, json.dumps(tool_args, sort_keys=True))
-                except (RuntimeError, ValueError):
+                except (RuntimeError, ValueError) as e:
+                    # BUG-LA3 FIX: RuntimeError means the LLM API is down or timed out.
+                    # Previously this was silently swallowed with a bare `continue`, letting
+                    # the agent burn through remaining iterations with no error signal.
+                    if isinstance(e, RuntimeError):
+                        return f"AGENT ERROR: {str(e)}"
+                    # ValueError = parse failure on the retry — record and continue
+                    steps.append(f"Step {iteration}: DUPLICATE_RETRY_FAILED → {str(e)}")
                     continue
 
             last_call = this_call
             duplicate_count = 0
 
             # Execute the tool
-            tool_result = execute_tool(tool_name, tool_args)
+            # BUG-LA5 FIX: Wrap execute_tool at the call site. execute_tool() already has
+            # an inner try/except, but a crash in the TOOLS lambda itself (before the inner
+            # function is reached) would propagate up and exit run_agent with a raw exception
+            # string rather than a clean AGENT ERROR prefix.
+            try:
+                tool_result = execute_tool(tool_name, tool_args)
+            except Exception as e:
+                tool_result = f"ERROR: unexpected crash dispatching tool '{tool_name}': {e}"
 
             # Truncate results to 800 chars per step to keep context small for edge LLMs
             display_result = tool_result

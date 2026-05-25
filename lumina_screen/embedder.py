@@ -64,6 +64,14 @@ class Embedder:
     """
 
     def __init__(self, chroma_path, jd_text):
+        # BUG-LS7 FIX: An empty JD text produces a zero-vector embedding, causing every
+        # resume to score ~0.0 silently.  Fail fast here with an actionable message.
+        if not jd_text or not jd_text.strip():
+            raise ValueError(
+                "JD text is empty — cannot compute embeddings. "
+                "Please add content to jd.txt before starting the pipeline."
+            )
+
         os.makedirs(chroma_path, exist_ok=True)
 
         # BUG LS-7 FIX: Use the module-level singleton instead of constructing

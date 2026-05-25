@@ -32,8 +32,25 @@ def _detect_model(base: str) -> str:
 # This is the key fix (bug LA-1) — previously pointing at 8091 bypassed model switching.
 LUMINA_API_BASE = os.environ.get("LUMINA_API_BASE", "http://localhost:8090/v1")
 
-# Autodetect model name, or fall back to "local-model" if API isn't loaded yet
-LUMINA_MODEL = os.environ.get("LUMINA_MODEL") or _detect_model(LUMINA_API_BASE)
+# BUG-LA4 FIX: _detect_model() was called at *import time*, adding up to 3 s of HTTP
+# latency to every agent run (the inline subprocess in api-server.js imports this module
+# fresh per run).  Detection is now deferred to the first actual LLM call via get_model().
+_LUMINA_MODEL_OVERRIDE = os.environ.get("LUMINA_MODEL")
+_lumina_model_cache: "str | None" = None
+
+
+def get_model() -> str:
+    """Return the active model name, auto-detecting from the API on first call (lazy)."""
+    global _lumina_model_cache
+    if _lumina_model_cache is None:
+        _lumina_model_cache = _LUMINA_MODEL_OVERRIDE or _detect_model(LUMINA_API_BASE)
+    return _lumina_model_cache
+
+
+# Backward-compatibility shim: code that previously imported LUMINA_MODEL as a string
+# can now call it as LUMINA_MODEL() to get the lazily-resolved value.
+LUMINA_MODEL = get_model
+
 # Hard limit on agent loop iterations to prevent runaway calls
 MAX_ITERATIONS = int(os.environ.get("LUMINA_MAX_ITERATIONS", "12"))
 # Per-LLM-request timeout — needs to be generous for slow edge hardware
