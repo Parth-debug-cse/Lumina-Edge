@@ -147,7 +147,7 @@ Write-Host "  Binary: $LLAMA_SERVER" -ForegroundColor Gray
 Write-Host "  Args: $($Arguments -join ' ')" -ForegroundColor DarkGray
 Write-Host ""
 
-$proc = Start-Process -FilePath $LLAMA_SERVER -ArgumentList $Arguments -NoNewWindow -PassThru
+$proc = Start-Process -FilePath $LLAMA_SERVER -ArgumentList $Arguments -NoNewWindow -PassThru -PriorityClass High
 
 # Wait up to 30 seconds for the model endpoint to respond
 $Ready = $false

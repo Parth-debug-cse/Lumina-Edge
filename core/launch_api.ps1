@@ -189,7 +189,7 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 $Process = $null
 try {
     $ErrorLogFile = "$LogFile.err"
-    $Process = Start-Process -FilePath $BinaryPath -ArgumentList $Arguments -RedirectStandardOutput $LogFile -RedirectStandardError $ErrorLogFile -WindowStyle Hidden -PassThru
+    $Process = Start-Process -FilePath $BinaryPath -ArgumentList $Arguments -RedirectStandardOutput $LogFile -RedirectStandardError $ErrorLogFile -WindowStyle Hidden -PassThru -PriorityClass High
 
     Write-Host "Server started with PID: $($Process.Id)" -ForegroundColor Green
     Write-Host "Waiting for server to initialize..." -ForegroundColor Yellow

@@ -60,6 +60,10 @@ pip-log.txt
 pip-delete-this-directory.txt
 .pytest_cache/
 
+# System diagnostics (never commit hardware dumps)
+dxdiag*.txt
+dxdiag*.out
+
 # OS files
 .DS_Store
 Thumbs.db
@@ -89,9 +93,7 @@ lumina_screen/chroma_store/
 lumina_screen/jd.txt
 lumina_screen/page_hit.txt
 lumina_screen/processed.json
-lumina_screen/resumes/test_*.pdf
-lumina_screen/resumes/final_test_*.pdf
-lumina_screen/resumes/final_verification_*.pdf
+lumina_screen/resumes/*.pdf
 lumina_screen/models/
 resumes/
 .lumina_run/
