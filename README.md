@@ -64,7 +64,7 @@ pip install --break-system-packages -r scripts/requirements-macos.txt
 chmod +x linux.sh mac.sh start_api.sh bin/llama-*
 ```
 
-**macOS:** no separate binary download needed — `start_api.sh` and `mac.sh` both auto-detect Apple Silicon and use MLX instead of llama.cpp. Requires macOS 12.3+. MLX models use `.safetensors`, not GGUF (convert via the **Converter** tab in the UI, or load an MLX-native model directly from HuggingFace).
+**macOS:** no separate binary download needed — `start_api.sh` and `mac.sh` both auto-detect Apple Silicon and use MLX instead of llama.cpp. Requires macOS 12.3+. MLX models use `.safetensors`, not GGUF (convert via the **Convert** button on the Models tab, or load an MLX-native model directly from HuggingFace).
 
 **Linux / macOS — full stack (backend + API gateway + UI), auto-loads a model from `config.json` or a flag:**
 
@@ -158,29 +158,26 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-Same call structure works for streaming, Node.js, PowerShell, and cURL — swap `base_url` and `model` to move between local and cloud inference with zero other code changes.
+`/v1/models` and `/v1/chat/completions` are enriched specifically for **Continue, Cline, and other OpenAI-compatible extension clients** — same call structure works for streaming, Node.js, PowerShell, and cURL. `/v1/*` is only on the primary port (8090), not mirrored to the secondary management port.
 
-**Management endpoints** (port 8090 or 8081):
+**Management API** — all routes below live under `/api/*` and are mirrored on both `8090` (primary) and `8081` (secondary, management-only):
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/health` | GET | Server health check |
-| `/api/system-info` | GET | Platform, arch, Apple Silicon detection |
-| `/api/system/resources` | GET | CPU, RAM, iGPU/GPU, VRAM, model processes |
-| `/api/system/optimize` | POST | Run system memory optimization |
-| `/api/config` / `/api/save-config` | GET/POST | Read or update configuration |
-| `/api/models/list` | GET | List available models |
-| `/api/models/convertible` | GET | List convertible model files |
-| `/api/inference/profile` | POST | Profile inference speed (tok/s, latency) |
-| `/api/inference/diagnose` | GET | System-level inference diagnostics |
-| `/api/inference/report` | GET | Full diagnostics + profiling report |
-| `/api/benchmark/gpu` / `/api/benchmark/quick` | POST | Full or quick CPU vs GPU benchmark |
-| `/api/memory/estimate` | POST | Estimate memory for model at given ctx_size |
-| `/api/memory/recommend-ctx` | POST | Auto-recommend optimal context size |
-| `/api/memory/compare-kv` | POST | Compare KV cache quantizations |
-| `/api/download-model` | POST | Download model from HuggingFace |
-| `/api/convert-model` | POST | Convert model format |
-| `/api/quantize-model` | POST | Quantize model (macOS MLX) |
+| Category | Endpoints |
+|----------|-----------|
+| Health / info | `GET /health`, `GET /system-info`, `GET /supported-formats`, `GET /hardware-info` |
+| System resources | `GET /system/resources`, `POST /system/optimize`, `GET /optimized-config`, `POST /reoptimize` |
+| Config | `GET /config`, `POST /save-config`, `GET /context-config`, `POST /adjust-context` |
+| Models | `GET /models/list`, `GET /models/convertible`, `GET /model-exists`, `GET /hf-files` |
+| Model conversion | `POST /convert-model`, `POST /quantize-model`, `GET /conversion-status`, `POST /convert/memory-estimate`, `POST /convert/sharded`, `POST /convert/detect-shards` |
+| Model download | `POST /download-model`, `GET /download-status`, `GET /download-jobs` |
+| Router (hot-swap / multi-model) | `GET /router/status`, `GET /router/models`, `GET /router/active-port`, `GET /router/events`, `GET /router/routes`, `POST /router/policy`, `POST /router/load`, `DELETE /router/unload/:id`, `DELETE /router/unload-all` |
+| Inference diagnostics | `POST /inference/profile`, `GET /inference/diagnose`, `GET /inference/report` |
+| Benchmarking | `POST /benchmark/gpu`, `POST /benchmark/quick` |
+| Memory planning | `POST /memory/estimate`, `POST /memory/recommend-ctx`, `POST /memory/compare-kv` |
+| Chat launcher | `GET /chat-url`, `POST /open-chat` |
+| Lumina Screen | `GET /lumina-screen/status`, `POST /lumina-screen/start`, `POST /lumina-screen/stop`, `POST /lumina-screen/config`, `POST /lumina-screen/rescan`, `GET /lumina-screen/hits`, `POST /lumina-screen/clear-hits` |
+| Lumina Agent | `POST /lumina-agent/run`, `GET /lumina-agent/status/:runId`, `POST /lumina-agent/stop/:runId` |
+| Lumina Scout | `GET /lumina-scout/hardware`, `GET /lumina-scout/recommend`, `GET /lumina-scout/plan` |
 
 ---
 
@@ -195,7 +192,7 @@ Extract the llama.cpp release directly into `bin/` — binaries must sit at the 
 <details>
 <summary><strong>No models appear in the selection list</strong></summary>
 
-Use the **Model Manager** tab to download, or place a `.gguf` file directly in `models/`. Non-GGUF formats won't appear on Linux/Windows.
+Use the **Models** tab (sidebar) to download, or place a `.gguf` file directly in `models/`. Non-GGUF formats won't appear on Linux/Windows.
 </details>
 
 <details>
