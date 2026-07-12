@@ -332,15 +332,6 @@ get_recommendations(min_speed=15.0)                       # filter by min tok/s
 
 Stack: `httpx` for API calls, `psutil` for hardware probing — no heavier dependencies.
 
----
-
-## Benchmarks
-
-![Benchmark chart](assets/lumina_edge_benchmarks.svg)
-
-*Measured on Intel Core i5-8250U · 8 GB DDR4 · Deepseek 7B Q4_K_M.*
-
----
 
 ## Contributing
 
