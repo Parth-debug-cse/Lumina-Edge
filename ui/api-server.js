@@ -1562,6 +1562,8 @@ const kvCacheTypeK = config.kv_cache_type_k || config.kv_cache_quant || 'q4_0';
 const kvCacheTypeV = config.kv_cache_type_v || config.kv_cache_quant || 'q4_0';
 const splitMode = config.split_mode || 'row';
 const httpThreads = parseInt(config.http_threads) || 2;
+const threads = parseInt(config.threads) || 4;
+const threadsBatch = parseInt(config.threads_batch) || 4;
 const useMlock = config.use_mlock === true;
 const contBatching = config.cont_batching !== false;
 const promptCache = config.prompt_cache === true;
@@ -1578,6 +1580,8 @@ const cmdArgs = [
   '--batch-size', batchSize.toString(),       // prompt batch size
   '--ubatch-size', ubatchSize.toString(),     // micro-batch size
   '--split-mode', splitMode,                  // tensor split mode
+  '--threads', threads.toString(),            // generation threads (physical cores)
+  '--threads-batch', threadsBatch.toString(),  // prompt processing threads (logical threads)
   '--threads-http', httpThreads.toString(),   // HTTP server threads
   '--flash-attn', 'on',                       // Flash Attention enabled
   '--cache-type-k', kvCacheTypeK,            // KV key cache quantization
@@ -1598,6 +1602,7 @@ if (!promptCache) {
 // Log actual flags being passed to llama-server
 console.log(`[Router] Launching llama-server with flags:`);
 console.log(`[Router]   ctx-size: ${ctxSize}`);
+console.log(`[Router]   threads: ${threads}, threads-batch: ${threadsBatch}`);
 console.log(`[Router]   n-gpu-layers: ${effectiveGpuLayers || nGpuLayers}`);
 console.log(`[Router]   kv-cache-type-k: ${kvCacheTypeK}, kv-cache-type-v: ${kvCacheTypeV}`);
 console.log(`[Router]   mlock: ${useMlock}`);
@@ -2828,6 +2833,8 @@ const kvCacheTypeK = cfg.kv_cache_type_k || cfg.kv_cache_quant || 'q4_0';
 const kvCacheTypeV = cfg.kv_cache_type_v || cfg.kv_cache_quant || 'q4_0';
 const splitMode = cfg.split_mode || 'row';
 const httpThreads = parseInt(cfg.http_threads) || 2;
+const threads = parseInt(cfg.threads) || 4;
+const threadsBatch = parseInt(cfg.threads_batch) || 4;
 const useMlock = cfg.use_mlock === true;
 const contBatching = cfg.cont_batching !== false;
 const promptCache = cfg.prompt_cache === true;
@@ -2844,6 +2851,8 @@ const cmdArgs = [
   '--batch-size', batchSize.toString(),       // prompt batch size
   '--ubatch-size', ubatchSize.toString(),     // micro-batch size
   '--split-mode', splitMode,                  // tensor split mode
+  '--threads', threads.toString(),            // generation threads (physical cores)
+  '--threads-batch', threadsBatch.toString(),  // prompt processing threads (logical threads)
   '--threads-http', httpThreads.toString(),   // HTTP server threads
   '--flash-attn', 'on',                       // Flash Attention always on
   '--cache-type-k', 'q4_0',                  // KV key cache always q4_0
@@ -2864,6 +2873,7 @@ if (!promptCache) {
 // Log actual flags being passed to llama-server
 console.log(`[Startup] Launching llama-server with flags:`);
 console.log(`[Startup]   ctx-size: ${ctxSize}`);
+console.log(`[Startup]   threads: ${threads}, threads-batch: ${threadsBatch}`);
 console.log(`[Startup]   n-gpu-layers: ${effectiveGpuLayers || nGpuLayers}`);
 console.log(`[Startup]   kv-cache-type-k: ${kvCacheTypeK}, kv-cache-type-v: ${kvCacheTypeV}`);
 console.log(`[Startup]   mlock: ${useMlock}`);

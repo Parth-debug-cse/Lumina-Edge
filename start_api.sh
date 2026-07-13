@@ -103,6 +103,8 @@ TOP_K=$(get_config top_k 20)
 TOP_P=$(get_config top_p 0.9)
 REPEAT_PENALTY=$(get_config repeat_penalty 1.1)
 HTTP_THREADS=$(get_config http_threads 2)
+THREADS=$(get_config threads 4)
+THREADS_BATCH=$(get_config threads_batch 4)
 CONT_BATCHING=$(get_config cont_batching true)
 KV_CACHE_QUANT=$(get_config kv_cache_quant 'q4_0')
 USE_MLOCK=$(get_config use_mlock true)
@@ -113,11 +115,12 @@ KV_QUANT=$(get_config kv_quant 'q4_0')
 KV_CACHE_TYPE_K=$(get_config kv_cache_type_k 'q4_0')
 KV_CACHE_TYPE_V=$(get_config kv_cache_type_v 'q4_0')
 
+
 # llama.cpp flags need --flag or nothing — convert boolean to on/off
 if [[ "$FLASH_ATTN" == "true" ]]; then
-    FLASH_ATTN_FLAG="--flash-attn"
+    FLASH_ATTN_FLAG="--flash-attn on"
 else
-    FLASH_ATTN_FLAG=""
+    FLASH_ATTN_FLAG="--flash-attn off"
 fi
 
 MLOCK_FLAG=""
@@ -197,6 +200,7 @@ if [[ "$GPU" == "mlx" ]]; then
 else
     echo "Context Size: $CTX_SIZE"
     echo "GPU Layers: $N_GPU_LAYERS"
+    echo "Threads: $THREADS (Batch: $THREADS_BATCH)"
     BACKEND_LOG="$RUNDIR/llama_server.log"
     echo ""
     echo "  Starting llama-server in background (log: $BACKEND_LOG)..."
@@ -207,6 +211,8 @@ else
         --n-gpu-layers "$N_GPU_LAYERS" \
         --batch-size "$BATCH_SIZE" \
         --ubatch-size "$UBATCH_SIZE" \
+        --threads "$THREADS" \
+        --threads-batch "$THREADS_BATCH" \
         $FLASH_ATTN_FLAG \
         --min-p "$MIN_P" \
         --top-k "$TOP_K" \

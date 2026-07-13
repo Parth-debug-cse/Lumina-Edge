@@ -1,4 +1,4 @@
-﻿# ==============================================================================
+# ==============================================================================
 # start_api.ps1 - Lumina Edge Backend Launcher (Windows PowerShell)
 # Starts llama-server directly. All settings read from config.json.
 # Usage: .\start_api.ps1 [-Model "models\model.gguf"] [-Port 8091]
@@ -88,12 +88,14 @@ $TopK = Get-ConfigValue "top_k" 40
 $RepeatPenalty = Get-ConfigValue "repeat_penalty" 1.1
 $MinP = Get-ConfigValue "min_p" 0.05
 $HttpThreads = Get-ConfigValue "http_threads" 2
+$Threads = Get-ConfigValue "threads" 4
+$ThreadsBatch = Get-ConfigValue "threads_batch" 4
 $FlashAttn = Get-ConfigValue "flash_attn" $true
 $NoMmap = Get-ConfigValue "no_mmap" $true
 $ContBatching = Get-ConfigValue "cont_batching" $true
 $KvCacheTypeK = Get-ConfigValue "kv_cache_type_k" "q4_0"
 $KvCacheTypeV = Get-ConfigValue "kv_cache_type_v" "q4_0"
-
+ 
 Write-Host ""
 Write-Host "Lumina Edge Backend (Windows)" -ForegroundColor Cyan
 Write-Host "=============================" -ForegroundColor Cyan
@@ -101,8 +103,9 @@ Write-Host "  Model:       $ModelPath" -ForegroundColor Green
 Write-Host "  Port:        $FinalPort" -ForegroundColor Green
 Write-Host "  Ctx Size:    $CtxSize" -ForegroundColor Green
 Write-Host "  GPU Layers:  $NGpuLayers" -ForegroundColor Green
+Write-Host "  Threads:     $Threads (Batch: $ThreadsBatch)" -ForegroundColor Green
 Write-Host ""
-
+ 
 # Install Lumina Scout dependencies
 $ScoutReqs = Join-Path $Root "lumina_scout\requirements.txt"
 if (Test-Path $ScoutReqs) {
@@ -110,14 +113,14 @@ if (Test-Path $ScoutReqs) {
     pip install -q -r $ScoutReqs 2>&1 | Out-Null
     Write-Host "  Scout dependencies installed" -ForegroundColor Green
 }
-
+ 
 $LLAMA_SERVER = Join-Path $Root "bin\llama-server.exe"
 if (-not (Test-Path $LLAMA_SERVER)) {
     Write-Host "ERROR: llama-server.exe not found in bin\" -ForegroundColor Red
     Write-Host "  Download llama.cpp binaries from: https://github.com/ggml-org/llama.cpp/releases/latest"
     exit 1
 }
-
+ 
 $Arguments = @(
     "-m", $ModelPath,
     "--port", $FinalPort,
@@ -126,6 +129,8 @@ $Arguments = @(
     "--n-gpu-layers", $NGpuLayers,
     "--batch-size", $BatchSize,
     "--ubatch-size", $UbatchSize,
+    "--threads", $Threads,
+    "--threads-batch", $ThreadsBatch,
     "--threads-http", $HttpThreads,
     "--temperature", $Temperature,
     "--top-p", $TopP,
@@ -138,7 +143,11 @@ $Arguments = @(
 )
 
 # Only add boolean flags when true (llama-server fails on empty flag args)
-if ($FlashAttn -eq $true) { $Arguments += "--flash-attn" }
+if ($FlashAttn -eq $true) {
+    $Arguments += @("--flash-attn", "on")
+} else {
+    $Arguments += @("--flash-attn", "off")
+}
 if ($NoMmap -eq $true) { $Arguments += "--no-mmap" }
 if ($ContBatching -eq $true) { $Arguments += "--cont-batching" }
 
@@ -147,7 +156,8 @@ Write-Host "  Binary: $LLAMA_SERVER" -ForegroundColor Gray
 Write-Host "  Args: $($Arguments -join ' ')" -ForegroundColor DarkGray
 Write-Host ""
 
-$proc = Start-Process -FilePath $LLAMA_SERVER -ArgumentList $Arguments -NoNewWindow -PassThru -PriorityClass High
+$proc = Start-Process -FilePath $LLAMA_SERVER -ArgumentList $Arguments -NoNewWindow -PassThru
+try { $proc.PriorityClass = "High" } catch {}
 
 # Wait up to 30 seconds for the model endpoint to respond
 $Ready = $false
