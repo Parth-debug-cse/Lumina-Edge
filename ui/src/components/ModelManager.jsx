@@ -4,7 +4,7 @@ import {
   getSessions, exportAsJSON, exportAsMarkdown,
   deleteSession,
 } from '../utils/storage.js'
-import { downloadModel, optimizeSystem, loadModel as apiLoadModel, fetchHFFiles, getSystemInfo, fetchConfig, saveConfig, getRouterStatus, unloadAllModels, getDownloadStatus } from '../utils/api.js'
+import { apiFetch, downloadModel, optimizeSystem, loadModel as apiLoadModel, fetchHFFiles, getSystemInfo, fetchConfig, saveConfig, getRouterStatus, unloadAllModels, getDownloadStatus } from '../utils/api.js'
 import ConverterTab from './ConverterTab.jsx'
 
 // Helper to detect model format by file extension or directory type
@@ -432,7 +432,7 @@ function LocalModelCard({ model, tags, adding, tagInputVal, onTagInputChange, on
     setConverting(true)
     try {
       toast('Converting to GGUF... This may take several minutes.', 'info')
-      const response = await fetch('/api/convert-model', {
+      const response = await apiFetch('/api/convert-model', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -791,7 +791,7 @@ function CustomHFLinkPanel({ hfLink, setHfLink, hfFiles, setHfFiles, hfLoading, 
 
       toast(`Downloading entire repository ${repoId}...`, 'info')
       
-      const response = await fetch('/api/download-model', {
+      const response = await apiFetch('/api/download-model', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

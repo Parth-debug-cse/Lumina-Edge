@@ -57,8 +57,9 @@ export function createSlidingWindowRateLimiter({ limit = 10, windowMs = 60_000, 
 }
 
 export function createConcurrencyLimiter({ limit = 2, maxQueue = 8, queueTimeoutMs = 30_000 } = {}) {
-  if (!Number.isInteger(limit) || limit < 1 || !Number.isInteger(maxQueue) || maxQueue < 0) {
-    throw new TypeError('Concurrency limit must be positive and queue length cannot be negative.');
+  if (!Number.isInteger(limit) || limit < 1 || !Number.isInteger(maxQueue) || maxQueue < 0
+    || !Number.isFinite(queueTimeoutMs) || queueTimeoutMs < 1) {
+    throw new TypeError('Concurrency limit and queue timeout must be positive; queue length cannot be negative.');
   }
   let active = 0;
   const queue = [];
@@ -186,9 +187,41 @@ export function resolveThreadCount(configured, detectedPhysicalCores, fallback =
   return Number.isSafeInteger(value) && value > 0 && value <= 1024 ? value : fallback;
 }
 
-export function selectReadyModel(models, policy = 'round-robin', cursor = 0) {
+function modelIdentifiers(model) {
+  const identifiers = new Set();
+  const add = value => {
+    if (typeof value !== 'string' || !value.trim()) return;
+    const normalized = value.trim();
+    identifiers.add(normalized);
+    identifiers.add(normalized.toLowerCase());
+    const basename = normalized.replaceAll('\\', '/').split('/').pop();
+    if (!basename) return;
+    identifiers.add(basename);
+    identifiers.add(basename.toLowerCase());
+    const withoutModelExtension = basename.replace(/\.(?:gguf|mlx|safetensors|bin|pt)$/i, '');
+    identifiers.add(withoutModelExtension);
+    identifiers.add(withoutModelExtension.toLowerCase());
+  };
+  for (const value of [model.id, model.name, model.model_name, model.model_id, model.path]) add(value);
+  return identifiers;
+}
+
+export function selectReadyModel(models, policy = 'round-robin', cursor = 0, requestedModel = null) {
   const ready = models.filter(model => model.status === 'ready');
   if (!ready.length) return { model: null, nextCursor: cursor };
+
+  if (typeof requestedModel === 'string' && requestedModel.trim()
+    && !['local', 'default'].includes(requestedModel.trim().toLowerCase())) {
+    const requested = requestedModel.trim();
+    const candidates = ready.filter(model => modelIdentifiers(model).has(requested)
+      || modelIdentifiers(model).has(requested.toLowerCase()));
+    if (candidates.length === 1) return { model: candidates[0], nextCursor: cursor };
+    return {
+      model: null,
+      nextCursor: cursor,
+      requestedModelError: candidates.length ? 'ambiguous' : 'not_found',
+    };
+  }
 
   const priorityOf = model => Number.isFinite(model.priority) ? model.priority : 0;
   const highestPriority = Math.max(...ready.map(priorityOf));
@@ -348,6 +381,24 @@ export function validateChatRequest(req, res, next) {
     if (typeof message.content === 'string' && message.content.length > 200_000) {
       return res.status(413).json({ error: 'A message exceeds the 200000 character limit' });
     }
+    if (Array.isArray(message.content)) {
+      if (message.content.length > 64) return res.status(413).json({ error: 'A message may contain at most 64 content parts' });
+      for (const part of message.content) {
+        if (!part || typeof part !== 'object' || Array.isArray(part) || typeof part.type !== 'string') {
+          return res.status(400).json({ error: 'Each message content part must be a typed object' });
+        }
+        if (part.type === 'text' && (typeof part.text !== 'string' || part.text.length > 200_000)) {
+          return res.status(400).json({ error: 'Text content parts must contain at most 200000 characters' });
+        }
+        if (part.type === 'image_url' && (!part.image_url || typeof part.image_url !== 'object'
+          || typeof part.image_url.url !== 'string' || part.image_url.url.length > 1_000_000)) {
+          return res.status(400).json({ error: 'Image content parts require a bounded image_url.url string' });
+        }
+        if (!['text', 'image_url'].includes(part.type)) {
+          return res.status(400).json({ error: `Unsupported message content type: ${part.type}` });
+        }
+      }
+    }
   }
   if (body.model !== undefined && (typeof body.model !== 'string' || body.model.length > 512)) {
     return res.status(400).json({ error: 'model must be a string of at most 512 characters' });
@@ -363,6 +414,28 @@ export function validateChatRequest(req, res, next) {
   }
   if (body.top_p !== undefined && (!Number.isFinite(body.top_p) || body.top_p <= 0 || body.top_p > 1)) {
     return res.status(400).json({ error: 'top_p must be greater than 0 and at most 1' });
+  }
+  if (body.tools !== undefined) {
+    if (!Array.isArray(body.tools) || body.tools.length > 32) {
+      return res.status(400).json({ error: 'tools must be an array containing at most 32 functions' });
+    }
+    for (const tool of body.tools) {
+      const fn = tool?.function;
+      if (tool?.type !== 'function' || !fn || typeof fn !== 'object' || Array.isArray(fn)
+        || typeof fn.name !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(fn.name)
+        || (fn.description !== undefined && (typeof fn.description !== 'string' || fn.description.length > 4096))
+        || (fn.parameters !== undefined && (!fn.parameters || typeof fn.parameters !== 'object' || Array.isArray(fn.parameters)))) {
+        return res.status(400).json({ error: 'Each tool must have a valid function name, description, and parameters object' });
+      }
+      if (JSON.stringify(fn.parameters || {}).length > 64_000) {
+        return res.status(413).json({ error: 'A tool parameter schema exceeds the 64000 character limit' });
+      }
+    }
+  }
+  if (body.tool_choice !== undefined && !['auto', 'none', 'required'].includes(body.tool_choice)
+    && !(body.tool_choice && typeof body.tool_choice === 'object' && body.tool_choice.type === 'function'
+      && typeof body.tool_choice.function?.name === 'string')) {
+    return res.status(400).json({ error: 'tool_choice must be auto, none, required, or a function selector' });
   }
   return next();
 }

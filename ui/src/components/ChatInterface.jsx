@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { Send, Square, Copy, Plus, ExternalLink } from 'lucide-react'
-import { streamChat } from '../utils/api.js'
+import { apiFetch, streamChat } from '../utils/api.js'
 
 // Relative timestamp formatting (e.g. "3m ago")
 function formatTime(date) {
@@ -24,7 +24,7 @@ const EMOJI_PREFIX = {
   assistant: '>',
 }
 
-export default function ChatInterface({ serverModel, routerStatus, localModels, toast }) {
+export default function ChatInterface({ serverModel, routerStatus, toast }) {
   // Messages array with system prompt; each msg: { role, content, timestamp, streaming?, tokens? }
   const [messages, setMessages] = useState([{ role: 'system', content: 'You are a helpful AI assistant running on Lumina Edge.' }])
   const [input, setInput] = useState('')
@@ -32,6 +32,7 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
   const [selectedModel, setSelectedModel] = useState('')
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
+  const activeAbortController = useRef(null)
 
   useEffect(() => {
     if (serverModel && !selectedModel) {
@@ -39,8 +40,19 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
     }
   }, [serverModel])
 
+  const loadedModels = routerStatus?.models?.filter(model => model.status === 'ready') || []
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (!loadedModels.length) return
+    setSelectedModel(current => loadedModels.some(model =>
+      [model.id, model.name, model.model_name].includes(current)
+    ) ? current : (loadedModels[0].id || loadedModels[0].name || loadedModels[0].model_name || ''))
+  }, [routerStatus])
+
+  useEffect(() => () => activeAbortController.current?.abort(), [])
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: 'end' })
   }, [messages])
 
   // Core send handler: appends user msg, starts SSE stream, streams chunks into last assistant msg
@@ -58,6 +70,8 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
     setMessages(prev => [...prev, assistantMsg])
 
     let fullContent = ''
+    const controller = new AbortController()
+    activeAbortController.current = controller
 
     try {
       // streamChat handles the fetch + ReadableStream reader internally
@@ -67,6 +81,7 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
           content: m.content
         })),
         model: selectedModel || undefined,
+        signal: controller.signal,
         onChunk: (chunk) => {
           fullContent += chunk
           // Mutate last message in-place via setter spread to avoid stale closures
@@ -74,9 +89,9 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
             const updated = [...prev]
             const last = updated[updated.length - 1]
             if (last && last.role === 'assistant') {
-              last.content = fullContent
+              updated[updated.length - 1] = { ...last, content: fullContent }
             }
-            return [...updated]
+            return updated
           })
         }
       })
@@ -86,25 +101,33 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
         const updated = [...prev]
         const last = updated[updated.length - 1]
         if (last && last.role === 'assistant') {
-          last.streaming = false
-          last.timestamp = new Date()
-          last.tokens = countTokens(fullContent)
+          updated[updated.length - 1] = {
+            ...last,
+            streaming: false,
+            timestamp: new Date(),
+            tokens: countTokens(fullContent),
+          }
         }
-        return [...updated]
+        return updated
       })
     } catch (err) {
-      toast?.(`Generation error: ${err.message}`, 'error')
+      const aborted = err.name === 'AbortError'
+      if (!aborted) toast?.(`Generation error: ${err.message}`, 'error')
       setMessages(prev => {
         const updated = [...prev]
         const last = updated[updated.length - 1]
         if (last && last.role === 'assistant') {
-          last.content = fullContent || (err.message || 'An error occurred during generation.')
-          last.streaming = false
-          last.error = true
+          updated[updated.length - 1] = {
+            ...last,
+            content: fullContent || (aborted ? '' : (err.message || 'An error occurred during generation.')),
+            streaming: false,
+            error: !aborted,
+          }
         }
-        return [...updated]
+        return updated
       })
     } finally {
+      if (activeAbortController.current === controller) activeAbortController.current = null
       setGenerating(false)
     }
   }, [input, messages, generating, selectedModel, toast])
@@ -116,11 +139,11 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
     }
   }
 
-  const handleStop = () => setGenerating(false)
+  const handleStop = () => activeAbortController.current?.abort()
 
   const handleOpenWebUI = useCallback(async () => {
     try {
-      const res = await fetch('/api/open-chat', { method: 'POST' })
+      const res = await apiFetch('/api/open-chat', { method: 'POST' })
       const data = await res.json()
       if (data.error) {
         toast?.(data.error, 'error')
@@ -138,7 +161,6 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
     toast?.('Copied to clipboard', 'success')
   }
 
-  const loadedModels = routerStatus?.models?.filter(m => m.status === 'ready' || m.status === 'loading').map(m => m.name || m.model_name) || []
 
   return (
     <div className="chat-panel">
@@ -151,12 +173,10 @@ export default function ChatInterface({ serverModel, routerStatus, localModels, 
             <option value="">
               {serverModel || 'Select a model...'}
             </option>
-            {loadedModels.map(m => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-            {localModels.filter(lm => !loadedModels.includes(lm.name)).map(m => (
-              <option key={m.name} value={m.name}>{m.name}</option>
-            ))}
+            {loadedModels.map(model => {
+              const id = model.id || model.name || model.model_name
+              return <option key={id} value={id}>{model.name || model.model_name || id}</option>
+            })}
           </select>
         </div>
 

@@ -67,6 +67,11 @@ test('sliding-window rate limiter returns Retry-After after the configured limit
   assert.equal(nextCalls, 3);
 });
 
+test('concurrency limiter rejects non-positive queue timeouts', () => {
+  assert.throws(() => createConcurrencyLimiter({ queueTimeoutMs: 0 }), /queue timeout must be positive/);
+  assert.throws(() => createConcurrencyLimiter({ queueTimeoutMs: -1 }), /queue timeout must be positive/);
+});
+
 test('concurrency limiter admits bounded work and drains its FIFO queue', () => {
   const limiter = createConcurrencyLimiter({ limit: 1, maxQueue: 1, queueTimeoutMs: 1_000 });
   const firstRes = mockResponse();
@@ -114,7 +119,14 @@ test('chat request validation rejects malformed payloads and accepts valid OpenA
   };
   assert.equal(invoke({ messages: [] }).res.statusCode, 400);
   assert.equal(invoke({ messages: [{ role: 'system', content: 'hello' }], max_tokens: 0 }).res.statusCode, 400);
+  assert.equal(invoke({ messages: [{ role: 'user', content: [{ type: 'unknown', value: 'x' }] }] }).res.statusCode, 400);
+  assert.equal(invoke({ messages: [{ role: 'user', content: 'hello' }], tools: [{ type: 'function', function: { name: 'bad name' } }] }).res.statusCode, 400);
   assert.equal(invoke({ messages: [{ role: 'user', content: 'hello' }], max_tokens: 64, temperature: 0.5 }).passed, true);
+  assert.equal(invoke({
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'describe this' }] }],
+    tools: [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object', properties: {} } } }],
+    tool_choice: 'auto',
+  }).passed, true);
 });
 
 test('gateway authentication canonicalizes case while preserving public liveness routes', () => {
@@ -172,6 +184,18 @@ test('router policies select ready models by priority, load, and round-robin ord
   assert.equal(selectReadyModel(models, 'load-balanced', 0).model.id, 'high-a');
   assert.equal(selectReadyModel(models, 'load-balanced', 1).model.id, 'high-b');
   assert.equal(selectReadyModel([{ status: 'loading' }]).model, null);
+});
+
+test('router honors requested model IDs, names, and paths instead of silently selecting another model', () => {
+  const models = [
+    { id: 'router-id', name: 'qwen2.5-0.5b.gguf', path: '/models/qwen2.5-0.5b.gguf', status: 'ready', priority: 10 },
+    { id: 'other', name: 'mistral.gguf', path: '/models/mistral.gguf', status: 'ready', priority: 0 },
+  ];
+  assert.equal(selectReadyModel(models, 'round-robin', 0, 'mistral').model.id, 'other');
+  assert.equal(selectReadyModel(models, 'round-robin', 0, '/models/qwen2.5-0.5b.gguf').model.id, 'router-id');
+  assert.equal(selectReadyModel(models, 'round-robin', 0, 'unknown').requestedModelError, 'not_found');
+  assert.equal(selectReadyModel(models, 'round-robin', 0, 'local').model.id, 'router-id');
+  assert.equal(selectReadyModel([{ status: 'loading' }], 'round-robin', 0, 'unknown').requestedModelError, undefined);
 });
 
 test('model discovery fetch has an actual abort timeout covering JSON body parsing', async () => {

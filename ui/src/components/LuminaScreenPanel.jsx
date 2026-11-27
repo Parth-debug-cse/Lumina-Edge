@@ -114,7 +114,7 @@ export default function LuminaScreenPanel({ toast }) {
     // FIXED: call backend to clear page_hit.txt on disk, not just in-memory state
     setClearingHits(true);
     try {
-      const res = await fetch('/api/lumina-screen/clear-hits', { method: 'POST' });
+      const res = await api.apiFetch('/api/lumina-screen/clear-hits', { method: 'POST' });
       if (res.ok) {
         setHits([]);
         toast('Results cleared', 'info');

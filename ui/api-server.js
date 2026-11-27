@@ -240,11 +240,16 @@ if (!['none', 'token'].includes(authMode)) {
   throw new Error(`Unsupported auth_mode '${authMode}'. Supported modes: none, token.`);
 }
 const apiAuthMiddleware = createBearerAuth(process.env.LUMINA_API_TOKEN, authMode === 'token');
-const rateLimitPerMinute = Number.parseInt(config.auth_rate_limit_per_minute, 10) || 10;
+function boundedConfigInteger(value, fallback, minimum, maximum) {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isSafeInteger(parsed)) return fallback;
+  return Math.min(maximum, Math.max(minimum, parsed));
+}
+const rateLimitPerMinute = boundedConfigInteger(config.auth_rate_limit_per_minute, 10, 1, 10_000);
 const inferenceLimiter = createConcurrencyLimiter({
-  limit: Number.parseInt(config.max_parallel_requests, 10) || 2,
-  maxQueue: Number.parseInt(config.max_queued_requests, 10) || 8,
-  queueTimeoutMs: Number.parseInt(config.inference_queue_timeout_ms, 10) || 30_000,
+  limit: boundedConfigInteger(config.max_parallel_requests, 2, 1, 64),
+  maxQueue: boundedConfigInteger(config.max_queued_requests, 8, 0, 1_024),
+  queueTimeoutMs: boundedConfigInteger(config.inference_queue_timeout_ms, 30_000, 1, 300_000),
 });
 const inferenceRateLimiter = createSlidingWindowRateLimiter({ limit: rateLimitPerMinute, windowMs: 60_000 });
 let pendingModelLoads = 0;
@@ -1785,6 +1790,7 @@ const detectedPhysicalCores = detectPhysicalCpuCount();
 const threads = resolveThreadCount(config.threads ?? 4, detectedPhysicalCores, 4);
 const threadsBatch = resolveThreadCount(config.threads_batch ?? 4, detectedPhysicalCores, 4);
 const useMlock = config.use_mlock === true;
+const noMmap = config.no_mmap === true;
 const contBatching = config.cont_batching !== false;
 const promptCache = config.prompt_cache === true;
 
@@ -1811,6 +1817,8 @@ const cmdArgs = [
   '--cache-type-k', kvCacheTypeK,            // KV key cache quantization
   '--cache-type-v', kvCacheTypeV,            // KV value cache quantization
 ];
+
+if (noMmap) cmdArgs.push('--no-mmap');
 
 // Continuous batching — enabled by default, only disable if explicitly false
 if (contBatching) {
@@ -3493,7 +3501,19 @@ app.post('/v1/chat/completions', inferenceRateLimiter, validateChatRequest, infe
     if (!res.writableEnded) backendController.abort();
   });
   try {
-    const selection = selectReadyModel(Array.from(routerModels.values()), routingPolicy, nextModelIndex);
+    const selection = selectReadyModel(
+      Array.from(routerModels.values()),
+      routingPolicy,
+      nextModelIndex,
+      req.body.model,
+    );
+    if (selection.requestedModelError) {
+      const ambiguous = selection.requestedModelError === 'ambiguous';
+      return res.status(ambiguous ? 409 : 404).json({
+        error: ambiguous ? 'Requested model ID is ambiguous' : 'Requested model is not loaded',
+        model: req.body.model,
+      });
+    }
     const readyModel = selection.model;
     nextModelIndex = selection.nextCursor;
     if (!readyModel) {

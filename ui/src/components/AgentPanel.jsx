@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Play, Square, Terminal, CheckCircle, AlertCircle, Loader } from 'lucide-react';
+import { apiFetch } from '../utils/api.js';
 
 export default function LuminaAgentPanel({ toast }) {
   // Agent lifecycle: goal text, running state, run ID from backend
@@ -23,7 +24,7 @@ export default function LuminaAgentPanel({ toast }) {
   // Polls backend every 1.5s for agent step updates and terminal status
   const pollStatus = async (id) => {
     try {
-      const res = await fetch(`/api/lumina-agent/status/${id}`);
+      const res = await apiFetch(`/api/lumina-agent/status/${id}`);
       if (!res.ok) {
         // FIXED: handle non-OK response instead of silently failing
         const errData = await res.json().catch(() => ({}));
@@ -58,7 +59,7 @@ export default function LuminaAgentPanel({ toast }) {
     setRunId(null);
 
     try {
-      const res = await fetch('/api/lumina-agent/run', {
+      const res = await apiFetch('/api/lumina-agent/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ goal: goal.trim() }),
@@ -81,7 +82,7 @@ export default function LuminaAgentPanel({ toast }) {
   const handleStop = async () => {
     if (!runId) return;
     try {
-      const res = await fetch(`/api/lumina-agent/stop/${runId}`, { method: 'POST' });
+      const res = await apiFetch(`/api/lumina-agent/stop/${runId}`, { method: 'POST' });
       // FIXED: check response and handle errors
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));

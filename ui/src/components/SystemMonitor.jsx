@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { X, RotateCw, Zap } from 'lucide-react'
-import { getSystemResources } from '../utils/api.js'
+import { apiFetch, getSystemResources } from '../utils/api.js'
 
 // SVG polyline sparkline — 280px wide, 24px tall, normalized to min/max range
 function Sparkline({ data, color = '#10b981' }) {
@@ -80,7 +80,7 @@ export default function SystemMonitor({ onClose, toast }) {
 
   const handleOptimize = async () => {
     try {
-      const res = await fetch('/api/optimize-system', { method: 'POST' })
+      const res = await apiFetch('/api/optimize-system', { method: 'POST' })
       const data = await res.json()
       if (data.success) {
         toast?.('System optimized', 'success')

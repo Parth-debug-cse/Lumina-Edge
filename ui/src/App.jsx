@@ -1,7 +1,8 @@
 import { lazy, Suspense, useState, useEffect, useCallback } from 'react'
-import { MessageSquare, Cpu, Activity, ScanLine, Bot, Radar, Clock, Plug, SlidersHorizontal, HardDrive, Zap, BarChart3, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
-import { checkServerHealth } from './utils/api.js'
+import { MessageSquare, Cpu, Activity, ScanLine, Bot, Radar, Clock, Plug, SlidersHorizontal, HardDrive, Zap, BarChart3, ChevronLeft, ChevronRight } from 'lucide-react'
+import { apiFetch, checkServerHealth, getRouterStatus } from './utils/api.js'
 
+const ChatInterface = lazy(() => import('./components/ChatInterface.jsx'))
 const ModelManager = lazy(() => import('./components/ModelManager.jsx'))
 const SettingsPanel = lazy(() => import('./components/SettingsPanel.jsx'))
 const SessionHistory = lazy(() => import('./components/SessionHistory.jsx'))
@@ -56,33 +57,22 @@ export default function App() {
   const [serverStatus, setServerStatus] = useState('checking')
   const [serverModel, setServerModel]   = useState('')
   const [localModels, setLocalModels]   = useState([])
+  const [routerStatus, setRouterStatus] = useState(null)
   const [showMonitor, setShowMonitor]   = useState(false)
   // Persist sidebar collapse state to localStorage — survives page reload
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem('lumina-sidebar-collapsed') === 'true' } catch { return false }
   })
-  const [chatUrl, setChatUrl] = useState('http://localhost:8000')
   const { toasts, addToast } = useToasts()
 
-  // Open llama.cpp / OpenWebUI in the system browser via POST /api/open-chat
-  const openChat = useCallback(async () => {
-    try {
-      const res = await fetch('/api/open-chat', { method: 'POST' })
-      const data = await res.json()
-      if (data.url) setChatUrl(data.url)
-    } catch {}  // Silently fail — default URL fallback
-  }, [])
-
-  // Selecting Chat nav item triggers external browser launch
   const handleNavClick = useCallback((id) => {
-    if (id === 'chat') openChat()
     setActivePanel(id)
-  }, [openChat])
+  }, [])
 
   // Fetch the list of available model files from the API
   const fetchLocalModels = useCallback(async () => {
     try {
-      const res = await fetch('/api/models/list')
+      const res = await apiFetch('/api/models/list')
       if (res.ok) {
         const data = await res.json()
         setLocalModels(data)
@@ -119,6 +109,18 @@ export default function App() {
     };
   }, [pollHealth, fetchLocalModels]);
 
+  // Keep the chat model selector synchronized with models loaded by the router.
+  useEffect(() => {
+    if (activePanel !== 'chat') return
+
+    const refreshRouterStatus = async () => {
+      setRouterStatus(await getRouterStatus())
+    }
+    refreshRouterStatus()
+    const interval = setInterval(refreshRouterStatus, 2000)
+    return () => clearInterval(interval)
+  }, [activePanel])
+
   // Sync sidebar collapse state to localStorage on change
   useEffect(() => {
     try { localStorage.setItem('lumina-sidebar-collapsed', String(sidebarCollapsed)) } catch {}
@@ -129,27 +131,7 @@ export default function App() {
   // Route activePanel ID to the correct panel component
   const renderPanel = () => {
     switch (activePanel) {
-      case 'chat':        return (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 16, padding: 40 }}>
-          <div style={{ fontSize: '1.2rem', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
-            Opening llama.cpp interface in your browser...
-          </div>
-          <a
-            href={chatUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              padding: '10px 20px', background: 'var(--accent-dim)',
-              border: '1px solid var(--border-accent)', borderRadius: 'var(--r-md)',
-              color: 'var(--accent)', fontSize: '0.9rem', fontFamily: 'var(--font-mono)',
-              textDecoration: 'none', cursor: 'pointer'
-            }}
-          >
-            <ExternalLink size={16} /> {chatUrl}
-          </a>
-        </div>
-      )
+      case 'chat':        return <ChatInterface serverModel={serverModel} routerStatus={routerStatus} toast={addToast} />
       case 'models':      return <ModelManager      localModels={localModels}   toast={addToast} onModelsRefresh={fetchLocalModels} />
       case 'diagnostics': return <DiagnosticsPanel   localModels={localModels} toast={addToast} />
       case 'screen':      return <LuminaScreenPanel                             toast={addToast} />

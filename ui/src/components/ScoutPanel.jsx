@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { Scan, Search, Ruler, Loader2, AlertCircle } from 'lucide-react'
-
-const API = '/api'
+import { apiFetch } from '../utils/api.js'
 
 export default function ScoutPanel({ toast }) {
   // Hardware scan result from /api/lumina-scout/hardware
@@ -27,7 +26,7 @@ export default function ScoutPanel({ toast }) {
   const scanHardware = async () => {
     setHwLoading(true)
     try {
-      const res = await fetch(`${API}/lumina-scout/hardware`)
+      const res = await apiFetch('/api/lumina-scout/hardware')
       const data = await res.json()
       if (res.ok) {
         setHardware(data)
@@ -52,7 +51,7 @@ export default function ScoutPanel({ toast }) {
     if (recMinSpeed) params.set('min_speed', recMinSpeed)
     if (recRefresh) params.set('refresh', 'true')
     try {
-      const res = await fetch(`${API}/lumina-scout/recommend?${params}`)
+      const res = await apiFetch(`/api/lumina-scout/recommend?${params}`)
       const data = await res.json()
       if (res.ok) {
         setRecs(data)
@@ -77,7 +76,7 @@ export default function ScoutPanel({ toast }) {
     if (planQuant) params.set('quant', planQuant)
     params.set('context_length', planCtx)
     try {
-      const res = await fetch(`${API}/lumina-scout/plan?${params}`)
+      const res = await apiFetch(`/api/lumina-scout/plan?${params}`)
       const data = await res.json()
       if (res.ok) {
         setPlanResult(data)
