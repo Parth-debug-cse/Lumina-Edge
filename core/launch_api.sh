@@ -12,7 +12,7 @@ set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-cd "$ROOT_DIR"
+cd "$ROOT_DIR" || exit 1
 
 # Reads a config.json value with dot-notation support and fallback default
 get_config() {
@@ -34,7 +34,10 @@ try:
         else:
             v=None
             break
-    print(v if v is not None else default)
+    if isinstance(v, bool):
+        print(str(v).lower())
+    else:
+        print(v if v is not None else default)
 except Exception:
     print(default)
 " "$ROOT_DIR" "$key" "$default" 2>/dev/null || echo "$default"
@@ -61,14 +64,82 @@ detect_physical_cores() {
 
 resolve_thread_count() {
     local configured="$1"
-    if [[ "$configured" == "auto" ]]; then
-        detect_physical_cores
-    elif [[ "$configured" =~ ^[1-9][0-9]*$ ]]; then
-        echo "$configured"
-    else
-        echo "Invalid thread count '$configured'; using 1" >&2
-        echo 1
-    fi
+    case "$configured" in
+        auto|AUTO|Auto)
+            detect_physical_cores
+            ;;
+        *)
+            if [[ "$configured" =~ ^[1-9][0-9]*$ ]]; then
+                echo "$configured"
+            else
+                echo "Invalid thread count '$configured'; using 1" >&2
+                echo 1
+            fi
+            ;;
+    esac
+}
+
+resolve_batch_size() {
+    local configured="$1"
+    case "$configured" in
+        auto|AUTO|Auto)
+            local detected
+            detected=$(python3 -c '
+import os, sys
+available = 0
+try:
+    if sys.platform.startswith("linux"):
+        with open("/proc/meminfo", encoding="ascii") as meminfo:
+            for line in meminfo:
+                if line.startswith("MemAvailable:"):
+                    available = int(line.split()[1]) * 1024
+                    break
+    else:
+        available = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_AVPHYS_PAGES")
+    gib = available / (1024 ** 3)
+    print(max(128, min(1024, int(gib // 2) * 128)) if available > 0 else 256)
+except (OSError, ValueError, AttributeError):
+    print(256)
+' 2>/dev/null) || detected=256
+            if [[ "$detected" =~ ^[1-9][0-9]*$ ]]; then
+                echo "$detected"
+            else
+                echo 256
+            fi
+            ;;
+        *)
+            if [[ "$configured" =~ ^[1-9][0-9]*$ ]]; then
+                echo "$configured"
+            else
+                echo "Invalid batch size '$configured'; using 256" >&2
+                echo 256
+            fi
+            ;;
+    esac
+}
+
+resolve_gpu_layer_count() {
+    local configured="$1"
+    case "$configured" in
+        auto|AUTO|Auto)
+            if [[ -x "$ROOT_DIR/bin/llama-server" ]] && \
+                    "$ROOT_DIR/bin/llama-server" --list-devices 2>/dev/null | \
+                    grep -Eiq '^[[:space:]]*([-*][[:space:]]*)?(CUDA|Vulkan|ROCm|HIP|SYCL|Metal|OpenCL)[[:alnum:]_-]*[[:space:]]*:'; then
+                echo 99
+            else
+                echo "No supported llama.cpp GPU device detected; using CPU layers" >&2
+                echo 0
+            fi
+            ;;
+        *)
+            if [[ "$configured" =~ ^(0|[1-9][0-9]*)$ ]]; then
+                echo "$configured"
+            else
+                echo "Invalid GPU layer count '$configured'; using 0" >&2
+                echo 0
+            fi
+            ;;
+    esac
 }
 
 MODEL=""
@@ -88,9 +159,12 @@ done
 CONFIG_MODEL=$(get_config "model" "")
 CONFIG_PORT=$(get_config "api_port" 8090)
 CTX_SIZE=$(get_config "ctx_size" 16384)
-N_GPU_LAYERS=$(get_config "n_gpu_layers" 15)
-BATCH_SIZE=$(get_config "batch_size" 256)
-UBATCH_SIZE=$(get_config "ubatch_size" 256)
+N_GPU_LAYERS=$(resolve_gpu_layer_count "$(get_config "n_gpu_layers" 15)")
+BATCH_SIZE=$(resolve_batch_size "$(get_config "batch_size" 256)")
+UBATCH_SIZE=$(resolve_batch_size "$(get_config "ubatch_size" 256)")
+if (( UBATCH_SIZE > BATCH_SIZE )); then
+    UBATCH_SIZE="$BATCH_SIZE"
+fi
 FLASH_ATTN=$(get_config "flash_attn" "true")
 MIN_P=$(get_config "min_p" 0.05)
 TOP_K=$(get_config "top_k" 20)
@@ -100,10 +174,10 @@ HTTP_THREADS=$(get_config "http_threads" 2)
 THREADS=$(resolve_thread_count "$(get_config "threads" 2)")
 THREADS_BATCH=$(resolve_thread_count "$(get_config "threads_batch" 4)")
 CONT_BATCHING=$(get_config "cont_batching" "true")
-KV_CACHE_QUANT=$(get_config "kv_cache_quant" "q4_0")
+
 USE_MLOCK=$(get_config "use_mlock" "true")
 NO_MMAP=$(get_config "no_mmap" "true")
-KV_QUANT=$(get_config "kv_quant" "q4_0")
+
 KV_CACHE_TYPE_K=$(get_config "kv_cache_type_k" "q4_0")
 KV_CACHE_TYPE_V=$(get_config "kv_cache_type_v" "q4_0")
 
@@ -186,8 +260,13 @@ ARGS=(
 )
 
 # Conditionally add boolean flags
+if [[ "$N_GPU_LAYERS" == "0" ]]; then
+    FLASH_ATTN=false
+fi
 if [[ "$FLASH_ATTN" == "true" ]]; then
-    ARGS+=("--flash-attn")
+    ARGS+=("--flash-attn" "on")
+else
+    ARGS+=("--flash-attn" "off")
 fi
 if [[ "$USE_MLOCK" == "true" ]]; then
     ARGS+=("--mlock")

@@ -15,11 +15,12 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $Root = $ScriptDir
 Set-Location $Root
+$LLAMA_SERVER = Join-Path $Root "bin\llama-server.exe"
 
 function Resolve-ThreadCount {
     param([object]$Value)
 
-    if ([string]$Value -ne "auto") {
+    if ([string]$Value -ine "auto") {
         try {
             $Count = [int]$Value
             if ($Count -gt 0) { return $Count }
@@ -33,6 +34,60 @@ function Resolve-ThreadCount {
         if ($PhysicalCores -gt 0) { return [int]$PhysicalCores }
     } catch {}
     return [Math]::Max(1, [Environment]::ProcessorCount)
+}
+
+function Resolve-BatchSize {
+    param([object]$Value)
+
+    if ([string]$Value -ieq "auto") {
+        $AvailableGiB = $null
+        try {
+            $AvailableBytes = (Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Memory -ErrorAction Stop).AvailableBytes
+            if ($AvailableBytes -gt 0) { $AvailableGiB = [double]$AvailableBytes / 1GB }
+        } catch {}
+        if ($null -eq $AvailableGiB) {
+            try {
+                $FreeMemoryKB = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).FreePhysicalMemory
+                if ($FreeMemoryKB -gt 0) { $AvailableGiB = [double]$FreeMemoryKB / 1MB }
+            } catch {}
+        }
+        if ($null -ne $AvailableGiB) {
+            $Detected = [Math]::Max(128, [Math]::Min(1024, [Math]::Floor($AvailableGiB / 2) * 128))
+            return [int]$Detected
+        }
+        return 256
+    }
+
+    $Text = [string]$Value
+    if ($Text -match '^[1-9][0-9]*$') {
+        try { return [int]$Text } catch {}
+    }
+    Write-Warning "Invalid batch size '$Value'; using 256"
+    return 256
+}
+
+function Resolve-GpuLayerCount {
+    param([object]$Value)
+
+    if ([string]$Value -ieq "auto") {
+        if (Test-Path $LLAMA_SERVER) {
+            try {
+                $DeviceOutput = (& $LLAMA_SERVER --list-devices 2>$null | Out-String)
+                if ($DeviceOutput -match '(?im)^\s*([-*]\s*)?(CUDA|Vulkan|ROCm|HIP|SYCL|Metal|OpenCL)[\w-]*\s*:') {
+                    return 99
+                }
+            } catch {}
+        }
+        Write-Warning "No supported llama.cpp GPU device detected; using CPU layers"
+        return 0
+    }
+
+    $Text = [string]$Value
+    if ($Text -match '^(0|[1-9][0-9]*)$') {
+        try { return [int]$Text } catch {}
+    }
+    Write-Warning "Invalid GPU layer count '$Value'; using 0"
+    return 0
 }
 
 # Reads a config.json value with dot-notation support and a fallback default
@@ -98,9 +153,12 @@ if (-not (Test-Path $ModelPath)) {
 }
 
 $CtxSize = Get-ConfigValue "ctx_size" 4096
-$NGpuLayers = Get-ConfigValue "n_gpu_layers" 0
-$BatchSize = Get-ConfigValue "batch_size" 256
-$UbatchSize = Get-ConfigValue "ubatch_size" 256
+$NGpuLayers = Resolve-GpuLayerCount (Get-ConfigValue "n_gpu_layers" 0)
+$BatchSize = Resolve-BatchSize (Get-ConfigValue "batch_size" 256)
+$UbatchSize = Resolve-BatchSize (Get-ConfigValue "ubatch_size" 256)
+if ([int]$UbatchSize -gt [int]$BatchSize) {
+    $UbatchSize = $BatchSize
+}
 $Temperature = Get-ConfigValue "temperature" 0.7
 $TopP = Get-ConfigValue "top_p" 0.9
 $TopK = Get-ConfigValue "top_k" 40
@@ -110,6 +168,7 @@ $HttpThreads = Get-ConfigValue "http_threads" 2
 $Threads = Resolve-ThreadCount (Get-ConfigValue "threads" 4)
 $ThreadsBatch = Resolve-ThreadCount (Get-ConfigValue "threads_batch" 4)
 $FlashAttn = Get-ConfigValue "flash_attn" $true
+if ([int]$NGpuLayers -eq 0) { $FlashAttn = $false }
 $NoMmap = Get-ConfigValue "no_mmap" $true
 $ContBatching = Get-ConfigValue "cont_batching" $true
 $KvCacheTypeK = Get-ConfigValue "kv_cache_type_k" "q4_0"
@@ -133,7 +192,6 @@ if (Test-Path $ScoutReqs) {
     Write-Host "  Scout dependencies installed" -ForegroundColor Green
 }
  
-$LLAMA_SERVER = Join-Path $Root "bin\llama-server.exe"
 if (-not (Test-Path $LLAMA_SERVER)) {
     Write-Host "ERROR: llama-server.exe not found in bin\" -ForegroundColor Red
     Write-Host "  Download llama.cpp binaries from: https://github.com/ggml-org/llama.cpp/releases/latest"
