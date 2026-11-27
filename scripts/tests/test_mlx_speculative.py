@@ -148,8 +148,16 @@ class MLXSpeculativeTests(unittest.TestCase):
                     "num_draft_tokens": 4,
                 }
             }, tokenizer)
+            default_result = self.backend._load_speculative_draft({
+                "mlx_speculative_decoding": {
+                    "enabled": True,
+                    "draft_model": directory,
+                }
+            }, tokenizer)
         self.assertIsNotNone(result)
         self.assertEqual(result["num_tokens"], 4)
+        self.assertIsNotNone(default_result)
+        self.assertEqual(default_result["num_tokens"], 2)
 
 
 if __name__ == "__main__":

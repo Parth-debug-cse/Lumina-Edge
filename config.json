@@ -103,7 +103,7 @@
   "mlx_speculative_decoding": {
     "enabled": false,
     "draft_model": "",
-    "num_draft_tokens": 3
+    "num_draft_tokens": 2
   },
   "mlx_kv_quant": {
     "key_bits": 8,

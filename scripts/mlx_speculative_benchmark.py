@@ -446,7 +446,7 @@ def main() -> int:
     parser.add_argument("--warmup-rounds", type=_non_negative_int, default=2)
     parser.add_argument("--iterations", type=_positive_int, default=7)
     parser.add_argument("--max-tokens", type=_positive_int, default=128)
-    parser.add_argument("--num-draft-tokens", type=_positive_int, default=3)
+    parser.add_argument("--num-draft-tokens", type=_positive_int, default=2)
     parser.add_argument("--json-output", help="Write full results to this JSON file")
     args = parser.parse_args()
 

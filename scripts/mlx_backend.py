@@ -271,7 +271,7 @@ def _load_speculative_draft(config, target_tokenizer):
         return None
 
     try:
-        draft_tokens = int(settings.get('num_draft_tokens', 3))
+        draft_tokens = int(settings.get('num_draft_tokens', 2))
         if not 1 <= draft_tokens <= 16:
             raise ValueError('num_draft_tokens must be between 1 and 16')
         draft_model, draft_tokenizer = _load_mlx_model_and_tokenizer(draft_path)
@@ -521,7 +521,7 @@ def load_config():
         "mlx_speculative_decoding": {
             "enabled": False,
             "draft_model": "",
-            "num_draft_tokens": 3
+            "num_draft_tokens": 2
         },
         "mlx_sampling": {
             "temperature": 0.7, "top_p": 1.0, "min_p": 0.0,
