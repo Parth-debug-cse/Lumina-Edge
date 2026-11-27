@@ -10,7 +10,7 @@ import json
 import re
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Literal, Mapping, Optional, Tuple, TypedDict, Union
 from collections import defaultdict
 
 try:
@@ -22,6 +22,34 @@ except ImportError:
     load_safetensors = None
 
 SAFETENSORS_AVAILABLE = safetensors_available
+
+
+class ShardInfo(TypedDict):
+    is_sharded: bool
+    total_shards: int
+    format: Optional[str]
+    shards: Dict[int, str]
+    index_file: Optional[str]
+
+
+class DetailedShardInfo(ShardInfo):
+    memory_estimate_gb: float
+    memory_estimate_str: str
+
+
+class ModelDetectionSuccess(TypedDict):
+    status: Literal['success']
+    model_path: str
+    model_info: DetailedShardInfo
+
+
+class ModelDetectionError(TypedDict):
+    status: Literal['error']
+    model_path: str
+    error: str
+
+
+ModelDetectionResult = Union[ModelDetectionSuccess, ModelDetectionError]
 
 try:
     import torch
@@ -141,7 +169,7 @@ class ShardedModelInfo:
         
         return None
     
-    def get_shard_info(self) -> Dict:
+    def get_shard_info(self) -> ShardInfo:
         """Return shard information"""
         return {
             'is_sharded': self.is_sharded,
@@ -157,9 +185,9 @@ class ShardedModelConverter:
     
     def __init__(self, model_path: str):
         self.model_info = ShardedModelInfo(model_path)
-        self.merged_state_dict = None
+        self.merged_state_dict: Optional[Dict[str, object]] = None
     
-    def load_shards(self) -> Dict:
+    def load_shards(self) -> Mapping[str, object]:
         """Load all shards into unified state dict"""
         if not self.model_info.is_sharded:
             logger.info("Model is not sharded, loading single file...")
@@ -198,7 +226,7 @@ class ShardedModelConverter:
         logger.info(f"✓ Successfully merged {self.model_info.total_shards} shards ({len(self.merged_state_dict)} parameters)")
         return self.merged_state_dict
     
-    def _load_single_model(self) -> Dict:
+    def _load_single_model(self) -> Mapping[str, object]:
         """Load a single non-sharded model file"""
         try:
             if str(self.model_info.model_path).endswith('.safetensors'):
@@ -232,7 +260,7 @@ class ShardedModelConverter:
         return size_gb, f"{size_gb:.2f} GB (estimate with 4x PyTorch overhead)"
 
 
-def detect_model_type(model_path: str) -> Dict:
+def detect_model_type(model_path: str) -> ModelDetectionResult:
     """
     Detect if model is sharded and return metadata
     
@@ -244,16 +272,17 @@ def detect_model_type(model_path: str) -> Dict:
     """
     try:
         info = ShardedModelInfo(model_path)
-        shard_info = info.get_shard_info()
-        
         mem_estimate, mem_str = ShardedModelConverter(model_path).get_memory_estimate()
-        shard_info['memory_estimate_gb'] = mem_estimate
-        shard_info['memory_estimate_str'] = mem_str
-        
+        detailed_info: DetailedShardInfo = {
+            **info.get_shard_info(),
+            'memory_estimate_gb': mem_estimate,
+            'memory_estimate_str': mem_str,
+        }
+
         return {
             'status': 'success',
             'model_path': model_path,
-            'model_info': shard_info
+            'model_info': detailed_info,
         }
     
     except Exception as e:
@@ -284,7 +313,7 @@ if __name__ == '__main__':
         print(f"  Sharded: {info['is_sharded']}")
         print(f"  Format: {info['format']}")
         print(f"  Total Shards: {info['total_shards']}")
-        print(f"  Memory Estimate: {result['memory_estimate_str']}")
+        print(f"  Memory Estimate: {info['memory_estimate_str']}")
         
         if args.info:
             print(f"  Shards: {info['shards']}")
