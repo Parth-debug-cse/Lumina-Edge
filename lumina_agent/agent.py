@@ -6,7 +6,7 @@ import threading
 import requests
 from lumina_agent.tools import execute_tool
 from lumina_agent.prompts import SYSTEM_PROMPT
-from lumina_agent.config import LUMINA_API_BASE, LUMINA_MODEL, MAX_ITERATIONS, REQUEST_TIMEOUT
+from lumina_agent.config import LUMINA_API_BASE, LUMINA_API_TOKEN, LUMINA_MODEL, MAX_ITERATIONS, REQUEST_TIMEOUT
 
 VALID_TOOLS = {"run_shell", "read_file", "write_file", "http_get", "report"}
 # Map of run_id -> threading.Event for stopping agents in parallel
@@ -24,7 +24,8 @@ def call_llm(messages: list) -> str:
         "stream": False,
     }
     try:
-        response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+        headers = {"Authorization": f"Bearer {LUMINA_API_TOKEN}"} if LUMINA_API_TOKEN else {}
+        response = requests.post(url, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"]
     except requests.exceptions.Timeout:

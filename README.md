@@ -20,7 +20,7 @@
 
 You have a normal laptop. You want to run a local LLM — for privacy, offline access, zero API cost. The hardware is capable, the models exist, the tooling is the problem.
 
-Lumina Edge is built for that user. It uses `llama.cpp` with OS-level memory reclamation that frees 1–2 GB before inference begins, exposing a fully operational local LLM through an OpenAI-compatible API — drop it into any existing codebase without touching a credit. On Apple Silicon it uses Apple's native **MLX framework** instead, giving unified memory access across CPU and GPU with zero overhead.
+Lumina Edge is built for that user. It uses `llama.cpp` on Linux/Windows and Apple's native **MLX framework** on Apple Silicon, with configurable local model serving and memory controls. Operating-system cache reclamation is best-effort, may require elevated privileges, and is not guaranteed to free a fixed amount of RAM; performance depends on the model, runtime build, and hardware. Use the benchmark tooling below to measure a specific setup rather than relying on advertised speedup claims.
 
 ---
 
@@ -81,7 +81,7 @@ chmod +x linux.sh mac.sh start_api.sh bin/llama-*
 windows.bat     # Windows
 ```
 
-All three start the backend (llama-server or MLX), the API gateway, and the Vite UI dev server, then open your browser automatically. Override ports with `LUMINA_API_PORT` / `LUMINA_UI_PORT` env vars (Linux also supports `LUMINA_NOSWAP=1` to disable swap for the session); the Linux/macOS scripts also take `--help` for options.
+All three start the backend (llama-server or MLX), the API gateway, and the Vite UI dev server, then open your browser automatically. Override ports with `LUMINA_API_PORT` / `LUMINA_UI_PORT` env vars (Linux also supports `LUMINA_NOSWAP=1` to disable swap for the session); the Linux/macOS scripts also take `--help` for options. Linux cache dropping is opt-in with `LUMINA_DROP_CACHES=1` and may require passwordless sudo; it discards only reclaimable kernel caches, not user files, and can make subsequent disk reads slower. Service suspension is also opt-in via `LUMINA_STOP_BACKGROUND_SERVICES=1`.
 
 **Windows — backend only:**
 
@@ -142,7 +142,7 @@ Quantization works like image compression: smaller file, less RAM, barely notice
 
 ## OpenAI-Compatible API
 
-Lumina Edge exposes a REST endpoint at `http://127.0.0.1:8090/v1` that speaks the same protocol as OpenAI's API — point any existing OpenAI SDK integration at it by changing one line, the `base_url`. A secondary management-only port is available at `8081`. No auth required for local connections.
+Lumina Edge exposes a REST endpoint at `http://127.0.0.1:8090/v1` that speaks the same protocol as OpenAI's API — point any existing OpenAI SDK integration at it by changing the `base_url`. A secondary management-only port is available at `8081`. Both gateway ports bind to loopback. Auth is disabled by default for backward compatibility; enable bearer auth before using a shared or otherwise untrusted machine.
 
 ```python
 from openai import OpenAI
@@ -158,7 +158,16 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-`/v1/models` and `/v1/chat/completions` are enriched specifically for **Continue, Cline, and other OpenAI-compatible extension clients** — same call structure works for streaming, Node.js, PowerShell, and cURL. `/v1/*` is only on the primary port (8090), not mirrored to the secondary management port.
+To enable gateway auth, set `auth_mode` to `"token"` in `config.json`, then set a 32+ character secret in the server environment (keep it out of the config file):
+
+```bash
+export LUMINA_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+./start_api.sh
+```
+
+Set the same token in **Settings → Gateway Security** in the browser UI. Python/OpenAI-compatible clients should use it as their API key instead of `not-needed`. `/api/health` and `/v1/models` remain unauthenticated for health/discovery; management routes, inference completions, and `/metrics` require the token. `/v1/*` is only on the primary port (8090), not mirrored to the secondary management port.
+
+The gateway applies a per-IP sliding-window limit (10 chat requests/minute by default) and bounded inference concurrency/queue settings. Tune `auth_rate_limit_per_minute`, `max_parallel_requests`, `max_queued_requests`, and `inference_queue_timeout_ms` in `config.json`. Prometheus metrics are available at `http://127.0.0.1:8090/metrics`.
 
 **Management API** — all routes below live under `/api/*` and are mirrored on both `8090` (primary) and `8081` (secondary, management-only):
 
@@ -178,6 +187,21 @@ print(response.choices[0].message.content)
 | Lumina Screen | `GET /lumina-screen/status`, `POST /lumina-screen/start`, `POST /lumina-screen/stop`, `POST /lumina-screen/config`, `POST /lumina-screen/rescan`, `GET /lumina-screen/hits`, `POST /lumina-screen/clear-hits` |
 | Lumina Agent | `POST /lumina-agent/run`, `GET /lumina-agent/status/:runId`, `POST /lumina-agent/stop/:runId` |
 | Lumina Scout | `GET /lumina-scout/hardware`, `GET /lumina-scout/recommend`, `GET /lumina-scout/plan` |
+
+---
+
+## Reproducible Benchmarks
+
+The GPU-layer benchmark supports warmups, repeated samples, confidence intervals, latency percentiles, optional process memory sampling, and machine-readable output:
+
+```bash
+python3 scripts/gpu_benchmark.py run \
+  --bin-dir bin --model models/your-model.gguf \
+  --warmup-rounds 3 --iterations 20 --output-timestamp \
+  --json-output --csv-output --html-output
+```
+
+The generated summary includes the 95% Student-t confidence interval for mean tokens/sec and p50/p95/p99 end-to-end latency. Peak RSS/virtual memory sampling uses `psutil` when installed or `/proc` on Linux; unavailable metrics are reported as null. `--baseline-comparison baseline.json` accepts a previous Lumina report or a JSON record such as `{"provider":"ollama","avg_tokens_per_sec":12.3}`. Run the same model, prompt, context, token count, and warmup protocol for meaningful comparisons; this file-based option does not launch or configure Ollama/LM Studio automatically. Benchmark outcomes are environment-specific and should be reported with hardware/runtime versions.
 
 ---
 

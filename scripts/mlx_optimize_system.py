@@ -97,8 +97,6 @@ def set_high_performance_power_mode():
     """
     strategies = [
         ['sudo', '-n', 'pmset', '-a', 'highpowermode', '1'],
-        ['sudo', '-n', 'pmset', '-a', 'powernap', '0'],
-        ['sudo', '-n', 'pmset', '-a', 'tcpkeepalive', '0'],
     ]
 
     any_success = False
@@ -193,8 +191,7 @@ def get_total_memory_gb():
 
 def optimize_for_mlx():
     """
-    Main optimization function. Returns dict with optimization results.
-    Steps: Metal env -> power mode -> stop services -> purge if needed -> performance mode
+    Configure process-local Metal settings. Host-wide actions require explicit opt-in.
     """
     if not is_apple_silicon():
         print('Not Apple Silicon — skipping MLX optimization')
@@ -217,22 +214,18 @@ def optimize_for_mlx():
     set_metal_performance_env()
     results['actions'].append('metal_env_set')
 
-    power_set = set_high_performance_power_mode()
-    if power_set:
-        results['actions'].append('high_performance_power_mode')
+    if os.environ.get('LUMINA_SYSTEM_TUNING') == '1':
+        power_set = set_high_performance_power_mode()
+        if power_set:
+            results['actions'].append('high_performance_power_mode')
+    else:
+        print('Host power settings unchanged (set LUMINA_SYSTEM_TUNING=1 to opt in)')
 
-    stopped = stop_memory_hungry_services()
-    if stopped:
-        results['actions'].append(f'paused_services')
-        results['stopped_services'] = stopped
-
-    if results['memory_pressure_before'] in ('warning', 'critical'):
-        purged = purge_inactive_memory()
-        if purged:
+    if os.environ.get('LUMINA_PURGE_MEMORY') == '1' and results['memory_pressure_before'] in ('warning', 'critical'):
+        if purge_inactive_memory():
             results['actions'].append('memory_purged')
-
-    set_performance_mode()
-    results['actions'].append('performance_mode_set')
+    else:
+        print('System memory purge skipped (set LUMINA_PURGE_MEMORY=1 to opt in)')
 
     results['memory_pressure_after'] = get_memory_pressure()
 
@@ -248,13 +241,7 @@ def cleanup_after_inference(stopped_services=None):
         resume_services(stopped_services)
         print('✓ Background services resumed')
 
-    try:
-        subprocess.run(
-            ['defaults', 'delete', 'NSGlobalDomain', 'NSAppSleepDisabled'],
-            capture_output=True, timeout=3
-        )
-    except Exception:
-        pass
+
 
 
 if __name__ == '__main__':

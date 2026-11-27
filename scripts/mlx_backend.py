@@ -12,6 +12,7 @@ import time
 import subprocess
 import platform
 import gc
+import math
 
 # ==============================================================================
 # PRE-IMPORT SETUP: Metal env vars and memory limit (must be before mlx import)
@@ -44,19 +45,60 @@ except ImportError:
     print("❌ ERROR: MLX packages not found. Please install: pip install --break-system-packages -r scripts/requirements-macos.txt")
     sys.exit(1)
 
-# D: Memory limit - set after MLX import if configured
-# Prevents MLX from using all unified memory, leaving room for the OS
+# Set the MLX allocator cap before loading model weights. The explicit byte cap,
+# when present, can only lower the configured RAM fraction; invalid values are ignored.
+def _total_system_memory_bytes():
+    try:
+        import psutil
+        return int(psutil.virtual_memory().total)
+    except Exception:
+        pass
+    if platform.system() == 'Darwin':
+        try:
+            result = subprocess.run(['sysctl', '-n', 'hw.memsize'], capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                return int(result.stdout.strip())
+        except Exception:
+            pass
+    return None
+
+
+_memory_limits = []
 _mlx_memory_fraction = _early_config.get('mlx_memory_limit_fraction')
 if _mlx_memory_fraction is not None:
     try:
-        import psutil
-        total_ram = psutil.virtual_memory().total
-    except Exception:
-        total_ram = 16 * (1024**3)  # fallback to 16GB
-    memory_limit = int(total_ram * float(_mlx_memory_fraction))
+        _mlx_memory_fraction = float(_mlx_memory_fraction)
+        if not math.isfinite(_mlx_memory_fraction) or not 0 < _mlx_memory_fraction <= 1:
+            raise ValueError('expected a finite fraction greater than 0 and at most 1')
+        _total_ram = _total_system_memory_bytes()
+        if _total_ram:
+            _memory_limits.append(int(_total_ram * _mlx_memory_fraction))
+        else:
+            print('[MLX] Could not detect total RAM; skipping fractional memory cap', flush=True)
+    except (TypeError, ValueError) as exc:
+        print(f'[MLX] Invalid mlx_memory_limit_fraction: {exc}', flush=True)
+
+_explicit_memory_limit = _early_config.get('mlx_metal_memory_limit_bytes')
+if _explicit_memory_limit is not None:
+    try:
+        _explicit_memory_limit = int(_explicit_memory_limit)
+        if _explicit_memory_limit > 0:
+            _memory_limits.append(_explicit_memory_limit)
+        else:
+            print('[MLX] mlx_metal_memory_limit_bytes must be positive; ignoring it', flush=True)
+    except (TypeError, ValueError):
+        print('[MLX] Invalid mlx_metal_memory_limit_bytes; ignoring it', flush=True)
+
+if _memory_limits:
+    _memory_limit = min(_memory_limits)
     if hasattr(mx.metal, 'set_memory_limit'):
-        mx.metal.set_memory_limit(memory_limit)
-        print(f'[MLX] Memory limit set to {memory_limit / (1024**3):.2f} GB ({_mlx_memory_fraction * 100:.0f}% of RAM)', flush=True)
+        try:
+            mx.metal.set_memory_limit(_memory_limit)
+            print(f'[MLX] Metal memory limit set to {_memory_limit / (1024**3):.2f} GiB', flush=True)
+        except Exception as exc:
+            print(f'[MLX] Failed to set Metal memory limit: {exc}', flush=True)
+    else:
+        print('[MLX] This MLX version does not expose mx.metal.set_memory_limit', flush=True)
 
 # Module-level flags for model load state (used by HTTP handlers)
 MODEL_LOADED = False

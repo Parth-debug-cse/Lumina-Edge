@@ -119,8 +119,20 @@ trap cleanup_components INT TERM EXIT
 optimize_system() {
     log "Optimizing system for inference..."
 
-    # Drop kernel filesystem cache to free memory for model weights
-    sync && echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1 || true
+    # Cache dropping is system-wide and can temporarily hurt I/O performance;
+    # only do it when explicitly enabled by the operator.
+    if [[ "${LUMINA_DROP_CACHES:-0}" == "1" ]]; then
+        sync
+        if [[ "${EUID:-$(id -u)}" == "0" ]]; then
+            echo 3 > /proc/sys/vm/drop_caches || log "  Could not drop kernel caches"
+        elif command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
+            sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches' || log "  Could not drop kernel caches"
+        else
+            log "  Cache drop skipped (root access unavailable)"
+        fi
+    else
+        log "  Cache drop skipped (set LUMINA_DROP_CACHES=1 to opt in)"
+    fi
 
     if [[ "${LUMINA_NOSWAP:-0}" == "1" ]]; then
         log "  Disabling swap for inference session..."
@@ -148,11 +160,14 @@ optimize_system() {
     # Clear Vulkan layer path to avoid potential overhead from validation layers
     export VK_LAYER_PATH=""
 
-    # Kill GNOME/KDE background indexers that waste CPU/RAM
-    for proc in tracker-miner tracker-store zeitgeist-datahub evolution-calendar-factory \
-                snapd packagekitd apt-daily apt-daily-upgrade; do
-        pkill -f "$proc" 2>/dev/null || true
-    done
+    # Do not terminate user services by default. This is an explicit, reversible
+    # operator choice because process-name matching can affect unrelated workloads.
+    if [[ "${LUMINA_STOP_BACKGROUND_SERVICES:-0}" == "1" ]]; then
+        for proc in tracker-miner tracker-store zeitgeist-datahub evolution-calendar-factory \
+                    snapd packagekitd apt-daily apt-daily-upgrade; do
+            pkill -f "$proc" 2>/dev/null || true
+        done
+    fi
 
     free -m | awk '/^Mem:/{printf "[Lumina]   RAM available: %d MB free, %d MB total\n",$4,$2}'
 

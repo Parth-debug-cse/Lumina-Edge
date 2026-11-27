@@ -8,13 +8,36 @@ import { fileURLToPath } from 'url';
 import { createServer } from 'net';
 import http from 'http';
 import { Router } from 'express';
+import {
+  createBearerAuth,
+  createConcurrencyLimiter,
+  createMetricsRegistry,
+  createSlidingWindowRateLimiter,
+  validateChatRequest,
+} from './gateway-controls.js';
 
 // Separate router for /api/* routes — can be mounted on both primary and secondary servers
 const apiRouter = Router();
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+const metrics = createMetricsRegistry();
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    const configuredOrigins = loadConfig().cors_allowed_origins;
+    const allowedOrigins = new Set([
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+      ...(Array.isArray(configuredOrigins) ? configuredOrigins : []),
+      ...(process.env.LUMINA_CORS_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean),
+    ]);
+    return callback(null, allowedOrigins.has(origin));
+  },
+  optionsSuccessStatus: 204,
+};
+app.use(cors(corsOptions));
+app.use(express.json({ limit: '1mb' }));
+app.use(metrics.middleware);
 
 // Create __dirname for ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -113,28 +136,6 @@ function runSystemOptimizer() {
   }
 }
 
-// Run optimizer on startup
-runSystemOptimizer();
-
-// Linux prelaunch script — runs system-level tunables on startup
-(async () => {
-  if (os.platform() === 'linux') {
-    const prelaunchScript = path.join(scriptsDir, 'linux_prelaunch.sh');
-    if (fs.existsSync(prelaunchScript)) {
-      console.log('[Startup] Running Linux system optimizer...');
-      try {
-        const { execSync } = await import('child_process');
-        execSync(`bash "${prelaunchScript}"`, {
-          timeout: 15000,
-          cwd: rootDir,
-          stdio: 'inherit', // show output in Node console
-        });
-      } catch (e) {
-        console.log('[Startup] Linux optimizer completed (non-zero exit is OK)');
-      }
-    }
-  }
-})();
 
 // Cleanup handlers — kill llama-server processes on exit to prevent orphans
 process.on('exit', killAllModels);
@@ -229,8 +230,48 @@ const config = loadConfig();
 // Dual-port setup: PRIMARY_PORT (8090) for inference+management, SECONDARY_PORT (8081) for management-only
 const PRIMARY_PORT = parseInt(process.env.LUMINA_API_PORT) || config.api_port || 8090;
 const SECONDARY_PORT = parseInt(process.env.LUMINA_API_PORT_SECONDARY) || config.api_port_secondary || 8081;
+const authMode = process.env.LUMINA_AUTH_MODE || config.auth_mode || 'none';
+if (!['none', 'token'].includes(authMode)) {
+  throw new Error(`Unsupported auth_mode '${authMode}'. Supported modes: none, token.`);
+}
+const apiAuthMiddleware = createBearerAuth(process.env.LUMINA_API_TOKEN, authMode === 'token');
+const rateLimitPerMinute = Number.parseInt(config.auth_rate_limit_per_minute, 10) || 10;
+const inferenceLimiter = createConcurrencyLimiter({
+  limit: Number.parseInt(config.max_parallel_requests, 10) || 2,
+  maxQueue: Number.parseInt(config.max_queued_requests, 10) || 8,
+  queueTimeoutMs: Number.parseInt(config.inference_queue_timeout_ms, 10) || 30_000,
+});
+const chatRateLimiter = createSlidingWindowRateLimiter({ limit: rateLimitPerMinute, windowMs: 60_000 });
 
-// Config caching — checks mtime for hot reload, avoids repeated file reads
+function authenticateGatewayRequest(req, res, next) {
+  const route = (req.originalUrl || req.url || '').split('?')[0];
+  if (route === '/api/health' || route === '/v1/models') return next();
+  if (route === '/metrics' || route === '/api' || route.startsWith('/api/') || route === '/v1' || route.startsWith('/v1/')) {
+    return apiAuthMiddleware(req, res, next);
+  }
+  return next();
+}
+
+// Do not launch platform optimizers until security configuration has been validated.
+runSystemOptimizer();
+if (os.platform() === 'linux') {
+  const prelaunchScript = path.join(scriptsDir, 'linux_prelaunch.sh');
+  if (fs.existsSync(prelaunchScript)) {
+    console.log('[Startup] Running Linux system optimizer...');
+    try {
+      execSync(`bash "${prelaunchScript}"`, { timeout: 15000, cwd: rootDir, stdio: 'inherit' });
+    } catch (err) {
+      console.log('[Startup] Linux optimizer completed (non-zero exit is OK)');
+    }
+  }
+}
+
+app.use(authenticateGatewayRequest);
+app.get('/metrics', (req, res) => {
+  res.type('text/plain; version=0.0.4; charset=utf-8').send(metrics.render(inferenceLimiter.stats));
+});
+
+// Config caching — checks mtime for hot reload
 var cachedConfig = null;
 var configTimestamp = 0;
 
@@ -3083,9 +3124,10 @@ if (os.platform() === 'linux' && proc.pid) {
 
 // Secondary management-only server — no /v1 routes exposed
 const mgmtOnlyApp = express();
-mgmtOnlyApp.use(cors());
-mgmtOnlyApp.use(express.json());
-mgmtOnlyApp.use('/api', apiRouter);
+mgmtOnlyApp.use(cors(corsOptions));
+mgmtOnlyApp.use(express.json({ limit: '1mb' }));
+mgmtOnlyApp.use(metrics.middleware);
+mgmtOnlyApp.use('/api', authenticateGatewayRequest, apiRouter);
 
 const secondaryServer = mgmtOnlyApp.listen(SECONDARY_PORT, '127.0.0.1', () => {
   console.log(`[API Server] ✓ Secondary (management) listening on http://127.0.0.1:${SECONDARY_PORT}`);
@@ -3210,7 +3252,7 @@ function formatToolSystemPrompt(tools) {
 // Routes to first ready router model. If no router models loaded, falls back to
 // direct backend (MLX on LUMINA_MLX_PORT or llama-server).
 // Tool-call injection: if tools array is present, injects as system prompt, forces non-streaming.
-app.post('/v1/chat/completions', async (req, res) => {
+app.post('/v1/chat/completions', chatRateLimiter, validateChatRequest, inferenceLimiter, async (req, res) => {
   try {
     const readyModel = Array.from(routerModels.values()).find(m => m.status === 'ready');
     if (!readyModel) {

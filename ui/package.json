@@ -9,6 +9,7 @@
     "//-scripts": "concurrently launches API server, Vite dev server (5173), and Electron window",
     "dev": "vite",
     "build": "vite build",
+    "test": "node --test",
     "preview": "vite preview",
     "electron:start": "electron . --no-sandbox",
     "api": "node api-server.js",

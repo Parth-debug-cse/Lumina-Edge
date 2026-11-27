@@ -10,6 +10,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "[Lumina Edge] Linux system optimizer starting..."
 
+# Drop only reclaimable kernel caches when explicitly requested. This is a
+# system-wide performance tradeoff and may require passwordless sudo.
+if [[ "${LUMINA_DROP_CACHES:-0}" == "1" ]]; then
+    if [[ "${EUID:-$(id -u)}" == "0" ]]; then
+        sync
+        echo 3 > /proc/sys/vm/drop_caches && echo "[MEM] ✓ Reclaimable page cache dropped"
+    elif command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
+        sync
+        sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches' && echo "[MEM] ✓ Reclaimable page cache dropped"
+    else
+        echo "[MEM] ⚠ Cache drop requested but root access is unavailable"
+    fi
+else
+    echo "[MEM] Cache drop skipped (set LUMINA_DROP_CACHES=1 to opt in)"
+fi
+
 # ── 1. CPU GOVERNOR ────────────────────────────────────────────────────────────
 # Check current governor; if not 'performance', try to set it
 # cpupower is the cleanest method; fallback is writing to each CPU's sysfs

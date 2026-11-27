@@ -3,9 +3,43 @@
 // ============================================================
 
 const API_PORT = import.meta.env.VITE_LUMINA_API_PORT || 8090;
-const BASE_URL = `http://127.0.0.1:${API_PORT}/v1`
+const BASE_URL = `http://127.0.0.1:${API_PORT}/v1`;
+const API_TOKEN_KEY = 'lumina_api_token';
+const nativeFetch = globalThis.fetch.bind(globalThis);
 
-// Cache the direct llama-server port — bypasses the API proxy for lower latency
+export function getApiToken() {
+  try { return sessionStorage.getItem(API_TOKEN_KEY) || ''; } catch { return ''; }
+}
+
+export function setApiToken(token) {
+  try {
+    const normalized = String(token || '').trim();
+    if (normalized) sessionStorage.setItem(API_TOKEN_KEY, normalized);
+    else sessionStorage.removeItem(API_TOKEN_KEY);
+  } catch { /* Storage may be unavailable in restricted browser contexts. */ }
+}
+
+function fetch(input, init = {}) {
+  let url;
+  try {
+    const target = input instanceof Request ? input.url : input;
+    url = new URL(target, window.location.href);
+  } catch {
+    return nativeFetch(input, init);
+  }
+  const isLocalGateway = (url.origin === window.location.origin && url.pathname.startsWith('/api'))
+    || (url.hostname === '127.0.0.1' && url.port === String(API_PORT)
+      && (url.pathname.startsWith('/api') || url.pathname.startsWith('/v1')));
+  const token = isLocalGateway ? getApiToken() : '';
+  if (!token) return nativeFetch(input, init);
+  const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+  headers.set('Authorization', `Bearer ${token}`);
+  return nativeFetch(input, { ...init, headers });
+}
+
+export { fetch as apiFetch };
+
+// Cached active model port is retained for status display; inference is routed through the gateway.
 let _directPort = null;
 
 export async function getActivePort() {
@@ -25,11 +59,8 @@ export async function getActivePort() {
  * Calls onChunk(text) for each streamed token.
  */
 export async function streamChat({ messages, model, temperature = 0.7, topP = 0.9, onChunk, signal }) {
-  // Use cached direct port, or fetch it, or fall back to proxy
-  const port = _directPort || await getActivePort();
-  const endpoint = port
-    ? `http://127.0.0.1:${port}/v1/chat/completions` 
-    : `${BASE_URL}/chat/completions`;
+  // Use the gateway so auth, admission control, and request metrics apply consistently.
+  const endpoint = `${BASE_URL}/chat/completions`;
 
   const res = await fetch(endpoint, {
     method: 'POST',
@@ -509,14 +540,8 @@ export async function setRoutingPolicy(policy) {
  */
 export async function streamChatWithRouting({ messages, routerSelection = 'auto', temperature = 0.7, topP = 0.9, onChunk, signal }) {
   try {
-    // Auto: use cached direct port or fall back to proxy. Manual: use provided endpoint URL directly
-    let endpoint;
-    if (routerSelection === 'auto') {
-      const port = _directPort || await getActivePort();
-      endpoint = port ? `http://127.0.0.1:${port}/v1/chat/completions` : `${BASE_URL}/chat/completions`;
-    } else {
-      endpoint = routerSelection;
-    }
+    // Auto routing stays behind the gateway. Explicit model endpoints remain available for compatibility.
+    const endpoint = routerSelection === 'auto' ? `${BASE_URL}/chat/completions` : routerSelection;
     
     const res = await fetch(endpoint, {
       method: 'POST',

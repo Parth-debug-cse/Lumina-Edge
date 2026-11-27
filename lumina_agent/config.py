@@ -31,6 +31,7 @@ def _detect_model(base: str) -> str:
 # The gateway routes to whatever model is currently loaded via the UI.
 # This is the key fix (bug LA-1) — previously pointing at 8091 bypassed model switching.
 LUMINA_API_BASE = os.environ.get("LUMINA_API_BASE", "http://localhost:8090/v1")
+LUMINA_API_TOKEN = os.environ.get("LUMINA_API_TOKEN", "")
 
 # BUG-LA4 FIX: _detect_model() was called at *import time*, adding up to 3 s of HTTP
 # latency to every agent run (the inline subprocess in api-server.js imports this module

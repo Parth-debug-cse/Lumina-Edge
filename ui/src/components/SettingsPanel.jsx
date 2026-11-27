@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { getLocalConfig, saveLocalConfig, DEFAULT_CONFIG } from '../utils/storage.js'
+import { apiFetch, getApiToken, setApiToken } from '../utils/api.js'
 
 // Detect if running on macOS (Apple Silicon) - client-side fallback
 // Used when server-side /api/system-info is unreachable
@@ -122,6 +123,7 @@ const MLX_SECTIONS = [
 export default function SettingsPanel({ toast }) {
   // Config loaded from localStorage; saved flag for ✓ feedback
   const [cfg, setCfg] = useState(getLocalConfig)
+  const [apiToken, setApiTokenValue] = useState(getApiToken)
   const [saved, setSaved] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [macPlatform, setMacPlatform] = useState(false)
@@ -130,7 +132,7 @@ export default function SettingsPanel({ toast }) {
   // Detect platform on mount - prefer server-side /api/system-info, fallback to client-side
   useEffect(() => {
     // Try server-side detection first (authoritative)
-    fetch('/api/system-info')
+    apiFetch('/api/system-info')
       .then(res => res.ok ? res.json() : null)
       .then(info => {
         if (info && info.platform) {
@@ -198,9 +200,10 @@ export default function SettingsPanel({ toast }) {
   }
 
   const save = async () => {
+    setApiToken(apiToken)
     saveLocalConfig(cfg)
     try {
-      const res = await fetch('/api/save-config', {
+      const res = await apiFetch('/api/save-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(cfg)
@@ -370,6 +373,25 @@ export default function SettingsPanel({ toast }) {
             )}
           </div>
         )}
+
+        <div style={{ marginTop: 24 }}>
+          <div className="settings-section-title">Gateway Security</div>
+          <div className="settings-card" style={{ marginTop: 12 }}>
+            <label htmlFor="lumina-api-token" style={{ display: 'block', marginBottom: 8 }}>Bearer token</label>
+            <input
+              id="lumina-api-token"
+              type="password"
+              autoComplete="new-password"
+              value={apiToken}
+              onChange={event => { setApiTokenValue(event.target.value); setSaved(false) }}
+              placeholder="Optional — set LUMINA_API_TOKEN on the server"
+              style={{ width: '100%' }}
+            />
+            <div style={{ marginTop: 8, fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+              Kept in this tab's session storage. Enable auth_mode="token" and set the same 32+ character secret in the server environment; never put secrets in config.json.
+            </div>
+          </div>
+        </div>
 
         {/* Config preview */}
         <div style={{ marginTop: 24 }}>
