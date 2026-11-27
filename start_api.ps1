@@ -16,6 +16,25 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $Root = $ScriptDir
 Set-Location $Root
 
+function Resolve-ThreadCount {
+    param([object]$Value)
+
+    if ([string]$Value -ne "auto") {
+        try {
+            $Count = [int]$Value
+            if ($Count -gt 0) { return $Count }
+        } catch {}
+        Write-Warning "Invalid thread count '$Value'; using 1"
+        return 1
+    }
+
+    try {
+        $PhysicalCores = (Get-CimInstance -ClassName Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum
+        if ($PhysicalCores -gt 0) { return [int]$PhysicalCores }
+    } catch {}
+    return [Math]::Max(1, [Environment]::ProcessorCount)
+}
+
 # Reads a config.json value with dot-notation support and a fallback default
 function Get-ConfigValue {
     param([string]$Key, $Default)
@@ -88,8 +107,8 @@ $TopK = Get-ConfigValue "top_k" 40
 $RepeatPenalty = Get-ConfigValue "repeat_penalty" 1.1
 $MinP = Get-ConfigValue "min_p" 0.05
 $HttpThreads = Get-ConfigValue "http_threads" 2
-$Threads = Get-ConfigValue "threads" 4
-$ThreadsBatch = Get-ConfigValue "threads_batch" 4
+$Threads = Resolve-ThreadCount (Get-ConfigValue "threads" 4)
+$ThreadsBatch = Resolve-ThreadCount (Get-ConfigValue "threads_batch" 4)
 $FlashAttn = Get-ConfigValue "flash_attn" $true
 $NoMmap = Get-ConfigValue "no_mmap" $true
 $ContBatching = Get-ConfigValue "cont_batching" $true

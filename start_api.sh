@@ -37,6 +37,34 @@ except Exception:
     fi
 }
 
+detect_physical_cores() {
+    local cores=""
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        cores=$(sysctl -n hw.physicalcpu 2>/dev/null)
+    elif command -v lscpu &>/dev/null; then
+        cores=$(lscpu -p=CORE,SOCKET 2>/dev/null | awk -F, '$1 !~ /^#/ { seen[$1 "," $2] = 1 } END { count = 0; for (core in seen) count++; print count }')
+    fi
+    if [[ ! "$cores" =~ ^[1-9][0-9]*$ ]]; then
+        cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null)
+    fi
+    if [[ ! "$cores" =~ ^[1-9][0-9]*$ ]]; then
+        cores=1
+    fi
+    echo "$cores"
+}
+
+resolve_thread_count() {
+    local configured="$1"
+    if [[ "$configured" == "auto" ]]; then
+        detect_physical_cores
+    elif [[ "$configured" =~ ^[1-9][0-9]*$ ]]; then
+        echo "$configured"
+    else
+        echo "Invalid thread count '$configured'; using 1" >&2
+        echo 1
+    fi
+}
+
 GPU="vulkan"
 
 # Auto-detect macOS for MLX backend
@@ -103,8 +131,8 @@ TOP_K=$(get_config top_k 20)
 TOP_P=$(get_config top_p 0.9)
 REPEAT_PENALTY=$(get_config repeat_penalty 1.1)
 HTTP_THREADS=$(get_config http_threads 2)
-THREADS=$(get_config threads 4)
-THREADS_BATCH=$(get_config threads_batch 4)
+THREADS=$(resolve_thread_count "$(get_config threads 4)")
+THREADS_BATCH=$(resolve_thread_count "$(get_config threads_batch 4)")
 CONT_BATCHING=$(get_config cont_batching true)
 KV_CACHE_QUANT=$(get_config kv_cache_quant 'q4_0')
 USE_MLOCK=$(get_config use_mlock true)

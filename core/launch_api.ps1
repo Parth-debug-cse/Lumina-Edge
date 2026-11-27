@@ -18,6 +18,25 @@ $RootDir = if ($ScriptDir -match '[\\/]core$') { Split-Path -Parent $ScriptDir }
 Set-Location $RootDir
 
 # Reads a config.json value with dot-notation support and fallback default
+function Resolve-ThreadCount {
+    param([object]$Value)
+
+    if ([string]$Value -ne "auto") {
+        try {
+            $Count = [int]$Value
+            if ($Count -gt 0) { return $Count }
+        } catch {}
+        Write-Warning "Invalid thread count '$Value'; using 1"
+        return 1
+    }
+
+    try {
+        $PhysicalCores = (Get-CimInstance -ClassName Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum
+        if ($PhysicalCores -gt 0) { return [int]$PhysicalCores }
+    } catch {}
+    return [Math]::Max(1, [Environment]::ProcessorCount)
+}
+
 function Get-ConfigValue {
     param(
         [string]$Key,
@@ -54,6 +73,8 @@ $TopK = Get-ConfigValue -Key "top_k" -Default 40
 $TopP = Get-ConfigValue -Key "top_p" -Default 0.9
 $RepeatPenalty = Get-ConfigValue -Key "repeat_penalty" -Default 1.1
 $HttpThreads = Get-ConfigValue -Key "http_threads" -Default 2
+$Threads = Resolve-ThreadCount (Get-ConfigValue -Key "threads" -Default 2)
+$ThreadsBatch = Resolve-ThreadCount (Get-ConfigValue -Key "threads_batch" -Default 4)
 $ContBatching = Get-ConfigValue -Key "cont_batching" -Default $true
 $KvCacheQuant = Get-ConfigValue -Key "kv_cache_quant" -Default "q4_0"
 # FIX: --mlock is not supported on Windows; default to false
@@ -103,6 +124,7 @@ Write-Host "Port: $FinalPort" -ForegroundColor Green
 Write-Host "GPU Backend: $Gpu" -ForegroundColor Green
 Write-Host "Context Size: $CtxSize" -ForegroundColor Green
 Write-Host "GPU Layers: $NGpuLayers" -ForegroundColor Green
+Write-Host "Inference threads: $Threads (batch: $ThreadsBatch)" -ForegroundColor Green
 
 # Check if port is already in use
 $PortCheck = netstat -ano | Select-String -Pattern ":$FinalPort\s"
@@ -134,6 +156,8 @@ $Arguments = @(
     "--top-k", $TopK,
     "--top-p", $TopP,
     "--repeat-penalty", $RepeatPenalty,
+    "--threads", $Threads,
+    "--threads-batch", $ThreadsBatch,
     "--threads-http", $HttpThreads,
     "--jinja"  # Jinja2 chat template support
 )

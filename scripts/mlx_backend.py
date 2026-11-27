@@ -137,6 +137,10 @@ try:
     _supports_kv_asym = 'key_bits' in _gen_sig.parameters
     _supports_kv_sym = 'kv_bits' in _gen_sig.parameters
     _supports_max_kv = 'max_kv_size' in _gen_sig.parameters
+    _supports_draft_model = (
+        'draft_model' in _gen_sig.parameters
+        and 'num_draft_tokens' in _gen_sig.parameters
+    )
     if _supports_kv_asym:
         print('[MLX] Asymmetric KV quantization supported: K=8bit, V=4bit', flush=True)
     elif _supports_kv_sym:
@@ -145,10 +149,15 @@ try:
         print('[MLX] KV quantization not available in this mlx_lm version', flush=True)
     if _supports_max_kv:
         print('[MLX] max_kv_size parameter supported', flush=True)
+    if _supports_draft_model:
+        print('[MLX] Draft-model speculative decoding supported', flush=True)
+    else:
+        print('[MLX] Draft-model speculative decoding unavailable in this mlx_lm version', flush=True)
 except Exception:
     _supports_kv_asym = False
     _supports_kv_sym = False
     _supports_max_kv = False
+    _supports_draft_model = False
     print('[MLX] API detection failed, using defaults', flush=True)
 
 # B: Detect sampler API support (make_sampler vs bare kwargs)
@@ -195,6 +204,90 @@ def _get_kv_kwargs(mlx_kv_quant_config=None, mlx_kv_quant_native=None, mlx_max_k
         kwargs['max_kv_size'] = mlx_max_kv_size
 
     return kwargs
+
+
+def _tokenizer_vocab(tokenizer):
+    """Return a comparable token-to-id mapping, or None when unavailable."""
+    get_vocab = getattr(tokenizer, 'get_vocab', None)
+    if not callable(get_vocab):
+        return None
+    try:
+        vocab = get_vocab()
+    except Exception:
+        return None
+    if not isinstance(vocab, dict) or not vocab:
+        return None
+    return vocab
+
+
+def _tokenizers_compatible(target_tokenizer, draft_tokenizer):
+    """Require identical token IDs before sharing prompts with a draft model."""
+    target_vocab = _tokenizer_vocab(target_tokenizer)
+    draft_vocab = _tokenizer_vocab(draft_tokenizer)
+    if target_vocab is None or draft_vocab is None or target_vocab != draft_vocab:
+        return False
+
+    special_tokens = ('bos_token_id', 'eos_token_id', 'pad_token_id', 'unk_token_id')
+    return all(
+        getattr(target_tokenizer, name, None) == getattr(draft_tokenizer, name, None)
+        for name in special_tokens
+    )
+
+
+def _load_speculative_draft(config, target_tokenizer):
+    """Load an explicitly configured, tokenizer-compatible local draft model."""
+    settings = config.get('mlx_speculative_decoding', {})
+    if not isinstance(settings, dict) or not settings.get('enabled', False):
+        return None
+    if not _supports_draft_model:
+        print('[MLX] Speculative decoding requested but unsupported by mlx_lm; using normal generation', flush=True)
+        return None
+
+    draft_path = str(settings.get('draft_model', '')).strip()
+    if not draft_path:
+        print('[MLX] Speculative decoding is enabled without draft_model; using normal generation', flush=True)
+        return None
+    draft_path = os.path.expanduser(draft_path)
+    if not os.path.isabs(draft_path):
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        draft_path = os.path.join(project_root, draft_path)
+    draft_path = os.path.abspath(draft_path)
+    if not os.path.isdir(draft_path) or not os.path.isfile(os.path.join(draft_path, 'config.json')):
+        print('[MLX] Draft model must be a local MLX model directory containing config.json; using normal generation', flush=True)
+        return None
+
+    try:
+        draft_tokens = int(settings.get('num_draft_tokens', 3))
+        if not 1 <= draft_tokens <= 16:
+            raise ValueError('num_draft_tokens must be between 1 and 16')
+        draft_model, draft_tokenizer = mlx_lm.load(draft_path)
+        if not _tokenizers_compatible(target_tokenizer, draft_tokenizer):
+            print('[MLX] Draft tokenizer vocabulary/special-token IDs do not match; using normal generation', flush=True)
+            return None
+        print(f'[MLX] Draft model loaded ({draft_tokens} draft tokens); speculative decoding is enabled', flush=True)
+        return {'model': draft_model, 'num_tokens': draft_tokens}
+    except Exception as exc:
+        print(f'[MLX] Could not load speculative draft model ({exc}); using normal generation', flush=True)
+        return None
+
+
+def _stream_generate(gen_kwargs, speculative_draft=None):
+    """Generate normally or use supported draft decoding with compatible cache options."""
+    if not speculative_draft or not _supports_draft_model:
+        return mlx_lm.stream_generate(**gen_kwargs)
+
+    speculative_kwargs = dict(gen_kwargs)
+    # mlx_lm's speculative path requires trimmable caches and does not accept
+    # asymmetric/native KV quantization or a max_kv_size cap.
+    for name in ('kv_bits', 'key_bits', 'value_bits', 'kv_group_size', 'quantized_kv_start', 'max_kv_size'):
+        speculative_kwargs.pop(name, None)
+    speculative_kwargs['draft_model'] = speculative_draft['model']
+    speculative_kwargs['num_draft_tokens'] = speculative_draft['num_tokens']
+    try:
+        return mlx_lm.stream_generate(**speculative_kwargs)
+    except TypeError as exc:
+        print(f'[MLX] Speculative decoding arguments rejected ({exc}); using normal generation', flush=True)
+        return mlx_lm.stream_generate(**gen_kwargs)
 
 
 def get_mlx_generation_kwargs(config, prompt=None, override_temp=None, override_top_p=None, override_max_tokens=None):
@@ -375,6 +468,11 @@ def load_config():
         "trust_remote_code": False,
         "mlx_kv_quant": {"key_bits": 8, "value_bits": 4},
         "mlx_max_kv_size": 8192,
+        "mlx_speculative_decoding": {
+            "enabled": False,
+            "draft_model": "",
+            "num_draft_tokens": 3
+        },
         "mlx_sampling": {
             "temperature": 0.7, "top_p": 1.0, "min_p": 0.0,
             "repetition_penalty": 1.0, "repetition_context_size": 20, "max_tokens": 512
@@ -436,7 +534,8 @@ def run_benchmark(model_path):
     gen_kwargs['model'] = model
     gen_kwargs['tokenizer'] = tokenizer
 
-    for result in mlx_lm.stream_generate(**gen_kwargs):
+    speculative_draft = _load_speculative_draft(config, tokenizer)
+    for result in _stream_generate(gen_kwargs, speculative_draft):
         token_count += 1
 
     gen_time = time.time() - gen_start
@@ -534,6 +633,7 @@ def launch_api_direct(model_path, port):
             model, tokenizer = mlx_lm.load(abs_model_path, adapter_path=os.path.expanduser(adapter_path))
         else:
             model, tokenizer = mlx_lm.load(abs_model_path)
+        speculative_draft = _load_speculative_draft(config, tokenizer)
         load_time = time.time() - load_start
         MODEL_LOADED = True
         print(f'[MLX Direct] Model loaded in {load_time:.1f}s', flush=True)
@@ -1067,7 +1167,7 @@ def launch_api_direct(model_path, port):
                 full_text = ""
                 gen_start = time.time()
                 gen_timeout = 60
-                for result in mlx_lm.stream_generate(**gen_kwargs):
+                for result in _stream_generate(gen_kwargs, speculative_draft):
                     if time.time() - gen_start > gen_timeout:
                         error_chunk = {**chunk_base, "id": f"chatcmpl-{int(time.time()*1000)}",
                             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
@@ -1149,7 +1249,7 @@ def launch_api_direct(model_path, port):
 
                 gen_start = time.time()
                 gen_timeout = 60
-                for result in mlx_lm.stream_generate(**gen_kwargs):
+                for result in _stream_generate(gen_kwargs, speculative_draft):
                     if time.time() - gen_start > gen_timeout:
                         response = {
                             "id": f"chatcmpl-{int(time.time()*1000)}",
@@ -1284,6 +1384,7 @@ def launch_core(model_path, json_output=False):
 
     print("Loading model for chat...")
     model, tokenizer = mlx_lm.load(model_path)
+    speculative_draft = _load_speculative_draft(config, tokenizer)
     print("\nLumina Edge MLX Chat (type /exit to quit)\n")
 
     history = []
@@ -1307,7 +1408,7 @@ def launch_core(model_path, json_output=False):
             gen_kwargs['model'] = model
             gen_kwargs['tokenizer'] = tokenizer
 
-            for result in mlx_lm.stream_generate(**gen_kwargs):
+            for result in _stream_generate(gen_kwargs, speculative_draft):
                 token_text = result.text if hasattr(result, 'text') else str(result)
                 print(token_text, end="", flush=True)
                 resp += token_text

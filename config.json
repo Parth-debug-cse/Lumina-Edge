@@ -23,7 +23,7 @@
   "_comment_gpu": "n_gpu_layers: number of layers to offload to GPU (99 = all layers, 0 = CPU-only). gpu_type: nvidia/intel/amd/apple_silicon. n_gpu_layers=0 is safest for constrained hardware (pure CPU inference).",
   "n_gpu_layers": 15,
   "gpu_type": "intel_igpu",
-  "_comment_threading": "threads_batch: prompt processing (compute-bound, keep high). threads: generation (memory-bandwidth-bound, use phys cores only).",
+  "_comment_threading": "threads_batch: prompt processing (compute-bound). Set threads or threads_batch to 'auto' to use detected physical CPU cores.",
   "threads": 2,
   "threads_batch": 4,
   "_comment_sampling": "Sampling parameters for llama.cpp (ignored on macOS — use mlx_sampling instead).",
@@ -96,6 +96,12 @@
     "quantized_kv_start": 0
   },
   "_comment_mlx_f": "Asymmetric KV quantization (K bits / V bits) — mutual exclusive with mlx_kv_quant_native.",
+  "_comment_mlx_speculative": "Optional draft-model speculative decoding (not Medusa). Requires an exact tokenizer vocabulary match and extra unified memory; disabled by default. draft_model may be an absolute path or project-relative local MLX model directory.",
+  "mlx_speculative_decoding": {
+    "enabled": false,
+    "draft_model": "",
+    "num_draft_tokens": 3
+  },
   "mlx_kv_quant": {
     "key_bits": 8,
     "value_bits": 4
