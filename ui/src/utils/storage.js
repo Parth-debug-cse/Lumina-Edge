@@ -160,7 +160,7 @@ export const DEFAULT_CONFIG = {
   trust_remote_code: false,
 
   // Routing
-  routing_policy: 'round_robin',
+  routing_policy: 'round-robin',
 
   // UI/output
   json_output: false,

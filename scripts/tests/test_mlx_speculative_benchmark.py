@@ -1,9 +1,10 @@
+import statistics
 import sys
+import types
 import unittest
-from pathlib import Path
+from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import mlx_speculative_benchmark as benchmark
+from scripts import mlx_speculative_benchmark as benchmark
 
 
 class BenchmarkStatisticsTests(unittest.TestCase):
@@ -12,6 +13,50 @@ class BenchmarkStatisticsTests(unittest.TestCase):
 
     def test_confidence_interval_is_centered_for_single_sample(self):
         self.assertEqual(benchmark.confidence_interval_95([12.0]), {"low": 12.0, "high": 12.0})
+
+    def test_large_sample_interval_uses_t_critical_above_normal_approximation(self):
+        values = [float(value) for value in range(32)]
+        interval = benchmark.confidence_interval_95(values)
+        normal_half_width = 1.96 * statistics.stdev(values) / (len(values) ** 0.5)
+        high = interval["high"]
+        self.assertIsNotNone(high)
+        assert high is not None
+        self.assertGreater(high - 15.5, normal_half_width)
+        self.assertAlmostEqual(benchmark._t_critical_95(31), 2.0395, places=3)
+
+    def test_speculative_fallback_is_marked_on_trial(self):
+        class Response:
+            generation_tokens = 2
+            from_draft = False
+            text = "normal decode"
+
+        class Backend:
+            _supports_draft_model = True
+
+            @staticmethod
+            def load_config():
+                return {}
+
+            @staticmethod
+            def get_mlx_generation_kwargs(*_args, **_kwargs):
+                return {}
+
+            @staticmethod
+            def _stream_generate(_kwargs, _draft):
+                print("Speculative decoding arguments rejected; using normal generation")
+                yield Response()
+
+        mx = types.SimpleNamespace(reset_peak_memory=lambda: None)
+        fake_psutil = types.SimpleNamespace(Process=lambda: object())
+        with mock.patch.dict(sys.modules, {"psutil": fake_psutil}), mock.patch.object(
+            benchmark, "_memory_snapshot", return_value={"process_rss_bytes": 1}
+        ):
+            trial = benchmark._run_trial(
+                Backend(), mx, "speculative", object(), object(), "prompt", 8,
+                {"model": object(), "num_tokens": 2},
+            )
+        self.assertTrue(trial["backend_fallback"])
+        self.assertIn("using normal generation", trial["backend_fallback_reason"])
 
     def test_paired_speedup_reports_percent_gain_and_confidence_interval(self):
         baseline = [{"tokens_per_second": 100.0}, {"tokens_per_second": 100.0}]

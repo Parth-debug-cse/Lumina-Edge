@@ -77,8 +77,8 @@ resolve_ports() {
     export LUMINA_API_PORT="$API_PORT"
 }
 
-# Kills all tracked Lumina processes + any orphan MLX/node/vite processes
-# Uses ps -p instead of /proc (macOS doesn't have /proc)
+# Stops only processes recorded by this launcher.
+# Uses ps -p instead of /proc (macOS doesn't have /proc).
 stop_existing() {
     log "Stopping any existing Lumina processes..."
     if [[ -f "$PID_FILE" ]]; then
@@ -89,9 +89,7 @@ stop_existing() {
         done < "$PID_FILE"
         : > "$PID_FILE"
     fi
-    pkill -f 'mlx_backend.*api' 2>/dev/null || true
-    pkill -f 'api-server.js' 2>/dev/null || true
-    pkill -f 'vite' 2>/dev/null || true
+
     sleep 1
 }
 
@@ -142,7 +140,9 @@ optimize_system() {
     else
         log "  Host power, compressor, and App Nap settings unchanged (set LUMINA_SYSTEM_TUNING=1 to opt in)"
     fi
-    renice -n -10 $$ 2>/dev/null || true
+    if [[ "${LUMINA_SYSTEM_TUNING:-0}" == "1" ]]; then
+        renice -n -10 $$ 2>/dev/null || true
+    fi
 
     # MLX/Metal env vars for best GPU throughput
     export MTL_HUD_ENABLED=0

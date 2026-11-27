@@ -63,6 +63,11 @@ export function createConcurrencyLimiter({ limit = 2, maxQueue = 8, queueTimeout
   let active = 0;
   const queue = [];
 
+  const removeWaiter = (waiter) => {
+    const index = queue.indexOf(waiter);
+    if (index !== -1) queue.splice(index, 1);
+  };
+
   const attachRelease = (res) => {
     let released = false;
     const release = () => {
@@ -91,7 +96,7 @@ export function createConcurrencyLimiter({ limit = 2, maxQueue = 8, queueTimeout
     };
 
     if (active < limit) return grant();
-    if (queue.filter(waiter => !waiter.settled).length >= maxQueue) {
+    if (queue.length >= maxQueue) {
       res.setHeader('Retry-After', '1');
       return res.status(429).json({ error: 'Inference capacity is busy; retry shortly' });
     }
@@ -101,10 +106,12 @@ export function createConcurrencyLimiter({ limit = 2, maxQueue = 8, queueTimeout
       if (waiter.settled) return;
       waiter.settled = true;
       clearTimeout(waiter.timer);
+      removeWaiter(waiter);
     };
     waiter.timer = setTimeout(() => {
       if (waiter.settled) return;
       waiter.settled = true;
+      removeWaiter(waiter);
       waiter.res.removeListener?.('close', waiter.cancel);
       if (!waiter.res.headersSent && !waiter.res.destroyed) {
         waiter.res.setHeader('Retry-After', '1');
@@ -117,9 +124,166 @@ export function createConcurrencyLimiter({ limit = 2, maxQueue = 8, queueTimeout
   };
 
   Object.defineProperty(middleware, 'stats', {
-    get: () => ({ active, queued: queue.filter(waiter => !waiter.settled).length }),
+    get: () => ({ active, queued: queue.length, retained: queue.length }),
   });
   return middleware;
+}
+
+export function createGatewayAuthMiddleware(authMiddleware) {
+  return function gatewayAuth(req, res, next) {
+    const route = String(req.originalUrl || req.url || req.path || '/').split('?')[0].toLowerCase();
+    if (route === '/api/health' || route === '/v1/models') return next();
+    if (route === '/metrics' || route === '/api' || route.startsWith('/api/') || route === '/v1' || route.startsWith('/v1/')) {
+      return authMiddleware(req, res, next);
+    }
+    return next();
+  };
+}
+
+export function isCorsOriginAllowed(origin, { configuredOrigins = [], envOrigins = '' } = {}) {
+  const allowedOrigins = new Set([
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    ...(Array.isArray(configuredOrigins) ? configuredOrigins : []),
+    ...String(envOrigins).split(',').map(value => value.trim()).filter(Boolean),
+  ]);
+  return allowedOrigins.has(origin);
+}
+
+export function getModelProbePorts({ primaryPort, mlxPort, fallbackPort = 8091 }) {
+  const gatewayPort = Number(primaryPort);
+  return [...new Set([mlxPort, fallbackPort]
+    .map(Number)
+    .filter(port => Number.isInteger(port) && port > 0 && port <= 65_535 && port !== gatewayPort))];
+}
+
+export function resolveGpuLayers(configured, acceleratorAvailable = false) {
+  if (typeof configured === 'string' && configured.trim().toLowerCase() === 'auto') {
+    return acceleratorAvailable ? 99 : 0;
+  }
+  const value = typeof configured === 'number' ? configured : Number(configured);
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+export function resolveBatchSize(configured, availableMemoryBytes, fallback = 256) {
+  if (typeof configured === 'string' && configured.trim().toLowerCase() === 'auto') {
+    const availableGiB = Number.isFinite(availableMemoryBytes) && availableMemoryBytes > 0
+      ? availableMemoryBytes / (1024 ** 3)
+      : 0;
+    return Math.max(128, Math.min(1024, Math.floor(availableGiB / 2) * 128));
+  }
+  const value = typeof configured === 'number' ? configured : Number(configured);
+  return Number.isSafeInteger(value) && value > 0 && value <= 4096 ? value : fallback;
+}
+
+export function resolveThreadCount(configured, detectedPhysicalCores, fallback = 4) {
+  if (typeof configured === 'string' && configured.trim().toLowerCase() === 'auto') {
+    return Number.isSafeInteger(detectedPhysicalCores) && detectedPhysicalCores > 0
+      ? detectedPhysicalCores
+      : fallback;
+  }
+  const value = typeof configured === 'number' ? configured : Number(configured);
+  return Number.isSafeInteger(value) && value > 0 && value <= 1024 ? value : fallback;
+}
+
+export function selectReadyModel(models, policy = 'round-robin', cursor = 0) {
+  const ready = models.filter(model => model.status === 'ready');
+  if (!ready.length) return { model: null, nextCursor: cursor };
+
+  const priorityOf = model => Number.isFinite(model.priority) ? model.priority : 0;
+  const highestPriority = Math.max(...ready.map(priorityOf));
+  let candidates = ready.filter(model => priorityOf(model) === highestPriority);
+
+  if (policy === 'first-available') {
+    return { model: candidates[0], nextCursor: cursor };
+  }
+  if (policy === 'load-balanced') {
+    const activeCount = model => Number.isInteger(model.active_requests) ? model.active_requests : 0;
+    const inferenceCount = model => Number.isInteger(model.inference_count) ? model.inference_count : 0;
+    const leastActive = Math.min(...candidates.map(activeCount));
+    candidates = candidates.filter(model => activeCount(model) === leastActive);
+    const leastUsed = Math.min(...candidates.map(inferenceCount));
+    candidates = candidates.filter(model => inferenceCount(model) === leastUsed);
+  }
+
+  const index = ((cursor % candidates.length) + candidates.length) % candidates.length;
+  return { model: candidates[index], nextCursor: cursor + 1 };
+}
+
+export async function fetchJsonWithTimeout(url, { timeoutMs = 3_000, fetchImpl = globalThis.fetch } = {}) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 1) throw new TypeError('Timeout must be positive.');
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    const response = await fetchImpl(url, { signal: controller.signal });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (error) {
+    if (timedOut) {
+      const timeoutError = new Error(`Request timed out after ${timeoutMs}ms`);
+      timeoutError.name = 'TimeoutError';
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export function createLineFramer(onLine) {
+  let pending = Buffer.alloc(0);
+  return {
+    push(chunk) {
+      pending = Buffer.concat([pending, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+      let newline;
+      while ((newline = pending.indexOf(0x0a)) !== -1) {
+        let line = pending.subarray(0, newline);
+        pending = pending.subarray(newline + 1);
+        if (line.length && line[line.length - 1] === 0x0d) line = line.subarray(0, -1);
+        if (line.length) onLine(line.toString('utf8'));
+      }
+    },
+    flush() {
+      if (pending.length) onLine(pending.toString('utf8'));
+      pending = Buffer.alloc(0);
+    },
+  };
+}
+
+export function isAgentGoalValid(goal, maxLength = 10_000) {
+  return typeof goal === 'string' && goal.trim().length > 0 && goal.length <= maxLength;
+}
+
+export function hasAgentRunCapacity(runs, maxActive) {
+  let active = 0;
+  for (const run of runs.values()) {
+    const processAlive = run.proc && run.proc.exitCode === null && run.proc.signalCode === null;
+    if (run.status === 'running' || processAlive) {
+      active += 1;
+      if (active >= maxActive) return false;
+    }
+  }
+  return true;
+}
+
+export function signalChildProcess(child, signal, { platform = process.platform, killProcess = process.kill, detached = child?.detached } = {}) {
+  if (!child) return false;
+  if (platform !== 'win32' && detached && Number.isInteger(child.pid)) {
+    try {
+      killProcess(-child.pid, signal);
+      return true;
+    } catch {}
+  }
+  try {
+    return child.kill(signal);
+  } catch {
+    return false;
+  }
 }
 
 export function createMetricsRegistry({ buckets = DEFAULT_BUCKETS } = {}) {

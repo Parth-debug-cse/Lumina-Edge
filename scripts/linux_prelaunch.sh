@@ -2,10 +2,9 @@
 # ==============================================================================
 # Lumina Edge — Linux Pre-launch System Optimizer
 # Maximizes llama.cpp inference performance on Linux/Intel hardware
-# Safe to run without root — root-only optimizations are attempted but skipped
+# Process-local settings affect the caller only when this script is sourced.
+# Host-level tuning is opt-in; cache dropping has its own explicit opt-in.
 # ==============================================================================
-
-set -e
 
 echo "[Lumina Edge] Linux system optimizer starting..."
 

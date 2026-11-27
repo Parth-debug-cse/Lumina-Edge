@@ -90,17 +90,7 @@ try {
     Write-Status "Could not configure CPU idle states: $_" "warn"
 }
 
-# ── 3. PROCESS PRIORITY & AFFINITY ───────────────────────────────────────────
-Write-Status "Setting process priority for current session..." "info"
-try {
-    $process = Get-Process -Id $PID
-    $process.PriorityClass = "High"
-    Write-Status "Process priority set to High" "ok"
-} catch {
-    Write-Status "Could not set process priority: $_" "warn"
-}
-
-# ── 4. MEMORY OPTIMIZATION ──────────────────────────────────────────────────
+# ── 3. MEMORY INSPECTION ─────────────────────────────────────────────────────
 Write-Status "Checking memory configuration..." "info"
 try {
     $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
@@ -158,23 +148,17 @@ try {
     Write-Status "Could not optimize file system cache: $_" "warn"
 }
 
-# ── 7. DISABLE WINDOWS SEARCH INDEXING (temporarily) ─────────────────────────
+# ── 7. WINDOWS SEARCH INSPECTION ─────────────────────────────────────────────
 Write-Status "Checking Windows Search indexing..." "info"
 try {
     $searchService = Get-Service -Name "WSearch" -ErrorAction SilentlyContinue
-    if ($searchService -and $searchService.Status -eq "Running") {
-        if ($isAdmin -and $systemTuningEnabled) {
-            Stop-Service -Name "WSearch" -Force -ErrorAction SilentlyContinue | Out-Null
-            Write-Status "Windows Search indexing temporarily stopped" "ok"
-            Write-Status "   (Will auto-restart on next boot or can be manually started)" "info"
-        } else {
-            Write-Status "Windows Search unchanged; requires Administrator and LUMINA_SYSTEM_TUNING=1" "info"
-        }
+    if ($searchService) {
+        Write-Status "Windows Search status: $($searchService.Status); service left unchanged" "info"
     } else {
-        Write-Status "Windows Search not running or not installed" "info"
+        Write-Status "Windows Search not installed" "info"
     }
 } catch {
-    Write-Status "Could not check/stop Windows Search: $_" "warn"
+    Write-Status "Could not query Windows Search: $_" "warn"
 }
 
 # ── 8. NETWORK OPTIMIZATION (for API mode) ────────────────────────────────────
@@ -195,23 +179,6 @@ try {
     Write-Status "Could not optimize network settings: $_" "warn"
 }
 
-# ── 9. TEMP CLEANUP ───────────────────────────────────────────────────────────
-if ($env:LUMINA_CLEAN_TEMP -eq "1") {
-    Write-Status "Cleaning temporary files older than 7 days..." "info"
-    try {
-        $userTemp = [System.IO.Path]::GetFullPath($env:TEMP)
-        if (Test-Path $userTemp -PathType Container) {
-            Get-ChildItem -LiteralPath $userTemp -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) -and -not ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) } |
-                Remove-Item -Force -ErrorAction SilentlyContinue | Out-Null
-        }
-        Write-Status "Stale files in the current user's temporary directory cleaned where possible" "ok"
-    } catch {
-        Write-Status "Could not clean temporary files: $_" "warn"
-    }
-} else {
-    Write-Status "Temporary file cleanup skipped (set LUMINA_CLEAN_TEMP=1 to opt in)" "info"
-}
 
 Write-Host ""
 Write-Status "Windows optimization complete" "ok"

@@ -26,9 +26,9 @@ const MAIN_SECTIONS = [
     title: 'Compute',
     fields: [
       { key: 'ctx_size',      label: 'Context Size',   type: 'select', options: [4096,8192,16384,32768], hint: 'Token context window length. Minimum 4096 tokens enforced.' },
-      { key: 'batch_size',    label: 'Batch Size',     type: 'number', min: 1, max: 4096, hint: 'Prompt processing batch size.' },
-      { key: 'ubatch_size',   label: 'Micro-Batch',    type: 'number', min: 1, max: 4096, hint: 'Physical micro-batch for memory efficiency.' },
-      { key: 'n_gpu_layers',  label: 'GPU Layers',     type: 'text',   hint: '"auto" or an integer (e.g. 20). auto = VRAM-based detection.' },
+      { key: 'batch_size',    label: 'Batch Size',     type: 'text',   hint: 'Integer or "auto" (bounded heuristic from available RAM).' },
+      { key: 'ubatch_size',   label: 'Micro-Batch',    type: 'text',   hint: 'Integer or "auto"; clamped to the batch size.' },
+      { key: 'n_gpu_layers',  label: 'GPU Layers',     type: 'text',   hint: 'Integer, 0 for CPU-only, or "auto" (llama.cpp device-list probe; CPU fallback if unavailable).' },
     ],
   },
   {
@@ -37,7 +37,7 @@ const MAIN_SECTIONS = [
     fields: [
       { key: 'api_port',      label: 'API Port',       type: 'number', min: 1024, max: 65535, hint: 'Port for llama-server. Restart server to apply.' },
       { key: 'http_threads',  label: 'HTTP Threads',   type: 'range', min: 1, max: 16, step: 1, hint: 'Threads for HTTP request handling (llama.cpp only).' },
-      { key: 'routing_policy', label: 'Routing Policy', type: 'select', options: ['round_robin', 'least_loaded', 'random'], hint: 'Load balancing policy for multi-model routing.' },
+      { key: 'routing_policy', label: 'Routing Policy', type: 'select', options: ['round-robin', 'load-balanced', 'first-available'], hint: 'Higher-priority ready models (0-100) are selected before lower-priority models.' },
     ],
   },
   {

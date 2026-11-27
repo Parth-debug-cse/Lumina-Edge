@@ -95,7 +95,7 @@ chmod +x linux.sh mac.sh start_api.sh bin/llama-*
 windows.bat     # Windows
 ```
 
-All three start the backend (llama-server or MLX), the API gateway, and the Vite UI dev server, then open your browser automatically. Override ports with `LUMINA_API_PORT` / `LUMINA_UI_PORT` env vars (Linux also supports `LUMINA_NOSWAP=1` to disable swap for the session); the Linux/macOS scripts also take `--help` for options. Host-wide tuning is skipped by default; set `LUMINA_SYSTEM_TUNING=1` to allow platform optimizer changes. Linux cache dropping is separately opt-in with `LUMINA_DROP_CACHES=1` and may require passwordless sudo; it discards reclaimable kernel caches, not user files, and can make subsequent disk reads slower. macOS background-process stopping and memory purge require `LUMINA_STOP_BACKGROUND_SERVICES=1` and `LUMINA_PURGE_MEMORY=1`; Windows temporary-file cleanup requires `LUMINA_CLEAN_TEMP=1`.
+Linux/macOS launchers start the backend (llama-server or MLX), API gateway, and Vite UI. Override ports with `LUMINA_API_PORT` / `LUMINA_UI_PORT`; Linux/macOS launch scripts accept `--help`. Host-wide tuning is skipped unless `LUMINA_SYSTEM_TUNING=1` is explicitly set. Linux cache dropping is a separate opt-in (`LUMINA_DROP_CACHES=1`, may require passwordless sudo); it discards reclaimable kernel caches, can slow subsequent reads, and is not a guaranteed source of additional usable RAM or inference speed. macOS selected-process cleanup and memory purge also require explicit opt-ins; review those scripts before enabling them. Do not disable swap or stop unrelated services as a benchmark optimization.
 
 **Windows — backend only:**
 
@@ -113,17 +113,11 @@ npm run dev
 
 ---
 
-## Why Lumina Edge
+## Measured performance
 
-| | LM Studio | Ollama | **Lumina Edge** |
-|---|---|---|---|
-| Baseline RAM | 400–700 MB | 200–400 MB | **~0 MB — no background process** |
-| Background Services | Always running | Always running | **Launches on demand only** |
-| Available RAM (8 GB) | ~3.0 GB | ~3.2 GB | **~5.2 GB (+73%)** |
-| Pre-inference Flush | No | No | **Yes — 1–2 GB freed automatically** |
-| Tokens/sec | Baseline | −5 to −12% | **+23% to +37%** |
+The committed MLX experiment below is the current performance evidence; older cross-product RAM and speed claims were removed because their raw data and reproducible methodology were not available. On an Apple M5, one greedy batch-1 Qwen2.5 prompt, 128-token cap, and 20 paired trials, 2-token draft decoding measured **13.14% higher mean decode throughput** than the configured baseline (paired 95% CI **12.50%–13.78%**): 130.18 vs. 115.07 tok/s. Against a cache-matched baseline, the measured gain was **14.13%** (95% CI **13.80%–14.46%**).
 
-*Measured on Intel Core i5-8250U · 8 GB DDR4 · Deepseek 7B Q4_K_M.*
+That throughput gain had tradeoffs: p50 time-to-first-token rose from 27.0 ms to 42.1 ms, and loading the draft model added about 268 MiB of active Metal memory. The result applies only to the documented model revisions, prompt, runtime, and host; it does not prove a general 2–4× gain or improved quality. See [`benchmarks/results/README.md`](benchmarks/results/README.md) and the raw [`JSON trial report`](benchmarks/results/mlx-qwen25-speculative-n2-20261127.json) for the complete data and reproduction command.
 
 ---
 
@@ -181,7 +175,7 @@ export LUMINA_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsa
 
 Set the same token in **Settings → Gateway Security** in the browser UI. Python/OpenAI-compatible clients should use it as their API key instead of `not-needed`. `/api/health` and `/v1/models` remain unauthenticated for health/discovery; management routes, inference completions, and `/metrics` require the token. `/v1/*` is only on the primary port (8090), not mirrored to the secondary management port.
 
-The gateway applies a per-IP sliding-window limit (10 chat requests/minute by default) and bounded inference concurrency/queue settings. Tune `auth_rate_limit_per_minute`, `max_parallel_requests`, `max_queued_requests`, and `inference_queue_timeout_ms` in `config.json`. Prometheus metrics are available at `http://127.0.0.1:8090/metrics`.
+The gateway applies a per-IP sliding-window limit (10 chat requests/minute by default) and bounded inference concurrency/queue settings. Tune `auth_rate_limit_per_minute`, `max_parallel_requests`, `max_queued_requests`, and `inference_queue_timeout_ms` in `config.json`. Prometheus metrics are available at `http://127.0.0.1:8090/metrics`. Optional OpenTelemetry request tracing is disabled by default; set `tracing_enabled` to `true` and `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (for example, `http://127.0.0.1:4318/v1/traces`) to export spans. Spans include method, route, and status only—not prompts or request bodies.
 
 **Management API** — all routes below live under `/api/*` and are mirrored on both `8090` (primary) and `8081` (secondary, management-only):
 
@@ -202,6 +196,8 @@ The gateway applies a per-IP sliding-window limit (10 chat requests/minute by de
 | Lumina Agent | `POST /lumina-agent/run`, `GET /lumina-agent/status/:runId`, `POST /lumina-agent/stop/:runId` |
 | Lumina Scout | `GET /lumina-scout/hardware`, `GET /lumina-scout/recommend`, `GET /lumina-scout/plan` |
 
+Router loads accept an optional `priority` from 0–100; requests go to the highest-priority ready tier, with the selected routing policy applied within that tier. `router_model_load_timeout_seconds` is clamped to 10–900 seconds. The concurrent-model limit is a count-based guard, not a VRAM/RAM reservation system; choose it conservatively for the actual model/context workload. Idle unloading is opt-in with `model_idle_unload_seconds`.
+
 ---
 
 ## Reproducible Benchmarks
@@ -216,6 +212,17 @@ python3 scripts/gpu_benchmark.py run \
 ```
 
 The generated summary includes the 95% Student-t confidence interval for mean tokens/sec and p50/p95/p99 end-to-end latency. Peak RSS/virtual memory sampling uses `psutil` when installed or `/proc` on Linux; unavailable metrics are reported as null. `--baseline-comparison baseline.json` accepts a previous Lumina report or a JSON record such as `{"provider":"ollama","avg_tokens_per_sec":12.3}`. Run the same model, prompt, context, token count, and warmup protocol for meaningful comparisons; this file-based option does not launch or configure Ollama/LM Studio automatically. Benchmark outcomes are environment-specific and should be reported with hardware/runtime versions.
+
+---
+
+## Implementation boundaries and research claims
+
+- MLX draft-model speculative decoding is implemented and measured; it is **not Medusa**. The measured gain is workload-specific and includes higher TTFT and extra resident memory (see the results and raw trials above).
+- `n_gpu_layers: "auto"` probes devices reported by the installed `llama-server`; when the probe is unavailable it selects CPU mode. Explicit integer layer counts, including `0`, are preserved. `batch_size: "auto"` uses a bounded available-memory heuristic, not a model-specific KV-cache estimator.
+- The gateway implements token auth, rate/concurrency limits, Prometheus metrics, allowlisted CORS, and opt-in OTLP tracing. Router model limits remain count-based; there is no per-device VRAM admission model or in-memory hot-swap weight cache.
+- Agent tools execute one model-selected tool at a time. Shell execution is disabled by default and has bounded time/output/process-tree handling; parallel shell execution and hard cross-platform CPU/RAM quotas are not claimed.
+- The benchmark runner measures throughput, end-to-end latency, process memory, and confidence intervals. It does not automate third-party baseline launches, screenshots/video capture, or accuracy/safety/compliance evaluation.
+- No unverified `--sampler auto`, Flash Attention 3, PagedAttention, or `--tensor-lift` flag is passed. Those features require backend/build-specific support and a corresponding validation workload before they can be claimed.
 
 ---
 

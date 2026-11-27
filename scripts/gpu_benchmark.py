@@ -12,20 +12,21 @@ import time
 import argparse
 import subprocess
 import tempfile
-import signal
+
 import urllib.request
 import urllib.error
 import csv
 import html
 import math
+import platform
 import statistics
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, TextIO, Tuple
+from typing import Any, Protocol, TextIO
 
 
-def find_llama_server(bin_dir: str) -> Optional[str]:
+def find_llama_server(bin_dir: str) -> str | None:
     """Find llama-server binary in the given directory."""
     if sys.platform == 'win32':
         path = os.path.join(bin_dir, 'llama-server.exe')
@@ -35,7 +36,7 @@ def find_llama_server(bin_dir: str) -> Optional[str]:
 
 
 def start_server(bin_dir: str, model_path: str, port: int, gpu_layers: int,
-                 ctx_size: int = 2048, threads: int = 4) -> Optional[Tuple[subprocess.Popen, TextIO]]:
+                 ctx_size: int = 2048, threads: int = 4) -> tuple[subprocess.Popen[str], TextIO] | None:
     """Start llama-server on a given port with specified GPU layer count."""
     server_path = find_llama_server(bin_dir)
     if not server_path:
@@ -68,23 +69,56 @@ def start_server(bin_dir: str, model_path: str, port: int, gpu_layers: int,
         return None
 
 
-def wait_for_server(port: int, timeout: int = 60) -> bool:
-    """Poll /health endpoint until server responds or timeout reached."""
+def _port_owned_by_process(port: int, pid: int) -> bool:
+    """Return true only when psutil confirms this process owns the listener."""
+    try:
+        import psutil
+        connections = psutil.net_connections(kind="inet")
+    except Exception:
+        # Without an OS-level listener PID, a healthy endpoint cannot be tied
+        # safely to the server process started by this benchmark.
+        return False
+
+    for connection in connections:
+        local_address = connection.laddr
+        local_port = getattr(local_address, "port", None)
+        if local_port is None and isinstance(local_address, tuple) and local_address:
+            local_port = local_address[1]
+        if (local_port == port and connection.status == psutil.CONN_LISTEN
+                and connection.pid == pid):
+            return True
+    return False
+
+
+class ServerProcess(Protocol):
+    pid: int
+
+    def poll(self) -> int | None: ...
+
+
+def wait_for_server(port: int, proc: ServerProcess, timeout: int = 60) -> bool:
+    """Wait for a healthy endpoint owned by this still-running server process."""
     start = time.time()
     while time.time() - start < timeout:
+        if proc.poll() is not None:
+            return False
+        if not _port_owned_by_process(port, proc.pid):
+            time.sleep(1)
+            continue
         try:
             req = urllib.request.Request(f"http://127.0.0.1:{port}/health", method='GET')
             with urllib.request.urlopen(req, timeout=2) as resp:
-                if resp.status == 200:
+                if (resp.status == 200 and proc.poll() is None
+                        and _port_owned_by_process(port, proc.pid)):
                     return True
-        except urllib.error.URLError:
+        except (urllib.error.URLError, OSError, TimeoutError):
             pass
         time.sleep(1)
     return False
 
 
 def run_inference(port: int, prompt: str = "Write a short poem about the sea.",
-                  max_tokens: int = 64, temperature: float = 0.7) -> Dict:
+                  max_tokens: int = 64, temperature: float = 0.7) -> dict[str, Any]:
     """Send one chat completion request and return timing data."""
     payload = {
         "model": "local",
@@ -110,9 +144,19 @@ def run_inference(port: int, prompt: str = "Write a short poem about the sea.",
     except Exception as e:
         return {"error": str(e), "elapsed_s": 0}
 
-    usage = result.get('usage', {})
-    completion_tokens = usage.get('completion_tokens', 0)
-    prompt_tokens = usage.get('prompt_tokens', 0)
+    if not isinstance(result, dict):
+        return {"error": "response JSON must be an object", "elapsed_s": elapsed}
+    usage = result.get('usage')
+    if not isinstance(usage, dict):
+        return {"error": "response is missing token usage", "elapsed_s": elapsed}
+    completion_tokens = usage.get('completion_tokens')
+    prompt_tokens = usage.get('prompt_tokens')
+    if (not isinstance(completion_tokens, int) or isinstance(completion_tokens, bool)
+            or completion_tokens <= 0):
+        return {"error": "response has missing or zero completion token usage", "elapsed_s": elapsed}
+    if (not isinstance(prompt_tokens, int) or isinstance(prompt_tokens, bool)
+            or prompt_tokens <= 0):
+        return {"error": "response has missing or zero prompt token usage", "elapsed_s": elapsed}
 
     return {
         "elapsed_s": elapsed,
@@ -124,7 +168,7 @@ def run_inference(port: int, prompt: str = "Write a short poem about the sea.",
     }
 
 
-def stop_server(proc: subprocess.Popen):
+def stop_server(proc: subprocess.Popen[str]) -> None:
     """Kill a subprocess with escalation: terminate, wait, then kill."""
     try:
         proc.terminate()
@@ -137,7 +181,7 @@ def stop_server(proc: subprocess.Popen):
         pass
 
 
-def _percentile(values: List[float], percentile: float) -> Optional[float]:
+def _percentile(values: list[float], percentile: float) -> float | None:
     """Calculate a linearly interpolated percentile without third-party packages."""
     if not values:
         return None
@@ -150,26 +194,43 @@ def _percentile(values: List[float], percentile: float) -> Optional[float]:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
 
-def _confidence_interval_95(values: List[float]) -> Dict:
+def _t_critical_95(degrees_of_freedom: int) -> float:
+    """Two-sided 95% Student-t critical value (Cornish-Fisher for df > 30)."""
+    table = [
+        0, 12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262,
+        2.228, 2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093,
+        2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045,
+        2.042,
+    ]
+    if degrees_of_freedom < len(table):
+        return table[degrees_of_freedom]
+    # Standard asymptotic expansion of the t quantile around z=1.959964;
+    # accurate to substantially better than 0.001 for df > 30.
+    z = 1.959963984540054
+    z2 = z * z
+    z3 = z2 * z
+    z5 = z3 * z2
+    z7 = z5 * z2
+    df = float(degrees_of_freedom)
+    return (z + (z3 + z) / (4 * df)
+            + (5 * z5 + 16 * z3 + 3 * z) / (96 * df ** 2)
+            + (3 * z7 + 19 * z5 + 17 * z3 - 15 * z) / (384 * df ** 3))
+
+
+def _confidence_interval_95(values: list[float]) -> dict[str, Any]:
     """Return a two-sided 95% t interval for a sample mean."""
     if not values:
         return {"low": None, "high": None}
     mean = statistics.mean(values)
     if len(values) < 2:
         return {"low": round(mean, 3), "high": round(mean, 3)}
-    critical_values = [
-        0, 12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262,
-        2.228, 2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093,
-        2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045,
-        2.042,
-    ]
     degrees_of_freedom = len(values) - 1
-    critical = critical_values[degrees_of_freedom] if degrees_of_freedom < len(critical_values) else 1.96
+    critical = _t_critical_95(degrees_of_freedom)
     margin = critical * statistics.stdev(values) / math.sqrt(len(values))
     return {"low": round(mean - margin, 3), "high": round(mean + margin, 3)}
 
 
-def _process_memory_bytes(pid: int) -> Dict[str, Optional[int]]:
+def _process_memory_bytes(pid: int) -> dict[str, int | None]:
     """Read child RSS/virtual memory using psutil or Linux /proc when available."""
     try:
         import psutil
@@ -189,7 +250,21 @@ def _process_memory_bytes(pid: int) -> Dict[str, Optional[int]]:
         return {"rss_bytes": None, "vms_bytes": None}
 
 
-def _summarize_runs(valid: List[Dict]) -> Dict:
+def _balanced_config_order(configs: list[int]) -> list[int]:
+    """Alternate the ends of the requested order to reduce monotonic drift bias."""
+    ordered = list(configs)
+    result = []
+    left, right = 0, len(ordered) - 1
+    while left <= right:
+        result.append(ordered[left])
+        left += 1
+        if left <= right:
+            result.append(ordered[right])
+            right -= 1
+    return result
+
+
+def _summarize_runs(valid: list[dict[str, Any]]) -> dict[str, Any]:
     if not valid:
         raise ValueError('cannot summarize an empty benchmark sample')
     latencies = [float(run["elapsed_s"]) for run in valid]
@@ -213,10 +288,10 @@ def _summarize_runs(valid: List[Dict]) -> Dict:
 
 
 def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
-                         gpu_configs: Optional[List[int]] = None, ctx_size: int = 2048,
+                         gpu_configs: list[int] | None = None, ctx_size: int = 2048,
                          threads: int = 4, max_tokens: int = 64,
                          warmup_runs: int = 1, bench_runs: int = 3,
-                         prompt: str = "Write a short poem about the sea.") -> Dict:
+                         prompt: str = "Write a short poem about the sea.") -> dict[str, Any]:
     """
     Benchmark model with different GPU layer counts.
     Starts a new server for each config, runs warmup + benchmark queries.
@@ -226,9 +301,13 @@ def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
 
     results = []
     model_name = Path(model_path).stem
+    server_path = find_llama_server(bin_dir)
+    resolved_server_path = str(Path(server_path).resolve()) if server_path else None
+    requested_gpu_configs = list(gpu_configs)
+    gpu_configs = _balanced_config_order(requested_gpu_configs)
 
     print(f"\n🏁 GPU Benchmark: {model_name}")
-    print(f"   GPU layer configs: {gpu_configs}")
+    print(f"   GPU layer configs (order-balanced): {gpu_configs}")
     print(f"   Context: {ctx_size}, Threads: {threads}, Max tokens: {max_tokens}")
     print(f"   Warmup runs: {warmup_runs}, Benchmark runs: {bench_runs}\n")
 
@@ -245,8 +324,8 @@ def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
             continue
         proc, lf = proc_and_lf
 
-        if not wait_for_server(port, timeout=60):
-            print(f"  ✗ Server not ready for {mode_label}")
+        if not wait_for_server(port, proc, timeout=60):
+            print(f"  ✗ Server not ready or port ownership could not be verified for {mode_label}")
             stop_server(proc)
             if lf is not None:
                 lf.close()
@@ -267,8 +346,23 @@ def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
         memory_thread.start()
 
         # Warmup: short run to prime device kernels and runtime caches.
-        for _ in range(warmup_runs):
-            run_inference(port, prompt, max_tokens=16)
+        warmup_results = []
+        for warmup_index in range(warmup_runs):
+            warmup = run_inference(port, prompt, max_tokens=16)
+            warmup_entry = {
+                "warmup": warmup_index + 1,
+                "status": "failed" if warmup.get("error") else "ok",
+            }
+            if warmup.get("error"):
+                warmup_entry["error"] = warmup["error"]
+            else:
+                warmup_entry.update({
+                    "elapsed_s": warmup["elapsed_s"],
+                    "completion_tokens": warmup["completion_tokens"],
+                })
+            warmup_results.append(warmup_entry)
+            if warmup_entry["status"] == "failed":
+                print(f"    Warmup {warmup_index + 1} failed: {warmup_entry['error']}")
 
         # Benchmark runs
         run_results = []
@@ -289,17 +383,32 @@ def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
             lf.close()
 
         valid = [r for r in run_results if not r.get('error')]
+        rejected_runs = [
+            {"run": index + 1, "error": run["error"], "elapsed_s": run.get("elapsed_s")}
+            for index, run in enumerate(run_results) if run.get("error")
+        ]
         if valid:
             entry = {
                 "gpu_layers": gpu_layers,
                 "label": mode_label,
+                "server_port": port,
+                "server_process_pid": proc.pid,
+                "port_owner_verified": True,
                 **_summarize_runs(valid),
                 "peak_rss_bytes": peak_rss,
                 "peak_vms_bytes": peak_vms,
+                "warmup_results": warmup_results,
+                "rejected_runs": rejected_runs,
                 "runs": valid
             }
         else:
-            entry = {"gpu_layers": gpu_layers, "label": mode_label, "error": "All runs failed"}
+            entry = {
+                "gpu_layers": gpu_layers,
+                "label": mode_label,
+                "error": "All runs failed",
+                "warmup_results": warmup_results,
+                "rejected_runs": rejected_runs,
+            }
 
         results.append(entry)
         print(f"  ✓ {mode_label}: {entry.get('avg_tokens_per_sec', 'N/A')} tok/s\n")
@@ -315,6 +424,21 @@ def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "warmup_rounds": warmup_runs,
             "iterations": bench_runs,
+            "requested_gpu_config_order": requested_gpu_configs,
+            "actual_gpu_config_order": gpu_configs,
+            "hardware": {
+                "platform": platform.platform(),
+                "machine": platform.machine() or None,
+                "processor": platform.processor() or None,
+                "cpu_count": os.cpu_count(),
+                "gpu_model": None,
+                "gpu_model_unavailable_reason": "No cross-platform GPU discovery is used; host and llama-server runtime metadata are recorded instead.",
+            },
+            "runtime": {
+                "python": platform.python_version(),
+                "llama_server_path": resolved_server_path,
+                "port_ownership_verification": "psutil listener PID must match the launched server process",
+            },
             "best_config": best,
             "speedup_vs_cpu": round(best['avg_tokens_per_sec'] / cpu_result['avg_tokens_per_sec'], 2) if cpu_result and cpu_result['avg_tokens_per_sec'] else None,
             "recommended_gpu_layers": best['gpu_layers'],
@@ -326,6 +450,21 @@ def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "warmup_rounds": warmup_runs,
             "iterations": bench_runs,
+            "requested_gpu_config_order": requested_gpu_configs,
+            "actual_gpu_config_order": gpu_configs,
+            "hardware": {
+                "platform": platform.platform(),
+                "machine": platform.machine() or None,
+                "processor": platform.processor() or None,
+                "cpu_count": os.cpu_count(),
+                "gpu_model": None,
+                "gpu_model_unavailable_reason": "No cross-platform GPU discovery is used; host and llama-server runtime metadata are recorded instead.",
+            },
+            "runtime": {
+                "python": platform.python_version(),
+                "llama_server_path": resolved_server_path,
+                "port_ownership_verification": "psutil listener PID must match the launched server process",
+            },
             "results": results,
             "error": "No valid benchmark results"
         }
@@ -333,7 +472,7 @@ def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
     return summary
 
 
-def compare_baseline(summary: Dict, baseline_path: str) -> Dict:
+def compare_baseline(summary: dict[str, Any], baseline_path: str) -> dict[str, Any]:
     """Compare against a prior Lumina report or a JSON object with provider/throughput fields."""
     with open(baseline_path, "r", encoding="utf-8") as baseline_file:
         baseline = json.load(baseline_file)
@@ -361,9 +500,32 @@ def _timestamped_path(path: str, timestamp: bool) -> str:
     return str(target.with_name(f"{target.stem}-{stamp}{target.suffix}"))
 
 
-def write_csv_report(summary: Dict, output_path: str) -> None:
+def _warmup_status(result: dict[str, Any]) -> str:
+    warmups = result.get("warmup_results", [])
+    if not warmups:
+        return "not run"
+    statuses = []
+    for warmup in warmups:
+        status = str(warmup.get("status", "unknown"))
+        if warmup.get("error"):
+            status += f": {warmup['error']}"
+        statuses.append(status)
+    return "; ".join(statuses)
+
+
+def _rejected_run_status(result: dict[str, Any]) -> str:
+    rejected = result.get("rejected_runs", [])
+    if not rejected:
+        return "none"
+    return "; ".join(
+        f"run {item.get('run', '?')}: {item.get('error', 'failed')}"
+        for item in rejected
+    )
+
+
+def write_csv_report(summary: dict[str, Any], output_path: str) -> None:
     columns = [
-        "model", "gpu_layers", "label", "avg_tokens_per_sec", "median_tokens_per_sec",
+        "model", "gpu_layers", "label", "warmup_status", "rejected_runs", "avg_tokens_per_sec", "median_tokens_per_sec",
         "throughput_ci95_low", "throughput_ci95_high", "avg_latency_s", "latency_p50_s",
         "latency_p95_s", "latency_p99_s", "peak_rss_bytes", "peak_vms_bytes", "error",
     ]
@@ -376,6 +538,8 @@ def write_csv_report(summary: Dict, output_path: str) -> None:
                 "model": summary.get("model"),
                 "gpu_layers": result.get("gpu_layers"),
                 "label": result.get("label"),
+                "warmup_status": _warmup_status(result),
+                "rejected_runs": _rejected_run_status(result),
                 "avg_tokens_per_sec": result.get("avg_tokens_per_sec"),
                 "median_tokens_per_sec": result.get("median_tokens_per_sec"),
                 "throughput_ci95_low": confidence.get("low"),
@@ -390,20 +554,20 @@ def write_csv_report(summary: Dict, output_path: str) -> None:
             })
 
 
-def write_html_report(summary: Dict, output_path: str) -> None:
+def write_html_report(summary: dict[str, Any], output_path: str) -> None:
     rows = []
     for result in summary.get("results", []):
         ci = result.get("throughput_ci95", {})
         values = [
             result.get("label", ""), result.get("gpu_layers", ""),
-            result.get("avg_tokens_per_sec", ""),
+            _warmup_status(result), _rejected_run_status(result), result.get("avg_tokens_per_sec", ""),
             f"{ci.get('low', '')}–{ci.get('high', '')}",
             result.get("latency_p50_s", ""), result.get("latency_p95_s", ""),
             result.get("latency_p99_s", ""), result.get("peak_rss_bytes", ""),
             result.get("error", ""),
         ]
         rows.append("<tr>" + "".join(f"<td>{html.escape(str(value))}</td>" for value in values) + "</tr>")
-    headers = ["Configuration", "GPU layers", "Mean tok/s", "95% CI tok/s", "p50 latency (s)", "p95 latency (s)", "p99 latency (s)", "Peak RSS (bytes)", "Error"]
+    headers = ["Configuration", "GPU layers", "Warmups", "Rejected runs", "Mean tok/s", "95% CI tok/s", "p50 latency (s)", "p95 latency (s)", "p99 latency (s)", "Peak RSS (bytes)", "Error"]
     page = (
         "<!doctype html><html lang='en'><meta charset='utf-8'><title>Lumina benchmark</title>"
         "<style>body{font:14px system-ui;margin:2rem}table{border-collapse:collapse}"
@@ -416,7 +580,7 @@ def write_html_report(summary: Dict, output_path: str) -> None:
     Path(output_path).write_text(page, encoding="utf-8")
 
 
-def write_report_outputs(summary: Dict, args) -> None:
+def write_report_outputs(summary: dict[str, Any], args: argparse.Namespace) -> None:
     timestamp = bool(args.output_timestamp)
     json_path = _timestamped_path(args.json_output, timestamp) if args.json_output else None
     if json_path and json_path != "-":

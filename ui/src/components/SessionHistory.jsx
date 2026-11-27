@@ -17,12 +17,14 @@ export default function SessionHistory({ toast }) {
   const [workerMatches, setWorkerMatches] = useState(null)
   const [workerUnavailable, setWorkerUnavailable] = useState(false)
   const workerRef = useRef(null)
+  const indexedSessionsRef = useRef(new Map())
   const searchRequestRef = useRef(0)
 
   const refresh = () => setSessions(getSessions())
   const useSearchWorker = useMemo(() => (
     !workerUnavailable && (
-      sessions.length >= 100
+      workerRef.current !== null
+      || sessions.length >= 100
       || sessions.reduce((count, session) => count + (Array.isArray(session.messages) ? session.messages.length : 0), 0) >= 1000
     )
   ), [sessions, workerUnavailable])
@@ -39,6 +41,7 @@ export default function SessionHistory({ toast }) {
     if (!useSearchWorker) {
       workerRef.current?.terminate()
       workerRef.current = null
+      indexedSessionsRef.current.clear()
       setWorkerMatches(null)
       return undefined
     }
@@ -57,12 +60,19 @@ export default function SessionHistory({ toast }) {
       worker.terminate()
       if (workerRef.current === worker) {
         workerRef.current = null
+        indexedSessionsRef.current.clear()
         setWorkerUnavailable(true)
         setWorkerMatches(null)
       }
     }
     worker.onmessage = ({ data }) => {
-      if (data.requestId === searchRequestRef.current && Array.isArray(data.ids)) {
+      if (workerRef.current !== worker) return
+      if (import.meta.env.DEV && data.metrics) {
+        console.debug('[session-search]', data.type, data.metrics)
+      }
+      if (data.type === 'search-results'
+        && data.requestId === searchRequestRef.current
+        && Array.isArray(data.ids)) {
         setWorkerMatches(new Set(data.ids))
       }
     }
@@ -83,13 +93,52 @@ export default function SessionHistory({ toast }) {
             : [],
         })),
       })
+      indexedSessionsRef.current = new Map(sessions.map(session => [session.id, session]))
     } catch {
       failWorker()
     }
 
     return () => {
       worker.terminate()
-      if (workerRef.current === worker) workerRef.current = null
+      if (workerRef.current === worker) {
+        workerRef.current = null
+        indexedSessionsRef.current.clear()
+      }
+    }
+  }, [useSearchWorker])
+
+  useEffect(() => {
+    const worker = workerRef.current
+    if (!useSearchWorker || !worker) return
+
+    const indexedSessions = indexedSessionsRef.current
+    const currentSessions = new Map(sessions.map(session => [session.id, session]))
+    const removedIds = [...indexedSessions.keys()].filter(id => !currentSessions.has(id))
+    const changedSessions = sessions.filter(session => indexedSessions.get(session.id) !== session)
+
+    try {
+      if (removedIds.length) worker.postMessage({ type: 'remove', ids: removedIds })
+      if (changedSessions.length) {
+        worker.postMessage({
+          type: 'upsert',
+          sessions: changedSessions.map(session => ({
+            id: session.id,
+            title: session.title,
+            messages: Array.isArray(session.messages)
+              ? session.messages.map(message => ({ content: String(message?.content || '') }))
+              : [],
+          })),
+        })
+      }
+      indexedSessionsRef.current = currentSessions
+    } catch {
+      worker.terminate()
+      if (workerRef.current === worker) {
+        workerRef.current = null
+        indexedSessionsRef.current.clear()
+        setWorkerUnavailable(true)
+        setWorkerMatches(null)
+      }
     }
   }, [sessions, useSearchWorker])
 
@@ -102,8 +151,12 @@ export default function SessionHistory({ toast }) {
       worker.postMessage({ type: 'search', query: search, requestId })
     } catch {
       worker.terminate()
-      workerRef.current = null
-      setWorkerUnavailable(true)
+      if (workerRef.current === worker) {
+        workerRef.current = null
+        indexedSessionsRef.current.clear()
+        setWorkerUnavailable(true)
+        setWorkerMatches(null)
+      }
     }
   }, [search, sessions, useSearchWorker])
 

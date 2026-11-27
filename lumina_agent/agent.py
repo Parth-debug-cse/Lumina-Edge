@@ -2,11 +2,22 @@
 
 import json
 import re
+import signal
 import threading
+import time
+from typing import Any, Callable
+
 import requests
-from lumina_agent.tools import execute_tool
+from lumina_agent.tools import ToolMetrics, execute_tool
 from lumina_agent.prompts import SYSTEM_PROMPT
-from lumina_agent.config import LUMINA_API_BASE, LUMINA_API_TOKEN, LUMINA_MODEL, MAX_ITERATIONS, REQUEST_TIMEOUT
+from lumina_agent.config import (
+    LUMINA_API_BASE,
+    LUMINA_API_TOKEN,
+    LUMINA_MODEL,
+    MAX_ITERATIONS,
+    REQUEST_TIMEOUT,
+    get_agent_tool_budget,
+)
 
 VALID_TOOLS = {"run_shell", "read_file", "write_file", "http_get", "report"}
 # Map of run_id -> threading.Event for stopping agents in parallel
@@ -14,7 +25,7 @@ _stop_flags: dict[str, threading.Event] = {}
 
 
 # Calls the API with temperature=0 (deterministic) and 1024 max_tokens; non-streaming
-def call_llm(messages: list) -> str:
+def call_llm(messages: list[dict[str, Any]]) -> str:
     url = f"{LUMINA_API_BASE}/chat/completions"
     payload = {
         "model": LUMINA_MODEL(),  # callable — resolves lazily on first LLM call (BUG-LA4 fix)
@@ -36,7 +47,7 @@ def call_llm(messages: list) -> str:
         raise RuntimeError(f"Unexpected API response: {str(e)}")
 
 
-def parse_tool_call(raw: str) -> dict:
+def parse_tool_call(raw: str) -> dict[str, Any]:
     if not raw or not raw.strip():
         raise ValueError("Empty response from model")
 
@@ -113,7 +124,11 @@ def parse_tool_call(raw: str) -> dict:
     return parsed
 
 
-def _build_messages(goal: str, steps: list, extra_hint: str = "") -> list:
+def _build_messages(
+    goal: str,
+    steps: list[str],
+    extra_hint: str = "",
+) -> list[dict[str, Any]]:
     """Build the message list for the LLM with structured step history."""
     history_text = "\n".join(steps) if steps else "(none yet — this is your first step)"
 
@@ -134,10 +149,22 @@ def _build_messages(goal: str, steps: list, extra_hint: str = "") -> list:
 
 
 # Main agent loop: tracks parse_failures (max 3), invalid_tool_strikes (max 3), duplicate_count (max 3)
-def run_agent(goal: str, run_id: str, on_update=None) -> str:
+def run_agent(
+    goal: str,
+    run_id: str,
+    on_update: Callable[[dict[str, Any]], None] | None = None,
+) -> str:
     stop_event = threading.Event()
     _stop_flags[run_id] = stop_event
+    previous_sigterm_handler = None
+    signal_handler_installed = False
+    if threading.current_thread() is threading.main_thread():
+        previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, lambda _signum, _frame: stop_event.set())
+        signal_handler_installed = True
     steps = []
+    tool_budget_seconds = get_agent_tool_budget()
+    tool_time_spent = 0.0
     parse_failures = 0      # consecutive JSON parse errors
     invalid_tool_strikes = 0  # consecutive unknown tool calls
     last_call = None
@@ -147,6 +174,8 @@ def run_agent(goal: str, run_id: str, on_update=None) -> str:
         for iteration in range(1, MAX_ITERATIONS + 1):
             if stop_event.is_set():
                 return "AGENT STOPPED: Interrupted by user."
+            if tool_time_spent >= tool_budget_seconds:
+                return "AGENT STOPPED: Cumulative tool wall-clock budget exhausted."
 
             messages = _build_messages(goal, steps)
 
@@ -238,10 +267,27 @@ def run_agent(goal: str, run_id: str, on_update=None) -> str:
             # an inner try/except, but a crash in the TOOLS lambda itself (before the inner
             # function is reached) would propagate up and exit run_agent with a raw exception
             # string rather than a clean AGENT ERROR prefix.
+            remaining_budget = max(0.0, tool_budget_seconds - tool_time_spent)
+            tool_metrics: ToolMetrics = {}
             try:
-                tool_result = execute_tool(tool_name, tool_args)
+                tool_result = execute_tool(
+                    tool_name,
+                    tool_args,
+                    cancel_event=stop_event,
+                    deadline=time.monotonic() + remaining_budget,
+                    metrics=tool_metrics,
+                )
             except Exception as e:
                 tool_result = f"ERROR: unexpected crash dispatching tool '{tool_name}': {e}"
+                tool_metrics.update({
+                    "duration_seconds": 0.0,
+                    "error": True,
+                    "timed_out": False,
+                    "cancelled": False,
+                    "budget_exhausted": False,
+                    "status": "error",
+                })
+            tool_time_spent += tool_metrics.get("duration_seconds", 0.0)
 
             # Truncate results to 800 chars per step to keep context small for edge LLMs
             display_result = tool_result
@@ -258,15 +304,22 @@ def run_agent(goal: str, run_id: str, on_update=None) -> str:
                     "args": tool_args,
                     "result": tool_result,
                     "done": tool_name == "report",
+                    "tool_metrics": tool_metrics,
                 })
 
             if tool_name == "report":
                 return tool_result
+            if stop_event.is_set():
+                return "AGENT STOPPED: Interrupted by user."
+            if tool_metrics.get("budget_exhausted") or tool_time_spent >= tool_budget_seconds:
+                return "AGENT STOPPED: Cumulative tool wall-clock budget exhausted."
 
         return f"AGENT STOPPED: Reached {MAX_ITERATIONS} iterations without completing. Last tool: {last_call}"
 
     finally:
         _stop_flags.pop(run_id, None)
+        if signal_handler_installed:
+            signal.signal(signal.SIGTERM, previous_sigterm_handler)
 
 
 # Signal a running agent to stop — checked each iteration via stop_event.is_set()

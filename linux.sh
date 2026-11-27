@@ -22,7 +22,7 @@ while [[ $# -gt 0 ]]; do
             echo "Environment variables:"
             echo "  LUMINA_API_PORT   API gateway port (default: 8090)"
             echo "  LUMINA_UI_PORT    Vite dev server port (default: 5173)"
-            echo "  LUMINA_NOSWAP=1   Disable swap during session"
+
             echo ""
             echo "Models are loaded on demand via the UI Models tab."
             echo "No model is autoloaded at startup."
@@ -81,7 +81,7 @@ resolve_ports() {
     export LUMINA_API_PORT="$API_PORT"
 }
 
-# Kills all tracked Lumina processes + any orphan llama-server/vite/node processes
+# Stops only processes recorded by this launcher
 stop_existing() {
     log "Stopping any existing Lumina processes..."
     if [[ -f "$PID_FILE" ]]; then
@@ -92,20 +92,13 @@ stop_existing() {
         done < "$PID_FILE"
         : > "$PID_FILE"
     fi
-    pkill -f 'llama-server' 2>/dev/null || true
-    pkill -f 'api-server.js' 2>/dev/null || true
-    pkill -f 'vite' 2>/dev/null || true
+
     sleep 1
 }
 
-# Handles graceful teardown (re-enables swap if we disabled it)
 cleanup_components() {
     log "Shutting down started components..."
     stop_existing
-    if [[ "${LUMINA_NOSWAP:-0}" == "1" ]]; then
-        log "  Re-enabling swap..."
-        sudo swapon -a 2>/dev/null || true
-    fi
 }
 
 # Run cleanup on Ctrl+C, SIGTERM, or script exit
@@ -116,61 +109,18 @@ trap cleanup_components INT TERM EXIT
 # ==============================================================================
 
 optimize_system() {
-    log "Optimizing system for inference..."
+    log "Preparing process environment for inference..."
 
-    # Cache dropping is system-wide and can temporarily hurt I/O performance;
-    # only do it when explicitly enabled by the operator.
-    if [[ "${LUMINA_DROP_CACHES:-0}" == "1" ]]; then
-        sync
-        if [[ "${EUID:-$(id -u)}" == "0" ]]; then
-            echo 3 > /proc/sys/vm/drop_caches || log "  Could not drop kernel caches"
-        elif command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
-            sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches' || log "  Could not drop kernel caches"
-        else
-            log "  Cache drop skipped (root access unavailable)"
-        fi
-    else
-        log "  Cache drop skipped (set LUMINA_DROP_CACHES=1 to opt in)"
-    fi
-
-    if [[ "${LUMINA_NOSWAP:-0}" == "1" ]]; then
-        log "  Disabling swap for inference session..."
-        sudo swapoff -a 2>/dev/null || true
-    fi
-
-    # Lower swappiness = keep model weights in RAM, don't page them out
-    sudo sysctl -w vm.swappiness=10 2>/dev/null || true
-    # Lower vfs_cache_pressure = keep dentry/inode caches longer
-    sudo sysctl -w vm.vfs_cache_pressure=50 2>/dev/null || true
-
-    # Give this script a nice boost (less likely to be preempted by background tasks)
-    renice -n -10 $$ 2>/dev/null || true
-
-    # Force all CPU cores to performance governor (no power-saving downclocking)
-    for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-        echo performance | sudo tee "$f" > /dev/null 2>&1 || true
-    done
-
-    # Vulkan env: ACO compiler + GPL for AMD RADV
+    # Vulkan env: ACO compiler + GPL for AMD RADV. These are inherited by child
+    # processes and do not change host settings.
     if lspci 2>/dev/null | grep -qi 'amd.*radeon\|amd.*gpu'; then
         export RADV_PERFTEST=aco,gpl
         export AMD_VULKAN_ICD=RADV
     fi
-    # Clear Vulkan layer path to avoid potential overhead from validation layers
     export VK_LAYER_PATH=""
 
-    # Do not terminate user services by default. This is an explicit, reversible
-    # operator choice because process-name matching can affect unrelated workloads.
-    if [[ "${LUMINA_STOP_BACKGROUND_SERVICES:-0}" == "1" ]]; then
-        for proc in tracker-miner tracker-store zeitgeist-datahub evolution-calendar-factory \
-                    snapd packagekitd apt-daily apt-daily-upgrade; do
-            pkill -f "$proc" 2>/dev/null || true
-        done
-    fi
-
     free -m | awk '/^Mem:/{printf "[Lumina]   RAM available: %d MB free, %d MB total\n",$4,$2}'
-
-    log_ok "System optimisation complete"
+    log_ok "Process environment prepared"
 }
 
 # ==============================================================================
@@ -301,6 +251,11 @@ main() {
     log ""
 
     stop_existing
+    if [[ -r "$ROOT/scripts/linux_prelaunch.sh" ]]; then
+        # Source, rather than execute, so its environment and ulimit apply to
+        # this launcher and all spawned API/model processes.
+        source "$ROOT/scripts/linux_prelaunch.sh"
+    fi
     optimize_system || log_err "Optimizer had warnings (non-fatal)"
     install_scout_deps
     start_api_server || { cleanup_components; exit 1; }

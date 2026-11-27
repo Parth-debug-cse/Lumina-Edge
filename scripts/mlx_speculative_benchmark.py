@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.metadata
+import io
 import json
 import math
 import os
@@ -17,12 +19,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-_T_CRITICAL_95 = [
-    0.0, 12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262,
-    2.228, 2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093,
-    2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045,
-]
 
 
 def percentile(values: list[float], quantile: float) -> float | None:
@@ -40,6 +36,29 @@ def percentile(values: list[float], quantile: float) -> float | None:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
 
 
+def _t_critical_95(degrees_of_freedom: int) -> float:
+    """Two-sided 95% Student-t critical value (Cornish-Fisher for df > 30)."""
+    table = [
+        0.0, 12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262,
+        2.228, 2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093,
+        2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045,
+        2.042,
+    ]
+    if degrees_of_freedom < len(table):
+        return table[degrees_of_freedom]
+    # Standard asymptotic expansion around z=1.959964; accurate to <0.001
+    # for df > 30, rather than substituting the normal critical value.
+    z = 1.959963984540054
+    z2 = z * z
+    z3 = z2 * z
+    z5 = z3 * z2
+    z7 = z5 * z2
+    df = float(degrees_of_freedom)
+    return (z + (z3 + z) / (4 * df)
+            + (5 * z5 + 16 * z3 + 3 * z) / (96 * df ** 2)
+            + (3 * z7 + 19 * z5 + 17 * z3 - 15 * z) / (384 * df ** 3))
+
+
 def confidence_interval_95(values: list[float]) -> dict[str, float | None]:
     if not values:
         return {"low": None, "high": None}
@@ -47,11 +66,7 @@ def confidence_interval_95(values: list[float]) -> dict[str, float | None]:
     if len(values) == 1:
         return {"low": mean, "high": mean}
     degrees_of_freedom = len(values) - 1
-    critical = (
-        _T_CRITICAL_95[degrees_of_freedom]
-        if degrees_of_freedom < len(_T_CRITICAL_95)
-        else 1.96
-    )
+    critical = _t_critical_95(degrees_of_freedom)
     half_width = critical * statistics.stdev(values) / math.sqrt(len(values))
     return {"low": mean - half_width, "high": mean + half_width}
 
@@ -224,26 +239,50 @@ def _run_trial(
     output_tokens = 0
     accepted_draft_tokens = 0
     output_parts: list[str] = []
-    generator = backend._stream_generate(
-        generation_kwargs,
-        speculative_draft if mode == "speculative" else None,
+    fallback_log = io.StringIO()
+    draft_supported = getattr(backend, "_supports_draft_model", True)
+    backend_fallback = mode == "speculative" and (
+        not speculative_draft or draft_supported is False
     )
-    for response in generator:
-        now = time.perf_counter()
-        generated = int(getattr(response, "generation_tokens", output_tokens))
-        if generated > output_tokens:
-            if first_token_time is None:
-                first_token_time = now - start
-            if bool(getattr(response, "from_draft", False)):
-                accepted_draft_tokens += generated - output_tokens
-            output_tokens = generated
-        text = getattr(response, "text", "")
-        if text:
-            output_parts.append(text)
+
+    def consume(generator):
+        nonlocal first_token_time, output_tokens, accepted_draft_tokens
+        for response in generator:
+            now = time.perf_counter()
+            generated = int(getattr(response, "generation_tokens", output_tokens))
+            if generated > output_tokens:
+                if first_token_time is None:
+                    first_token_time = now - start
+                if bool(getattr(response, "from_draft", False)):
+                    accepted_draft_tokens += generated - output_tokens
+                output_tokens = generated
+            text = getattr(response, "text", "")
+            if text:
+                output_parts.append(text)
+
+    if mode == "speculative":
+        # mlx_backend reports its TypeError fallback on stdout. Capture the log
+        # while consuming the lazy generator so it cannot silently enter results.
+        with contextlib.redirect_stdout(fallback_log):
+            generator = backend._stream_generate(generation_kwargs, speculative_draft)
+            consume(generator)
+        fallback_text = fallback_log.getvalue().strip()
+        backend_fallback = backend_fallback or "using normal generation" in fallback_text.casefold()
+    else:
+        consume(backend._stream_generate(generation_kwargs, None))
+        fallback_text = ""
     generation_seconds = time.perf_counter() - start
     if output_tokens <= 0:
+        if backend_fallback:
+            raise RuntimeError(
+                f"speculative backend fell back to normal decoding and produced no output tokens: {fallback_text}"
+            )
         raise RuntimeError(f"{mode} produced no output tokens")
     if first_token_time is None:
+        if backend_fallback:
+            raise RuntimeError(
+                f"speculative backend fell back to normal decoding without a first-token time: {fallback_text}"
+            )
         raise RuntimeError(f"{mode} did not report a first-token time")
     memory = _memory_snapshot(mx, psutil.Process())
     return {
@@ -253,6 +292,8 @@ def _run_trial(
         "tokens_per_second": output_tokens / generation_seconds,
         "time_to_first_token_seconds": first_token_time,
         "accepted_draft_tokens": accepted_draft_tokens,
+        "backend_fallback": backend_fallback,
+        "backend_fallback_reason": fallback_text if backend_fallback else None,
         "output_text": "".join(output_parts),
         **memory,
     }
@@ -270,7 +311,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     import mlx.core as mx
     import mlx_lm
     import psutil
-    import mlx_backend as backend
+    backend_module = f"{__package__}.mlx_backend" if __package__ else "mlx_backend"
+    backend = importlib.import_module(backend_module)
 
     process = psutil.Process()
     available_ram_before_load = psutil.virtual_memory().available
@@ -327,35 +369,66 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     for round_index in range(args.warmup_rounds):
         order = modes if round_index % 2 == 0 else tuple(reversed(modes))
         for mode in order:
-            result = _run_trial(
-                backend, mx, mode, model, tokenizer, prompt,
-                args.max_tokens, speculative_draft,
-            )
-            warmups[mode].append({
-                "output_tokens": result["output_tokens"],
-                "tokens_per_second": result["tokens_per_second"],
-            })
+            try:
+                result = _run_trial(
+                    backend, mx, mode, model, tokenizer, prompt,
+                    args.max_tokens, speculative_draft,
+                )
+                status = "rejected_backend_fallback" if result.get("backend_fallback") else "ok"
+                warmup = {
+                    "status": status,
+                    "output_tokens": result["output_tokens"],
+                    "tokens_per_second": result["tokens_per_second"],
+                }
+                if result.get("backend_fallback_reason"):
+                    warmup["error"] = result["backend_fallback_reason"]
+            except Exception as exc:
+                warmup = {"status": "failed", "error": str(exc)}
+            warmups[mode].append(warmup)
         print(f"Completed warmup {round_index + 1}/{args.warmup_rounds}", flush=True)
 
     measured: dict[str, list[dict[str, Any]]] = {mode: [] for mode in modes}
     text_match_counts = {mode: 0 for mode in modes}
+    rejected_measured_iterations = []
     for iteration in range(args.iterations):
         order = modes if iteration % 2 == 0 else tuple(reversed(modes))
         current: dict[str, dict[str, Any]] = {}
+        iteration_errors = []
         for mode in order:
-            result = _run_trial(
-                backend, mx, mode, model, tokenizer, prompt,
-                args.max_tokens, speculative_draft,
-            )
+            try:
+                result = _run_trial(
+                    backend, mx, mode, model, tokenizer, prompt,
+                    args.max_tokens, speculative_draft,
+                )
+            except Exception as exc:
+                iteration_errors.append({"mode": mode, "error": str(exc)})
+                continue
             current[mode] = result
-            measured[mode].append({
-                key: value for key, value in result.items() if key != "output_text"
+            if result.get("backend_fallback"):
+                iteration_errors.append({
+                    "mode": mode,
+                    "error": result.get("backend_fallback_reason") or "backend fell back to normal decoding",
+                })
+        if iteration_errors:
+            rejected_measured_iterations.append({
+                "iteration": iteration + 1,
+                "reasons": iteration_errors,
             })
+            print(f"Rejected measured iteration {iteration + 1}: {iteration_errors}", flush=True)
+            continue
+
         reference_text = current["configured_baseline"]["output_text"]
         for mode in modes:
             text_match_counts[mode] += current[mode]["output_text"] == reference_text
+            measured[mode].append({
+                key: value for key, value in current[mode].items() if key != "output_text"
+            })
         print(f"Completed measured iteration {iteration + 1}/{args.iterations}", flush=True)
 
+    if not measured["speculative"]:
+        raise RuntimeError(
+            "No valid paired measured iterations remained; speculative fallback or trial failures were rejected"
+        )
     summaries = {mode: summarize_trials(trials) for mode, trials in measured.items()}
     comparisons = {
         f"speculative_vs_{baseline}": paired_speedup_summary(
@@ -420,6 +493,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "temperature": 0.0,
             "warmup_rounds_per_mode": args.warmup_rounds,
             "iterations_per_mode": args.iterations,
+            "valid_paired_iterations": len(measured["speculative"]),
             "order": "alternating forward/reverse mode order per round",
         },
         "memory": {
@@ -429,11 +503,12 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "note": "Per-trial MLX peak includes resident target and draft weights in all modes; RSS also includes the Python/MLX runtime.",
         },
         "warmup_results_excluded_from_statistics": warmups,
+        "rejected_measured_iterations": rejected_measured_iterations,
         "results": summaries,
         "comparison": {
             **comparisons,
             "output_exact_match_fraction_vs_configured_baseline": {
-                mode: text_match_counts[mode] / args.iterations for mode in modes
+                mode: text_match_counts[mode] / len(measured["speculative"]) for mode in modes
             },
         },
     }

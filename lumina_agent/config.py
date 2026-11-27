@@ -1,8 +1,34 @@
 """Lumina Agent configuration."""
 
+import math
 import os
 import sys
 import requests as _requests
+
+
+def _bounded_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    """Read a finite numeric setting and clamp it to its supported range."""
+    try:
+        value = float(os.environ.get(name, str(default)))
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+    except (TypeError, ValueError):
+        value = default
+    return min(maximum, max(minimum, value))
+
+
+def get_tool_timeout() -> float:
+    return _bounded_float("LUMINA_TOOL_TIMEOUT", 30.0, 1.0, 300.0)
+
+
+def get_agent_tool_budget() -> float:
+    return _bounded_float("LUMINA_AGENT_TOOL_BUDGET", 300.0, 1.0, 3600.0)
+
+
+# Defaults are exposed for callers that need to inspect effective configuration;
+# getters re-read the environment so runtime overrides and tests remain supported.
+TOOL_TIMEOUT = get_tool_timeout()
+AGENT_TOOL_BUDGET = get_agent_tool_budget()
 
 
 def _detect_model(base: str) -> str:

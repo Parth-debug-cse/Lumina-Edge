@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { spawn, exec, execFile, execSync } from 'child_process';
+import { spawn, exec, execFile, execFileSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -11,10 +11,23 @@ import { Router } from 'express';
 import {
   createBearerAuth,
   createConcurrencyLimiter,
+  createGatewayAuthMiddleware,
+  createLineFramer,
   createMetricsRegistry,
   createSlidingWindowRateLimiter,
+  fetchJsonWithTimeout,
+  resolveBatchSize,
+  resolveGpuLayers,
+  resolveThreadCount,
+  selectReadyModel,
+  getModelProbePorts,
+  hasAgentRunCapacity,
+  isAgentGoalValid,
+  isCorsOriginAllowed,
+  signalChildProcess,
   validateChatRequest,
 } from './gateway-controls.js';
+import { createTracingMiddleware, initializeTracing, shutdownTracing } from './telemetry.js';
 
 // Separate router for /api/* routes — can be mounted on both primary and secondary servers
 const apiRouter = Router();
@@ -24,14 +37,10 @@ const metrics = createMetricsRegistry();
 const corsOptions = {
   origin(origin, callback) {
     if (!origin) return callback(null, true);
-    const configuredOrigins = loadConfig().cors_allowed_origins;
-    const allowedOrigins = new Set([
-      'http://localhost:5173',
-      'http://127.0.0.1:5173',
-      ...(Array.isArray(configuredOrigins) ? configuredOrigins : []),
-      ...(process.env.LUMINA_CORS_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean),
-    ]);
-    return callback(null, allowedOrigins.has(origin));
+    return callback(null, isCorsOriginAllowed(origin, {
+      configuredOrigins: loadConfig().cors_allowed_origins,
+      envOrigins: process.env.LUMINA_CORS_ORIGINS || '',
+    }));
   },
   optionsSuccessStatus: 204,
 };
@@ -59,30 +68,31 @@ console.log('[API Server] Starting Lumina Edge API Gateway');
 console.log('[API Server] Root directory:', rootDir);
 console.log('[API Server] Models directory:', modelsDir);
 
-// _vulkanCapable cache — checked once via `strings | grep -i vulkan` on llama-server binary, cached forever
-let _vulkanCapable = null;
+let _gpuOffloadAvailable = null;
 
-async function checkVulkanCapability() {
-  if (_vulkanCapable !== null) return _vulkanCapable;
-  if (os.platform() !== 'linux') { _vulkanCapable = false; return false; }
-  
-  try {
-    const llamaServer = path.join(binDir, 'llama-server');
-    if (!fs.existsSync(llamaServer)) { _vulkanCapable = false; return false; }
-    
-    // Grep binary strings for Vulkan symbols — slow check, but runs exactly once
-    const { execSync } = await import('child_process');
-    const symbols = execSync(`strings "${llamaServer}" 2>/dev/null | grep -i vulkan | head -5`, {
-      timeout: 3000
-    }).toString();
-    
-    _vulkanCapable = symbols.toLowerCase().includes('vulkan');
-    console.log(`[Router] Vulkan capability: ${_vulkanCapable}`);
-  } catch (e) {
-    _vulkanCapable = false; // Silent failure — fall back to CPU-only
+async function checkGpuOffloadCapability(serverPath) {
+  if (_gpuOffloadAvailable !== null) return _gpuOffloadAvailable;
+  if (!serverPath || !fs.existsSync(serverPath)) {
+    _gpuOffloadAvailable = false;
+    return false;
   }
-  
-  return _vulkanCapable;
+
+  try {
+    const output = execFileSync(serverPath, ['--list-devices'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true,
+    });
+    _gpuOffloadAvailable = output.split(/\r?\n/).some(line => {
+      const backend = line.trim().replace(/^[-*]\s*/, '').split(':', 1)[0].trim();
+      return /^(?:cuda|vulkan|rocm|hip|sycl|metal|opencl)\w*$/i.test(backend);
+    });
+    console.log(`[GPU] llama.cpp accelerator devices: ${_gpuOffloadAvailable ? 'detected' : 'not detected'}`);
+  } catch (error) {
+    _gpuOffloadAvailable = false;
+    console.log(`[GPU] Device probe unavailable; auto GPU offload will use CPU: ${error.message}`);
+  }
+  return _gpuOffloadAvailable;
 }
 
 // Spawns system_optimizer.py, reloads config on completion
@@ -166,22 +176,7 @@ function isPortFree(port) {
   });
 }
 
-// Kill zombie llama-server from previous session using lsof/ss
-async function killProcessOnPort(port) {
-  if (os.platform() === 'win32') return false; // lsof/ss not available, skip
-  try {
-    const result = execSync(`lsof -ti :${port} 2>/dev/null || ss -tlnp sport = :${port} 2>/dev/null | grep -oP 'pid=\\K\\d+' | head -1`, { timeout: 3000 }).toString().trim();
-    if (result) {
-      const pids = result.split('\n').filter(Boolean);
-      for (const pid of pids) {
-        console.log(`[Port Cleanup] Killing zombie process PID ${pid} on port ${port}`);
-        try { execSync(`kill -9 ${pid} 2>/dev/null`); } catch {}
-      }
-      return true;
-    }
-  } catch {}
-  return false;
-}
+
 
 // Clean up models stuck in error/loading from a previous process crash
 function clearStaleModelState() {
@@ -207,6 +202,7 @@ const conversionJobs = new Map(); // file -> status
 const downloadJobs = new Map(); // filename -> { status, error, progress }
 const routerModels = new Map(); // id -> model info
 let routingPolicy = 'round-robin';
+let nextModelIndex = 0;
 let nextPort = 8000;
 
 // Find next available port in the 8000-9000 range
@@ -227,6 +223,15 @@ const convertibleExtensions = ['.gguf', '.safetensors', '.bin', '.pt'];
 
 // Load config to get port settings (loadConfig needs to be hoisted above usage)
 const config = loadConfig();
+if (['round-robin', 'load-balanced', 'first-available'].includes(config.routing_policy)) {
+  routingPolicy = config.routing_policy;
+}
+const tracingSetting = process.env.LUMINA_TRACING_ENABLED;
+const tracingEnabled = tracingSetting === '1'
+  || (tracingSetting !== '0' && config.tracing_enabled === true);
+if (initializeTracing({ enabled: tracingEnabled })) {
+  app.use(createTracingMiddleware());
+}
 // Dual-port setup: PRIMARY_PORT (8090) for inference+management, SECONDARY_PORT (8081) for management-only
 const PRIMARY_PORT = parseInt(process.env.LUMINA_API_PORT) || config.api_port || 8090;
 const SECONDARY_PORT = parseInt(process.env.LUMINA_API_PORT_SECONDARY) || config.api_port_secondary || 8081;
@@ -241,12 +246,53 @@ const inferenceLimiter = createConcurrencyLimiter({
   maxQueue: Number.parseInt(config.max_queued_requests, 10) || 8,
   queueTimeoutMs: Number.parseInt(config.inference_queue_timeout_ms, 10) || 30_000,
 });
-const chatRateLimiter = createSlidingWindowRateLimiter({ limit: rateLimitPerMinute, windowMs: 60_000 });
+const inferenceRateLimiter = createSlidingWindowRateLimiter({ limit: rateLimitPerMinute, windowMs: 60_000 });
 let pendingModelLoads = 0;
 
 function maxConcurrentModels() {
   const configured = Number.parseInt(loadConfig().max_concurrent_models, 10);
   return Number.isInteger(configured) && configured > 0 ? configured : 2;
+}
+
+function modelLoadTimeoutMs() {
+  const seconds = Number.parseInt(loadConfig().router_model_load_timeout_seconds, 10);
+  const boundedSeconds = Number.isInteger(seconds) ? Math.min(900, Math.max(10, seconds)) : 120;
+  return boundedSeconds * 1000;
+}
+
+function getAvailableMemoryBytes() {
+  if (os.platform() === 'linux') {
+    try {
+      const meminfo = fs.readFileSync('/proc/meminfo', 'utf8');
+      const match = /^MemAvailable:\s+(\d+)\s+kB/m.exec(meminfo);
+      if (match) return Number(match[1]) * 1024;
+    } catch {}
+  }
+  return os.freemem();
+}
+
+function detectPhysicalCpuCount() {
+  if (os.platform() === 'darwin') {
+    try {
+      const count = Number(execFileSync('sysctl', ['-n', 'hw.physicalcpu'], {
+        encoding: 'utf8',
+        timeout: 2000,
+      }).trim());
+      if (Number.isSafeInteger(count) && count > 0) return count;
+    } catch {}
+  } else if (os.platform() === 'linux') {
+    try {
+      const cpuinfo = fs.readFileSync('/proc/cpuinfo', 'utf8');
+      const cores = new Set();
+      for (const processor of cpuinfo.split(/\r?\n\s*\r?\n/)) {
+        const physicalId = /^physical id\s*:\s*(\S+)/m.exec(processor)?.[1];
+        const coreId = /^core id\s*:\s*(\S+)/m.exec(processor)?.[1];
+        if (physicalId !== undefined && coreId !== undefined) cores.add(`${physicalId}:${coreId}`);
+      }
+      if (cores.size) return cores.size;
+    } catch {}
+  }
+  return os.availableParallelism?.() || os.cpus().length || 1;
 }
 
 function occupiedModelSlots() {
@@ -350,28 +396,12 @@ function acquireModelRequest(modelInfo) {
   };
 }
 
-function authenticateGatewayRequest(req, res, next) {
-  const route = (req.originalUrl || req.url || '').split('?')[0];
-  if (route === '/api/health' || route === '/v1/models') return next();
-  if (route === '/metrics' || route === '/api' || route.startsWith('/api/') || route === '/v1' || route.startsWith('/v1/')) {
-    return apiAuthMiddleware(req, res, next);
-  }
-  return next();
-}
+const authenticateGatewayRequest = createGatewayAuthMiddleware(apiAuthMiddleware);
 
 // Do not launch platform optimizers until security configuration has been validated.
+// Launchers source linux_prelaunch.sh so its process-local environment and ulimit
+// propagate to inference children; rerunning it here would only repeat host changes.
 runSystemOptimizer();
-if (os.platform() === 'linux') {
-  const prelaunchScript = path.join(scriptsDir, 'linux_prelaunch.sh');
-  if (fs.existsSync(prelaunchScript)) {
-    console.log('[Startup] Running Linux system optimizer...');
-    try {
-      execSync(`bash "${prelaunchScript}"`, { timeout: 15000, cwd: rootDir, stdio: 'inherit' });
-    } catch (err) {
-      console.log('[Startup] Linux optimizer completed (non-zero exit is OK)');
-    }
-  }
-}
 
 app.use(authenticateGatewayRequest);
 app.get('/metrics', (req, res) => {
@@ -881,6 +911,9 @@ apiRouter.post('/save-config', (req, res) => {
     const newConfig = { ...currentConfig, ...req.body };
     if (!saveConfigData(newConfig)) {
       return res.status(500).json({ error: 'Failed to save config' });
+    }
+    if (['round-robin', 'load-balanced', 'first-available'].includes(newConfig.routing_policy)) {
+      routingPolicy = newConfig.routing_policy;
     }
     res.json({ status: 'success', config: newConfig });
   } catch (err) {
@@ -1400,6 +1433,7 @@ apiRouter.get('/router/status', (req, res) => {
       name: m.name,
       port: m.port,
       status: m.status,
+      priority: m.priority || 0,
       inference_count: m.inference_count,
       active_requests: m.active_requests || 0,
       last_used_at: m.last_used_at || null,
@@ -1415,6 +1449,7 @@ apiRouter.get('/router/models', (req, res) => {
     name: m.name,
     port: m.port,
     status: m.status,
+    priority: m.priority || 0,
     inference_count: m.inference_count,
     active_requests: m.active_requests || 0,
     last_used_at: m.last_used_at || null
@@ -1422,9 +1457,9 @@ apiRouter.get('/router/models', (req, res) => {
   res.json({ models });
 });
 
-// Get the port of the first ready model (quick check for the frontend)
+// Get the endpoint selected by the active routing policy (quick check for the frontend).
 apiRouter.get('/router/active-port', (req, res) => {
-  const ready = Array.from(routerModels.values()).find(m => m.status === 'ready');
+  const { model: ready } = selectReadyModel(Array.from(routerModels.values()), routingPolicy, nextModelIndex);
   if (!ready) return res.status(502).json({ error: 'No model ready' });
   res.json({ port: ready.port, model: ready.name, id: ready.id });
 });
@@ -1444,11 +1479,6 @@ apiRouter.get('/router/events', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  const origin = req.headers.origin || '';
-  if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  }
-
   sseClients.add(res);
   console.log(`[SSE] Client connected. Total clients: ${sseClients.size}`);
 
@@ -1475,6 +1505,8 @@ apiRouter.get('/router/routes', (req, res) => {
 apiRouter.post('/router/policy', (req, res) => {
   const { policy } = req.body;
   if (['round-robin', 'load-balanced', 'first-available'].includes(policy)) {
+    const nextConfig = { ...loadConfig(), routing_policy: policy };
+    if (!saveConfigData(nextConfig)) return res.status(500).json({ error: 'Failed to save routing policy' });
     routingPolicy = policy;
     res.json({ status: 'success', policy });
   } else {
@@ -1489,10 +1521,13 @@ apiRouter.post('/router/policy', (req, res) => {
 
 apiRouter.post('/router/load', async (req, res) => {
   console.log(`[DEBUG] /api/router/load called with body:`, JSON.stringify(req.body));
-  const { model_path, port_offset } = req.body;
+  const { model_path, port_offset, priority = 0 } = req.body;
   if (!model_path) {
     console.error('[DEBUG] model_path is missing from request body');
     return res.status(400).json({ error: 'model_path is required' });
+  }
+  if (!Number.isInteger(priority) || priority < 0 || priority > 100) {
+    return res.status(400).json({ error: 'priority must be an integer from 0 to 100' });
   }
   if (port_offset) {
     console.log(`[api-server] port_offset received but parallel loading not yet implemented: ${port_offset}`);
@@ -1506,6 +1541,12 @@ apiRouter.post('/router/load', async (req, res) => {
   console.log('[Router Load] File exists:', fs.existsSync(targetPath));
   
   if (!fs.existsSync(targetPath)) return res.status(404).json({ error: 'Model not found' });
+  const alreadyLoaded = Array.from(routerModels.values()).find(model =>
+    model.path === targetPath && !['error', 'unloaded'].includes(model.status)
+  );
+  if (alreadyLoaded) {
+    return res.status(409).json({ error: 'Model is already loaded or loading', id: alreadyLoaded.id });
+  }
 
   // macOS path validation: verify MLX model dir has config.json + .safetensors
   let stats;
@@ -1559,10 +1600,8 @@ apiRouter.post('/router/load', async (req, res) => {
     port = await findAvailablePort();
 
     if (!await isPortFree(port)) {
-      console.log(`[Router Load] Port ${port} is occupied, attempting cleanup...`);
-      await killProcessOnPort(port);
-      await new Promise(r => setTimeout(r, 500));
-      if (!await isPortFree(port)) port = await findAvailablePort();
+      console.log(`[Router Load] Port ${port} was claimed concurrently; selecting another free port`);
+      port = await findAvailablePort();
     }
   } catch (error) {
     return res.status(503).json({ error: 'Unable to allocate a model port', detail: error.message });
@@ -1579,6 +1618,7 @@ apiRouter.post('/router/load', async (req, res) => {
     path: targetPath, 
     port, 
     status: 'loading',
+    priority,
     inference_count: 0,
     active_requests: 0,
     lastUsedAtMs: Date.now(),
@@ -1627,9 +1667,10 @@ apiRouter.post('/router/load', async (req, res) => {
         }
       });
 
-      // Wait up to 2 minutes for the MLX backend to load the model
-      const MAX_RETRIES = 60;
+      // Bound readiness polling so failed hot-swaps do not wait indefinitely.
+      const MODEL_LOAD_TIMEOUT_MS = modelLoadTimeoutMs();
       const RETRY_DELAY = 2000;
+      const MAX_RETRIES = Math.ceil(MODEL_LOAD_TIMEOUT_MS / RETRY_DELAY);
       let backendReady = false;
       let lastError = null;
       let mlxStderr = '';
@@ -1729,22 +1770,31 @@ const ctxSize = (() => {
   if (!val || isNaN(val) || val < 512) return 4096; // safe minimum
   return Math.min(val, 32768); // cap at 32K — beyond this is memory waste on 16GB
 })();
-const batchSize = parseInt(config.batch_size) || 256;
-const ubatchSize = parseInt(config.ubatch_size) || 256;
-const nGpuLayers = parseInt(config.n_gpu_layers) || 999; // 999 = offload as many layers as GPU can hold, rest fall back to CPU
+const availableMemoryBytes = getAvailableMemoryBytes();
+const batchSize = resolveBatchSize(config.batch_size ?? 256, availableMemoryBytes);
+const ubatchSize = Math.min(
+  batchSize,
+  resolveBatchSize(config.ubatch_size ?? 256, availableMemoryBytes)
+);
+const configuredGpuLayers = config.n_gpu_layers ?? 999;
 const kvCacheTypeK = config.kv_cache_type_k || config.kv_cache_quant || 'q4_0';
 const kvCacheTypeV = config.kv_cache_type_v || config.kv_cache_quant || 'q4_0';
 const splitMode = config.split_mode || 'row';
 const httpThreads = parseInt(config.http_threads) || 2;
-const threads = parseInt(config.threads) || 4;
-const threadsBatch = parseInt(config.threads_batch) || 4;
+const detectedPhysicalCores = detectPhysicalCpuCount();
+const threads = resolveThreadCount(config.threads ?? 4, detectedPhysicalCores, 4);
+const threadsBatch = resolveThreadCount(config.threads_batch ?? 4, detectedPhysicalCores, 4);
 const useMlock = config.use_mlock === true;
 const contBatching = config.cont_batching !== false;
 const promptCache = config.prompt_cache === true;
 
-// Check Vulkan capability and set effective GPU layers (needed for logging below)
-const vulkanOk = await checkVulkanCapability();
-const effectiveGpuLayers = vulkanOk ? nGpuLayers : 0;
+// Fixed layer counts are preserved (including CPU-only zero). Auto mode probes
+// llama.cpp's own device list and safely falls back to CPU if the probe fails.
+const autoGpuLayers = typeof configuredGpuLayers === 'string'
+  && configuredGpuLayers.trim().toLowerCase() === 'auto';
+const gpuOffloadAvailable = autoGpuLayers ? await checkGpuOffloadCapability(llamaServer) : false;
+const effectiveGpuLayers = resolveGpuLayers(configuredGpuLayers, gpuOffloadAvailable);
+const flashAttention = config.flash_attn !== false && effectiveGpuLayers > 0;
 
 const cmdArgs = [
   '-m', targetPath,                           // model path
@@ -1757,7 +1807,7 @@ const cmdArgs = [
   '--threads', threads.toString(),            // generation threads (physical cores)
   '--threads-batch', threadsBatch.toString(),  // prompt processing threads (logical threads)
   '--threads-http', httpThreads.toString(),   // HTTP server threads
-  '--flash-attn', 'on',                       // Flash Attention enabled
+  '--flash-attn', flashAttention ? 'on' : 'off',
   '--cache-type-k', kvCacheTypeK,            // KV key cache quantization
   '--cache-type-v', kvCacheTypeV,            // KV value cache quantization
 ];
@@ -1777,11 +1827,11 @@ if (!promptCache) {
 console.log(`[Router] Launching llama-server with flags:`);
 console.log(`[Router]   ctx-size: ${ctxSize}`);
 console.log(`[Router]   threads: ${threads}, threads-batch: ${threadsBatch}`);
-console.log(`[Router]   n-gpu-layers: ${effectiveGpuLayers || nGpuLayers}`);
+console.log(`[Router]   n-gpu-layers: ${effectiveGpuLayers}${autoGpuLayers ? ' (auto)' : ''}`);
 console.log(`[Router]   kv-cache-type-k: ${kvCacheTypeK}, kv-cache-type-v: ${kvCacheTypeV}`);
 console.log(`[Router]   mlock: ${useMlock}`);
 console.log(`[Router]   prompt-cache: ${promptCache}`);
-console.log(`[Router]   flash-attn: enabled`);
+console.log(`[Router]   flash-attn: ${flashAttention ? 'enabled' : 'disabled'}`);
 
 // mlock — only enable if explicitly true AND we have enough free RAM
 // On 16GB machines with iGPU sharing memory, mlock can cause OOM
@@ -1818,12 +1868,9 @@ try {
   // Can't detect NUMA — skip the flag to be safe
 }
 
-// Vulkan capability already checked earlier, use those results
 cmdArgs.push('--n-gpu-layers', effectiveGpuLayers.toString());
-
-if (!vulkanOk && nGpuLayers > 0) {
-  console.log('[Router] ⚠ llama-server binary has no Vulkan support — running CPU-only');
-  console.log('[Router] ⚠ For Intel iGPU acceleration, use a Vulkan-compiled llama-server binary');
+if (autoGpuLayers && !gpuOffloadAvailable) {
+  console.log('[Router] Auto GPU offload selected CPU mode because no supported device was reported.');
 }
     
 // On Linux: pin to physical cores only using taskset
@@ -1929,19 +1976,26 @@ modelInfo.process = proc;
 
   // Poll for readiness
   let attempts = 0;
-  const maxAttempts = 60;
+  let readinessProbeInFlight = false;
+  const modelLoadTimeout = modelLoadTimeoutMs();
+  const maxAttempts = Math.ceil(modelLoadTimeout / 1000);
   const checkReady = setInterval(async () => {
+    if (modelInfo.status !== 'loading' || readinessProbeInFlight) return;
     if (++attempts > maxAttempts) {
       clearInterval(checkReady);
       clearTimeout(failsafeTimer);
       modelInfo.status = 'error';
-      console.error(`[Router] Model ${modelInfo.name} failed to become ready after 60s`);
-      broadcastModelStatus(id, 'error', port, 'Model failed to become ready after 60s');
+      const error = `Model failed to become ready after ${maxAttempts}s`;
+      console.error(`[Router] Model ${modelInfo.name} ${error}`);
+      broadcastModelStatus(id, 'error', port, error);
+      beginModelUnload(modelInfo, id, 'load-timeout');
       return;
     }
+    readinessProbeInFlight = true;
     try {
-      const resp = await fetch(`http://127.0.0.1:${port}/v1/models`);
-      if (resp.ok) {
+      const resp = await fetchJsonWithTimeout(`http://127.0.0.1:${port}/v1/models`, { timeoutMs: 3000 });
+      if (modelInfo.status !== 'loading') return;
+      if (resp) {
         modelInfo.status = 'ready';
         modelInfo.lastUsedAtMs = Date.now();
         modelInfo.last_used_at = new Date(modelInfo.lastUsedAtMs).toISOString();
@@ -1951,16 +2005,22 @@ modelInfo.process = proc;
         console.log(`[Router] Model ${modelInfo.name} is ready on port ${port}`);
         broadcastModelStatus(id, 'ready', port);
       }
-    } catch (e) { }
+    } catch (e) {
+      // A timed-out or unavailable health probe is retried until the load deadline.
+    } finally {
+      readinessProbeInFlight = false;
+    }
   }, 1000);
 
   // Failsafe
   const failsafeTimer = setTimeout(() => {
     clearInterval(checkReady);
     modelInfo.status = 'error';
+    const error = 'Failsafe timeout - model failed to load';
     console.error(`[Router] Failsafe timeout hit for model ${modelInfo.name}`);
-    broadcastModelStatus(id, 'error', port, 'Failsafe timeout - model failed to load');
-  }, 60000);
+    broadcastModelStatus(id, 'error', port, error);
+    beginModelUnload(modelInfo, id, 'load-timeout');
+  }, modelLoadTimeout);
 
   // Store interval ref so we can clear it on unload
   modelInfo.readyCheckInterval = checkReady;
@@ -2490,37 +2550,72 @@ apiRouter.post('/lumina-screen/clear-hits', (req, res) => {
 
 const luminaAgentDir = path.join(rootDir, 'lumina_agent');
 const agentRuns = new Map(); // runId -> { steps[], status, finalReport, error, proc }
-const MAX_AGENT_RUNS = 100; // Cap to prevent memory leak
+const MAX_AGENT_RUNS = 100;
+const MAX_ACTIVE_AGENT_RUNS = 4;
+const MAX_AGENT_GOAL_LENGTH = 10_000;
+const AGENT_RUN_TIMEOUT_MS = 10 * 60_000;
+const AGENT_STOP_GRACE_MS = 3_000;
 
-// Periodic cleanup of old completed runs (trims oldest 25% when at capacity)
-function cleanupAgentRuns() {
-  if (agentRuns.size <= MAX_AGENT_RUNS) return;
-  const toRemove = [];
+function isAgentProcessActive(run) {
+  return run.status === 'running' || (run.proc && run.proc.exitCode === null && run.proc.signalCode === null);
+}
+
+function cleanupAgentRuns(force = false) {
+  const targetSize = force ? MAX_AGENT_RUNS - Math.ceil(MAX_AGENT_RUNS * 0.25) : MAX_AGENT_RUNS;
+  if (agentRuns.size <= targetSize) return;
   for (const [id, run] of agentRuns) {
-    if (run.status !== 'running') toRemove.push(id);
+    if (!isAgentProcessActive(run)) agentRuns.delete(id);
+    if (agentRuns.size <= targetSize) break;
   }
-  // Remove oldest completed runs first
-  for (const id of toRemove.slice(0, Math.ceil(MAX_AGENT_RUNS * 0.25))) {
-    agentRuns.delete(id);
-  }
+}
+
+function stopAgentProcess(run, status, errorMessage = null) {
+  if (run.runtimeTimer) clearTimeout(run.runtimeTimer);
+  run.runtimeTimer = null;
+  run.status = status;
+  if (errorMessage) run.error = errorMessage;
+
+  const proc = run.proc;
+  if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
+  signalChildProcess(proc, 'SIGTERM', { detached: run.detached });
+  run.forceKillTimer = setTimeout(() => {
+    if (proc.exitCode === null && proc.signalCode === null) {
+      signalChildProcess(proc, 'SIGKILL', { detached: run.detached });
+    }
+  }, AGENT_STOP_GRACE_MS);
+  run.forceKillTimer.unref?.();
 }
 
 // Run Lumina Agent — goal passed via env var (security: prevents shell injection from malicious input)
 apiRouter.post('/lumina-agent/run', async (req, res) => {
-  const { goal } = req.body;
-  if (!goal || typeof goal !== 'string' || goal.trim().length === 0) {
+  const goal = req.body?.goal;
+  if (typeof goal !== 'string' || goal.trim().length === 0) {
     return res.status(400).json({ error: 'goal is required' });
+  }
+  if (!isAgentGoalValid(goal, MAX_AGENT_GOAL_LENGTH)) {
+    return res.status(413).json({ error: `goal must be at most ${MAX_AGENT_GOAL_LENGTH} characters` });
+  }
+  if (!hasAgentRunCapacity(agentRuns, MAX_ACTIVE_AGENT_RUNS)) {
+    res.setHeader('Retry-After', '1');
+    return res.status(429).json({ error: 'Lumina Agent is at its active run limit' });
+  }
+
+  cleanupAgentRuns(agentRuns.size >= MAX_AGENT_RUNS);
+  if (agentRuns.size >= MAX_AGENT_RUNS) {
+    return res.status(503).json({ error: 'Lumina Agent run storage is full; retry shortly' });
   }
 
   const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  agentRuns.set(runId, { steps: [], status: 'running', finalReport: null, error: null, proc: null });
+  const run = { steps: [], status: 'running', finalReport: null, error: null, proc: null, detached: process.platform !== 'win32' };
+  agentRuns.set(runId, run);
 
   // SECURITY: Use environment variables to pass data to subprocess instead of
   // string interpolation, preventing shell/Python injection from malicious goal strings.
-  const { spawn } = await import('child_process');
-  const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
-
-  const proc = spawn(pythonCmd, ['-c', `
+  let proc;
+  try {
+    const { spawn } = await import('child_process');
+    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+    proc = spawn(pythonCmd, ['-c', `
 import sys, os, json
 sys.path.insert(0, os.environ['LUMINA_ROOT_DIR'])
 from lumina_agent.agent import run_agent
@@ -2533,68 +2628,73 @@ def on_update(step):
 
 result = run_agent(goal, run_id, on_update)
 print(json.dumps({"type": "done", "data": result}), flush=True)
-  `], {
-    cwd: luminaAgentDir,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      PYTHONUNBUFFERED: '1',
-      LUMINA_ROOT_DIR: rootDir,
-      LUMINA_AGENT_GOAL: goal,
-      LUMINA_AGENT_RUN_ID: runId,
-    }
-  });
-
-  // Store proc reference so stop endpoint can kill it directly
-  const run = agentRuns.get(runId);
-  run.proc = proc;
-
-  proc.stdout.on('data', (chunk) => {
-    const lines = chunk.toString().split('\n').filter(Boolean);
-    for (const line of lines) {
-      try {
-        const msg = JSON.parse(line);
-        const r = agentRuns.get(runId);
-        if (!r) return;
-        if (msg.type === 'step') {
-          r.steps.push(msg.data);
-        } else if (msg.type === 'done') {
-          r.status = 'done';
-          r.finalReport = msg.data;
-        }
-      } catch (e) {
-        // BUG-UI1 FIX: Silent swallow meant any non-JSON stdout line (e.g. a Python
-        // warning or print() from an imported library) silently dropped the line.
-        // If the final {"type":"done",...} chunk shared a buffer with a warning,
-        // the split could break it and the run would stay 'running' forever.
-        console.warn(`[LuminaAgent] Non-JSON stdout from agent: ${line.substring(0, 120)}`);
+    `], {
+      cwd: luminaAgentDir,
+      detached: run.detached,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: '1',
+        LUMINA_ROOT_DIR: rootDir,
+        LUMINA_AGENT_GOAL: goal,
+        LUMINA_AGENT_RUN_ID: runId,
       }
+    });
+  } catch (err) {
+    run.status = 'error';
+    run.error = `Failed to start Python process: ${err.message}`;
+    return res.status(500).json({ error: run.error });
+  }
+
+  run.proc = proc;
+  const handleAgentLine = (line) => {
+    try {
+      const msg = JSON.parse(line);
+      const currentRun = agentRuns.get(runId);
+      if (!currentRun) return;
+      if (msg.type === 'step') {
+        currentRun.steps.push(msg.data);
+      } else if (msg.type === 'done') {
+        currentRun.status = 'done';
+        currentRun.finalReport = msg.data;
+      }
+    } catch {
+      console.warn(`[LuminaAgent] Non-JSON stdout from agent: ${line.substring(0, 120)}`);
     }
-  });
+  };
+  const stdoutFramer = createLineFramer(handleAgentLine);
+  proc.stdout.on('data', chunk => stdoutFramer.push(chunk));
+  proc.stdout.on('end', () => stdoutFramer.flush());
 
   proc.stderr.on('data', (chunk) => {
-    const r = agentRuns.get(runId);
-    if (r) r.error = (r.error || '') + chunk.toString();
+    const currentRun = agentRuns.get(runId);
+    if (currentRun) currentRun.error = (currentRun.error || '') + chunk.toString();
   });
 
-  // Fix 1: Handle spawn failures (e.g. python3 not found).
-  // Without this, the 'error' event is unhandled and the frontend polls forever.
   proc.on('error', (err) => {
     console.error('[LuminaAgent] Spawn error:', err.message);
-    const r = agentRuns.get(runId);
-    if (r) {
-      r.status = 'error';
-      r.error = `Failed to start Python process: ${err.message}`;
+    const currentRun = agentRuns.get(runId);
+    if (currentRun) {
+      currentRun.status = 'error';
+      currentRun.error = `Failed to start Python process: ${err.message}`;
     }
   });
 
-  // Fix 2: Null-guard r in case cleanupAgentRuns() already removed this run.
+  run.runtimeTimer = setTimeout(() => {
+    if (!run.proc || (run.proc.exitCode !== null || run.proc.signalCode !== null)) return;
+    stopAgentProcess(run, 'error', `Lumina Agent exceeded its ${Math.round(AGENT_RUN_TIMEOUT_MS / 60_000)} minute runtime limit`);
+  }, AGENT_RUN_TIMEOUT_MS);
+  run.runtimeTimer.unref?.();
+
   proc.on('close', (code) => {
-    const r = agentRuns.get(runId);
-    if (!r) return;
-    if (r.status === 'running') {
-      r.status = code === 0 ? 'done' : 'error';
-    }
+    stdoutFramer.flush();
+    if (run.runtimeTimer) clearTimeout(run.runtimeTimer);
+    if (run.forceKillTimer) clearTimeout(run.forceKillTimer);
+    run.runtimeTimer = null;
+    run.forceKillTimer = null;
+    const currentRun = agentRuns.get(runId);
+    if (!currentRun) return;
+    if (currentRun.status === 'running') currentRun.status = code === 0 ? 'done' : 'error';
     cleanupAgentRuns();
   });
 
@@ -2614,24 +2714,19 @@ apiRouter.get('/lumina-agent/status/:runId', (req, res) => {
   });
 });
 
-// Stop agent run — kills subprocess directly (SIGTERM → 3s → SIGKILL)
+// Stop agent run — kills its process group when available (SIGTERM → 3s → SIGKILL)
 apiRouter.post('/lumina-agent/stop/:runId', (req, res) => {
   const run = agentRuns.get(req.params.runId);
   if (!run) return res.status(404).json({ error: 'Run not found' });
 
-  // SECURITY: Kill the actual child process directly instead of spawning
-  // a separate Python process that can't reach the in-memory stop flag.
-  if (run.proc && !run.proc.killed) {
-    run.proc.kill('SIGTERM');
-    // Fallback to SIGKILL after 3 seconds if process doesn't exit
-    setTimeout(() => {
-      if (run.proc && !run.proc.killed) {
-        try { run.proc.kill('SIGKILL'); } catch {}
-      }
-    }, 3000);
+  if (run.proc && run.proc.exitCode === null && run.proc.signalCode === null) {
+    stopAgentProcess(run, 'stopped');
+  } else {
+    if (run.runtimeTimer) clearTimeout(run.runtimeTimer);
+    run.runtimeTimer = null;
+    run.status = 'stopped';
   }
 
-  run.status = 'stopped';
   console.log('[LuminaAgent] Stopped run:', req.params.runId);
   res.json({ ok: true });
 });
@@ -2988,22 +3083,29 @@ async function runStartupPipeline() {
           
           // Helper to read config values with defaults
 const ctxSize = parseInt(cfg.ctx_size) || 4096;
-const batchSize = parseInt(cfg.batch_size) || 256;
-const ubatchSize = parseInt(cfg.ubatch_size) || 256;
-const nGpuLayers = parseInt(cfg.n_gpu_layers) || 999; // 999 = offload max layers GPU can hold, rest CPU
+const availableMemoryBytes = getAvailableMemoryBytes();
+const batchSize = resolveBatchSize(cfg.batch_size ?? 256, availableMemoryBytes);
+const ubatchSize = Math.min(
+  batchSize,
+  resolveBatchSize(cfg.ubatch_size ?? 256, availableMemoryBytes)
+);
+const configuredGpuLayers = cfg.n_gpu_layers ?? 999;
 const kvCacheTypeK = cfg.kv_cache_type_k || cfg.kv_cache_quant || 'q4_0';
 const kvCacheTypeV = cfg.kv_cache_type_v || cfg.kv_cache_quant || 'q4_0';
 const splitMode = cfg.split_mode || 'row';
 const httpThreads = parseInt(cfg.http_threads) || 2;
-const threads = parseInt(cfg.threads) || 4;
-const threadsBatch = parseInt(cfg.threads_batch) || 4;
+const detectedPhysicalCores = detectPhysicalCpuCount();
+const threads = resolveThreadCount(cfg.threads ?? 4, detectedPhysicalCores, 4);
+const threadsBatch = resolveThreadCount(cfg.threads_batch ?? 4, detectedPhysicalCores, 4);
 const useMlock = cfg.use_mlock === true;
 const contBatching = cfg.cont_batching !== false;
 const promptCache = cfg.prompt_cache === true;
 
-// Check Vulkan capability and set effective GPU layers (needed for logging below)
-const vulkanOk = await checkVulkanCapability();
-const effectiveGpuLayers = vulkanOk ? nGpuLayers : 0;
+const autoGpuLayers = typeof configuredGpuLayers === 'string'
+  && configuredGpuLayers.trim().toLowerCase() === 'auto';
+const gpuOffloadAvailable = autoGpuLayers ? await checkGpuOffloadCapability(llamaServer) : false;
+const effectiveGpuLayers = resolveGpuLayers(configuredGpuLayers, gpuOffloadAvailable);
+const flashAttention = cfg.flash_attn !== false && effectiveGpuLayers > 0;
 
 const cmdArgs = [
   '-m', targetModel.path,                       // model path
@@ -3016,7 +3118,7 @@ const cmdArgs = [
   '--threads', threads.toString(),            // generation threads (physical cores)
   '--threads-batch', threadsBatch.toString(),  // prompt processing threads (logical threads)
   '--threads-http', httpThreads.toString(),   // HTTP server threads
-  '--flash-attn', 'on',                       // Flash Attention always on
+  '--flash-attn', flashAttention ? 'on' : 'off',
   '--cache-type-k', 'q4_0',                  // KV key cache always q4_0
   '--cache-type-v', 'q4_0',                  // KV value cache always q4_0
 ];
@@ -3036,11 +3138,11 @@ if (!promptCache) {
 console.log(`[Startup] Launching llama-server with flags:`);
 console.log(`[Startup]   ctx-size: ${ctxSize}`);
 console.log(`[Startup]   threads: ${threads}, threads-batch: ${threadsBatch}`);
-console.log(`[Startup]   n-gpu-layers: ${effectiveGpuLayers || nGpuLayers}`);
+console.log(`[Startup]   n-gpu-layers: ${effectiveGpuLayers}${autoGpuLayers ? ' (auto)' : ''}`);
 console.log(`[Startup]   kv-cache-type-k: ${kvCacheTypeK}, kv-cache-type-v: ${kvCacheTypeV}`);
 console.log(`[Startup]   mlock: ${useMlock}`);
 console.log(`[Startup]   prompt-cache: ${promptCache}`);
-console.log(`[Startup]   flash-attn: enabled`);
+console.log(`[Startup]   flash-attn: ${flashAttention ? 'enabled' : 'disabled'}`);
 
 // mlock — only enable if explicitly true AND we have enough free RAM
 // On 16GB machines with iGPU sharing memory, mlock can cause OOM
@@ -3077,12 +3179,9 @@ try {
   // Can't detect NUMA — skip the flag to be safe
 }
 
-// Vulkan capability already checked earlier, use those results
 cmdArgs.push('--n-gpu-layers', effectiveGpuLayers.toString());
-
-if (!vulkanOk && nGpuLayers > 0) {
-  console.log('[Startup] ⚠ llama-server binary has no Vulkan support — running CPU-only');
-  console.log('[Startup] ⚠ For Intel iGPU acceleration, use a Vulkan-compiled llama-server binary');
+if (autoGpuLayers && !gpuOffloadAvailable) {
+  console.log('[Startup] Auto GPU offload selected CPU mode because no supported device was reported.');
 }
 
 // On Linux: pin to physical cores only using taskset
@@ -3191,18 +3290,24 @@ if (os.platform() === 'linux' && proc.pid) {
         modelInfo.process = proc;
 
         let attempts = 0;
-        const maxAttempts = 60;
+        let readinessProbeInFlight = false;
+        const modelLoadTimeout = modelLoadTimeoutMs();
+        const maxAttempts = Math.ceil(modelLoadTimeout / 1000);
         const checkReady = setInterval(async () => {
+          if (modelInfo.status !== 'loading' || readinessProbeInFlight) return;
           if (++attempts > maxAttempts) {
             clearInterval(checkReady);
             clearTimeout(failsafeTimer);
             modelInfo.status = 'error';
-            console.error(`[Startup] Model '${targetModel.name}' failed to become ready after 60s`);
+            console.error(`[Startup] Model '${targetModel.name}' failed to become ready after ${maxAttempts}s`);
+            beginModelUnload(modelInfo, id, 'startup-load-timeout');
             return;
           }
+          readinessProbeInFlight = true;
           try {
-            const resp = await fetch(`http://127.0.0.1:${port}/v1/models`);
-            if (resp.ok) {
+            const resp = await fetchJsonWithTimeout(`http://127.0.0.1:${port}/v1/models`, { timeoutMs: 3000 });
+            if (modelInfo.status !== 'loading') return;
+            if (resp) {
               modelInfo.status = 'ready';
               modelInfo.lastUsedAtMs = Date.now();
               modelInfo.last_used_at = new Date(modelInfo.lastUsedAtMs).toISOString();
@@ -3211,14 +3316,19 @@ if (os.platform() === 'linux' && proc.pid) {
               scheduleIdleModelUnload(modelInfo);
               console.log(`[Startup] ✓ Model '${targetModel.name}' loaded and ready on port ${port}`);
             }
-          } catch (e) { }
+          } catch (e) {
+            // A timed-out or unavailable health probe is retried until the load deadline.
+          } finally {
+            readinessProbeInFlight = false;
+          }
         }, 1000);
 
         const failsafeTimer = setTimeout(() => {
           clearInterval(checkReady);
           modelInfo.status = 'error';
           console.error(`[Startup] Failsafe timeout hit for model ${targetModel.name}`);
-        }, 60000);
+          beginModelUnload(modelInfo, id, 'startup-load-timeout');
+        }, modelLoadTimeout);
         modelInfo.readyCheckInterval = checkReady;
         modelInfo.failsafeTimer = failsafeTimer;
 
@@ -3276,17 +3386,14 @@ app.get('/v1/models', async (req, res) => {
     const readyModels = Array.from(routerModels.values()).filter(m => m.status === 'ready');
 
     if (readyModels.length === 0) {
-      // No router models — try direct backend on multiple ports
+      // Probe backend ports only; never loop back into this gateway's own route.
       const mlxPort = parseInt(process.env.LUMINA_MLX_PORT || '8091');
-      const directPorts = [PRIMARY_PORT, mlxPort, 8091];
-      
+      const directPorts = getModelProbePorts({ primaryPort: PRIMARY_PORT, mlxPort });
+
       for (const port of directPorts) {
         try {
-          const resp = await fetch(`http://127.0.0.1:${port}/v1/models`, { timeout: 3000 });
-          if (resp.ok) {
-            const data = await resp.json();
-            return res.json(data);
-          }
+          const data = await fetchJsonWithTimeout(`http://127.0.0.1:${port}/v1/models`, { timeoutMs: 3_000 });
+          if (data !== null) return res.json(data);
         } catch { }
       }
 
@@ -3376,7 +3483,7 @@ function formatToolSystemPrompt(tools) {
 // Routes to first ready router model. If no router models loaded, falls back to
 // direct backend (MLX on LUMINA_MLX_PORT or llama-server).
 // Tool-call injection: if tools array is present, injects as system prompt, forces non-streaming.
-app.post('/v1/chat/completions', chatRateLimiter, validateChatRequest, inferenceLimiter, async (req, res) => {
+app.post('/v1/chat/completions', inferenceRateLimiter, validateChatRequest, inferenceLimiter, async (req, res) => {
   let releaseModelRequest = null;
   const backendController = new AbortController();
   const backendTimeout = setTimeout(() => backendController.abort(), 300_000);
@@ -3386,7 +3493,9 @@ app.post('/v1/chat/completions', chatRateLimiter, validateChatRequest, inference
     if (!res.writableEnded) backendController.abort();
   });
   try {
-    const readyModel = Array.from(routerModels.values()).find(m => m.status === 'ready');
+    const selection = selectReadyModel(Array.from(routerModels.values()), routingPolicy, nextModelIndex);
+    const readyModel = selection.model;
+    nextModelIndex = selection.nextCursor;
     if (!readyModel) {
       // No router models loaded — try direct backend (MLX on LUMINA_MLX_PORT, or llama-server on LUMINA_API_PORT)
       const mlxPort = parseInt(process.env.LUMINA_MLX_PORT || '8091');
@@ -3406,10 +3515,6 @@ app.post('/v1/chat/completions', chatRateLimiter, validateChatRequest, inference
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
-        const origin = req.headers.origin || '';
-        if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
-          res.setHeader('Access-Control-Allow-Origin', origin);
-        }
 
         try {
           // BUG-C5 FIX (no-model streaming path): No timeout meant a hung backend held
@@ -3516,10 +3621,6 @@ app.post('/v1/chat/completions', chatRateLimiter, validateChatRequest, inference
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
-      const origin = req.headers.origin || '';
-      if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
-      }
 
       try {
         // BUG-C5 FIX (ready-model streaming path): No timeout meant a hung backend held
@@ -3606,10 +3707,12 @@ app.post('/v1/chat/completions', chatRateLimiter, validateChatRequest, inference
   }
 });
 
-// Generic /v1/* proxy to first ready model
+// Generic /v1/* proxy uses the same priority and routing policy as chat completions.
 // MLX models: translates 'local' model name to full path for mlx_lm
-app.all(/^\/v1\/.*/, async (req, res) => {
-  const readyModel = Array.from(routerModels.values()).find(m => m.status === 'ready');
+app.all(/^\/v1\/.*/i, inferenceRateLimiter, inferenceLimiter, async (req, res) => {
+  const selection = selectReadyModel(Array.from(routerModels.values()), routingPolicy, nextModelIndex);
+  const readyModel = selection.model;
+  nextModelIndex = selection.nextCursor;
   if (!readyModel) {
     return res.status(502).json({ error: 'No models currently loaded. Port 8000 is inactive.' });
   }
@@ -3762,6 +3865,9 @@ server.on('error', (err) => {
 // Graceful shutdown: unloads all models, closes both servers
 process.on('SIGTERM', () => {
   console.log('[API Server] Shutting down...');
+  const tracingShutdown = shutdownTracing().catch(error => {
+    console.error(`[Tracing] Shutdown error: ${error.message}`);
+  });
   // Unload all models first
   for (const [id, modelInfo] of routerModels) {
     if (modelInfo.readyCheckInterval) clearInterval(modelInfo.readyCheckInterval);
@@ -3772,7 +3878,8 @@ process.on('SIGTERM', () => {
   }
   routerModels.clear();
   secondaryServer.close();
-  server.close(() => {
+  server.close(async () => {
+    await tracingShutdown;
     console.log('[API Server] Closed both ports');
     process.exit(0);
   });

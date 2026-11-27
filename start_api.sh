@@ -5,7 +5,7 @@
 # Usage: ./start_api.sh [--model path] [--port port] [--gpu vulkan|nvidia|mlx]
 # ==============================================================================
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 ROOT="$(pwd)"
 
 # Helper to read from config.json with fallback
@@ -65,7 +65,45 @@ resolve_thread_count() {
     fi
 }
 
+resolve_batch_size() {
+    local configured="$1"
+    if [[ "$configured" == "auto" || "$configured" == "AUTO" || "$configured" == "Auto" ]]; then
+        local detected
+        detected=$(python3 -c 'import psutil; m=psutil.virtual_memory().available/(1024**3); print(max(128,min(1024,int(m//2)*128)))' 2>/dev/null) || detected=256
+        if [[ "$detected" =~ ^[1-9][0-9]*$ ]]; then
+            echo "$detected"
+        else
+            echo 256
+        fi
+    elif [[ "$configured" =~ ^[1-9][0-9]*$ ]]; then
+        echo "$configured"
+    else
+        echo "Invalid batch size '$configured'; using 256" >&2
+        echo 256
+    fi
+}
+
+resolve_gpu_layer_count() {
+    local configured="$1"
+    if [[ "$configured" == "auto" || "$configured" == "AUTO" || "$configured" == "Auto" ]]; then
+        if [[ -x "$ROOT/bin/llama-server" ]] && \
+                "$ROOT/bin/llama-server" --list-devices 2>/dev/null | \
+                grep -Eiq '^[[:space:]]*([-*][[:space:]]*)?(CUDA|Vulkan|ROCm|HIP|SYCL|Metal|OpenCL)[[:alnum:]_-]*[[:space:]]*:'; then
+            echo 99
+        else
+            echo "No supported llama.cpp GPU device detected; using CPU layers" >&2
+            echo 0
+        fi
+    elif [[ "$configured" =~ ^(0|[1-9][0-9]*)$ ]]; then
+        echo "$configured"
+    else
+        echo "Invalid GPU layer count '$configured'; using 0" >&2
+        echo 0
+    fi
+}
+
 GPU="vulkan"
+
 
 # Auto-detect macOS for MLX backend
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -122,10 +160,16 @@ echo "Model: $MODEL"
 # Read all settings from config.json with defaults
 PORT="${OVERRIDE_PORT:-$(get_config api_port 8090)}"
 CTX_SIZE=$(get_config ctx_size 16384)
-N_GPU_LAYERS=$(get_config n_gpu_layers 15)
-BATCH_SIZE=$(get_config batch_size 256)
-UBATCH_SIZE=$(get_config ubatch_size 256)
+N_GPU_LAYERS="$(resolve_gpu_layer_count "$(get_config n_gpu_layers 15)")"
+BATCH_SIZE="$(resolve_batch_size "$(get_config batch_size 256)")"
+UBATCH_SIZE="$(resolve_batch_size "$(get_config ubatch_size 256)")"
+if (( UBATCH_SIZE > BATCH_SIZE )); then
+    UBATCH_SIZE="$BATCH_SIZE"
+fi
 FLASH_ATTN=$(get_config flash_attn true)
+if [[ "$N_GPU_LAYERS" == "0" ]]; then
+    FLASH_ATTN=false
+fi
 MIN_P=$(get_config min_p 0.05)
 TOP_K=$(get_config top_k 20)
 TOP_P=$(get_config top_p 0.9)
@@ -134,48 +178,48 @@ HTTP_THREADS=$(get_config http_threads 2)
 THREADS=$(resolve_thread_count "$(get_config threads 4)")
 THREADS_BATCH=$(resolve_thread_count "$(get_config threads_batch 4)")
 CONT_BATCHING=$(get_config cont_batching true)
-KV_CACHE_QUANT=$(get_config kv_cache_quant 'q4_0')
+
 USE_MLOCK=$(get_config use_mlock true)
 NO_MMAP=$(get_config no_mmap 'true')
 MOE_MODEL=$(get_config moe_model 'false')
 MOE_OVERRIDE=$(get_config moe_override_tensor '""')
-KV_QUANT=$(get_config kv_quant 'q4_0')
+
 KV_CACHE_TYPE_K=$(get_config kv_cache_type_k 'q4_0')
 KV_CACHE_TYPE_V=$(get_config kv_cache_type_v 'q4_0')
 
 
-# llama.cpp flags need --flag or nothing — convert boolean to on/off
+# Build optional flags as arrays to preserve argument boundaries from config.
 if [[ "$FLASH_ATTN" == "true" ]]; then
-    FLASH_ATTN_FLAG="--flash-attn on"
+    FLASH_ATTN_FLAGS=(--flash-attn on)
 else
-    FLASH_ATTN_FLAG="--flash-attn off"
+    FLASH_ATTN_FLAGS=(--flash-attn off)
 fi
 
-MLOCK_FLAG=""
+MLOCK_FLAGS=()
 if [[ "$USE_MLOCK" == "true" ]]; then
-    MLOCK_FLAG="--mlock"
+    MLOCK_FLAGS=(--mlock)
 fi
 
-# MoE offloading: if model is MoE, use per-tensor override or CPU fallback
-MOE_FLAGS=""
+# MoE offloading: if model is MoE, use per-tensor override or CPU fallback.
+MOE_FLAGS=()
 if [[ "$MOE_MODEL" == "true" ]]; then
-    if [[ -n "$MOE_OVERRIDE" && "$MOE_OVERRIDE" != "" ]]; then
-        MOE_FLAGS="-ot $MOE_OVERRIDE"
+    if [[ -n "$MOE_OVERRIDE" && "$MOE_OVERRIDE" != '""' ]]; then
+        MOE_FLAGS=(-ot "$MOE_OVERRIDE")
     else
-        MOE_FLAGS="--cpu-moe"
+        MOE_FLAGS=(--cpu-moe)
     fi
 fi
 
-NO_MMAP_FLAG=""
+NO_MMAP_FLAGS=()
 if [[ "$NO_MMAP" == "true" ]]; then
-    NO_MMAP_FLAG="--no-mmap"
+    NO_MMAP_FLAGS=(--no-mmap)
 fi
 
-KV_QUANT_FLAGS="--cache-type-k $KV_CACHE_TYPE_K --cache-type-v $KV_CACHE_TYPE_V"
+KV_QUANT_FLAGS=(--cache-type-k "$KV_CACHE_TYPE_K" --cache-type-v "$KV_CACHE_TYPE_V")
 
-CONT_BATCH_FLAGS=""
+CONT_BATCH_FLAGS=()
 if [[ "$CONT_BATCHING" == "true" ]]; then
-    CONT_BATCH_FLAGS="--cont-batching"
+    CONT_BATCH_FLAGS=(--cont-batching)
 fi
 
 echo "Starting Lumina Edge API..."
@@ -192,13 +236,20 @@ API_PORT_SECONDARY="${LUMINA_API_PORT_SECONDARY:-$(get_config api_port_secondary
 
 cleanup() {
     if [[ -f "$PID_FILE" ]]; then
-        while read pid cmd; do
+        while IFS=' ' read -r pid _; do
             kill "$pid" 2>/dev/null || true
         done < "$PID_FILE"
         rm -f "$PID_FILE"
     fi
 }
 trap cleanup EXIT INT TERM
+
+# Inherit Linux process-local environment and file-descriptor limits in the
+# backend launched below. Host-level changes remain behind explicit opt-ins.
+if [[ "$(uname -s)" == "Linux" && -r "$ROOT/scripts/linux_prelaunch.sh" ]]; then
+    # shellcheck source=scripts/linux_prelaunch.sh
+    source "$ROOT/scripts/linux_prelaunch.sh"
+fi
 
 # -- 1. Start backend (MLX on macOS, llama-server on Linux) --
 if [[ "$GPU" == "mlx" ]]; then
@@ -212,7 +263,7 @@ if [[ "$GPU" == "mlx" ]]; then
     echo "  PID: $BACKEND_PID"
 
     echo "  Waiting for MLX backend to be ready..."
-    for i in $(seq 1 60); do
+    for ((attempt = 0; attempt < 60; attempt++)); do
         health_response=$(curl -s --max-time 3 "http://127.0.0.1:$PORT/health" 2>/dev/null)
         if echo "$health_response" | grep -q '"status":"ok"'; then
             echo "  ✓ MLX backend ready on port $PORT"
@@ -232,39 +283,41 @@ else
     BACKEND_LOG="$RUNDIR/llama_server.log"
     echo ""
     echo "  Starting llama-server in background (log: $BACKEND_LOG)..."
-    ./bin/llama-server -m "$MODEL" \
-        --port "$PORT" \
-        --host 127.0.0.1 \
-        --ctx-size "$CTX_SIZE" \
-        --n-gpu-layers "$N_GPU_LAYERS" \
-        --batch-size "$BATCH_SIZE" \
-        --ubatch-size "$UBATCH_SIZE" \
-        --threads "$THREADS" \
-        --threads-batch "$THREADS_BATCH" \
-        $FLASH_ATTN_FLAG \
-        --min-p "$MIN_P" \
-        --top-k "$TOP_K" \
-        --top-p "$TOP_P" \
-        --repeat-penalty "$REPEAT_PENALTY" \
-        --threads-http "$HTTP_THREADS" \
-        --jinja \
-        $CONT_BATCH_FLAGS \
-        $MLOCK_FLAG \
-        $NO_MMAP_FLAG \
-        $MOE_FLAGS \
-        $KV_QUANT_FLAGS \
-        >> "$BACKEND_LOG" 2>&1 &
+    LLAMA_ARGS=(
+        -m "$MODEL"
+        --port "$PORT"
+        --host 127.0.0.1
+        --ctx-size "$CTX_SIZE"
+        --n-gpu-layers "$N_GPU_LAYERS"
+        --batch-size "$BATCH_SIZE"
+        --ubatch-size "$UBATCH_SIZE"
+        --threads "$THREADS"
+        --threads-batch "$THREADS_BATCH"
+        "${FLASH_ATTN_FLAGS[@]}"
+        --min-p "$MIN_P"
+        --top-k "$TOP_K"
+        --top-p "$TOP_P"
+        --repeat-penalty "$REPEAT_PENALTY"
+        --threads-http "$HTTP_THREADS"
+        --jinja
+        "${CONT_BATCH_FLAGS[@]}"
+        "${MLOCK_FLAGS[@]}"
+        "${NO_MMAP_FLAGS[@]}"
+        "${MOE_FLAGS[@]}"
+        "${KV_QUANT_FLAGS[@]}"
+    )
+    ./bin/llama-server "${LLAMA_ARGS[@]}" >> "$BACKEND_LOG" 2>&1 &
     BACKEND_PID=$!
     echo "$BACKEND_PID llama_server" >> "$PID_FILE"
     echo "  PID: $BACKEND_PID"
 
     echo "  Waiting for llama-server to be ready..."
-    for i in $(seq 1 30); do
+    for ((attempt = 0; attempt < 30; attempt++)); do
         if curl -s --max-time 2 "http://127.0.0.1:$PORT/v1/models" 2>/dev/null | grep -q 'model'; then
             echo "  ✓ Backend ready on port $PORT"
             break
         fi
-        if ! kill -0 $BACKEND_PID 2>/dev/null; then
+        if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
             echo "  ✗ Backend process exited unexpectedly"
             tail -20 "$BACKEND_LOG" 2>/dev/null
             exit 1
@@ -277,7 +330,7 @@ fi
 echo "  Starting Lumina Core API gateway..."
 UI_DIR="$ROOT/ui"
 API_LOG="$RUNDIR/api_server.log"
-cd "$UI_DIR"
+cd "$UI_DIR" || exit 1
 
 LUMINA_API_PORT="$PORT" \
 LUMINA_MLX_PORT="${OVERRIDE_MLX_PORT:-$(get_config backend_port 8091)}" \
@@ -288,7 +341,7 @@ echo "$API_PID api_server" >> "$PID_FILE"
 echo "  API server PID: $API_PID"
 
 echo "  Waiting for API server..."
-for i in $(seq 1 30); do
+for ((attempt = 0; attempt < 30; attempt++)); do
     if curl -s --max-time 2 "http://127.0.0.1:$API_PORT_SECONDARY/api/health" 2>/dev/null | grep -q 'ok'; then
         echo "  ✓ API gateway ready"
         break
@@ -297,7 +350,7 @@ for i in $(seq 1 30); do
         echo "  ✓ API gateway ready"
         break
     fi
-    if ! kill -0 $API_PID 2>/dev/null; then
+    if ! kill -0 "$API_PID" 2>/dev/null; then
         echo "  ✗ API server exited unexpectedly"
         tail -20 "$API_LOG" 2>/dev/null
         exit 1
@@ -314,7 +367,7 @@ echo "$UI_PID vite" >> "$PID_FILE"
 echo "  Vite PID: $UI_PID"
 
 echo "  Waiting for Vite dev server..."
-for i in $(seq 1 20); do
+for ((attempt = 0; attempt < 20; attempt++)); do
     if curl -s --max-time 2 "http://localhost:$UI_PORT/" 2>/dev/null | grep -q '<html'; then
         echo "  ✓ Lumina Core UI ready at http://localhost:$UI_PORT"
         break
@@ -322,7 +375,7 @@ for i in $(seq 1 20); do
     sleep 1
 done
 
-cd "$ROOT"
+cd "$ROOT" || exit 1
 
 echo ""
 echo "============================================================"

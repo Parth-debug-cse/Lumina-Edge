@@ -9,6 +9,7 @@ import sys
 import json
 import platform
 import subprocess
+import tempfile
 from importlib import import_module
 from typing import Any, Dict
 
@@ -592,17 +593,38 @@ class SystemOptimizer:
                 with open(config_path, 'r') as f:
                     existing_config = json.load(f)
                     
-            # Update with optimized values
+            if not isinstance(existing_config, dict):
+                raise ValueError("config.json must contain a JSON object")
+
+            # Add recommendations only for unset keys; preserve every user value.
             for key, value in self.optimized_config.items():
-                old = existing_config.get(key, '<unset>')
-                existing_config[key] = value
-                print(f'[Optimizer]  {key}: {old} → {value}')
-                    
-            # Save updated config
-            with open(config_path, 'w') as f:
-                json.dump(existing_config, f, indent=2)
-                
-            return True
+                if key not in existing_config:
+                    existing_config[key] = value
+                    print(f'[Optimizer]  {key}: <unset> → {value}')
+                else:
+                    print(f'[Optimizer]  {key}: keeping user value {existing_config[key]}')
+
+            config_dir = os.path.dirname(os.path.abspath(config_path))
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode='w', encoding='utf-8', dir=config_dir,
+                    prefix=f'.{os.path.basename(config_path)}.', suffix='.tmp',
+                    delete=False,
+                ) as temp_file:
+                    temp_path = temp_file.name
+                    json.dump(existing_config, temp_file, indent=2)
+                    temp_file.write('\n')
+                    temp_file.flush()
+                    os.fsync(temp_file.fileno())
+
+                if os.path.exists(config_path):
+                    os.chmod(temp_path, os.stat(config_path).st_mode & 0o777)
+                os.replace(temp_path, config_path)
+                return True
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    os.unlink(temp_path)
         except Exception as e:
             print(f"Error saving config: {e}")
             return False
