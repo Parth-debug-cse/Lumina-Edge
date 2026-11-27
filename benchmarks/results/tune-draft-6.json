@@ -1,0 +1,345 @@
+{
+  "schema_version": 1,
+  "benchmark": "mlx_target_vs_speculative_draft",
+  "timestamp_utc": "2026-11-27T11:49:32.344874+00:00",
+  "measurement_scope": "single Apple Silicon machine; results are hardware- and model-specific",
+  "hardware": {
+    "chip": "Apple M5",
+    "machine": "arm64",
+    "os": "macOS-27.2.1-arm64-arm-64bit",
+    "physical_cpu_count": 10,
+    "logical_cpu_count": 10,
+    "total_ram_bytes": 17179869184,
+    "available_ram_before_load_bytes": 5748473856
+  },
+  "software": {
+    "python": "3.12.16",
+    "mlx": "0.32.5",
+    "mlx_lm": "0.32.2",
+    "repository_revision": "da57b1956bc347637aa2324b0826973de6c22ac6"
+  },
+  "models": {
+    "target": {
+      "name": "models--mlx-community--Qwen2.5-1.5B-Instruct-4bit",
+      "revision": "8b403126fc14f14cfc99bb4cfa72ecbc129ea677"
+    },
+    "draft": {
+      "name": "models--mlx-community--Qwen2.5-0.5B-Instruct-4bit",
+      "revision": "a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3"
+    },
+    "num_draft_tokens": 6,
+    "target_load_seconds": 0.2514300420298241,
+    "draft_load_seconds": 0.2856459589675069
+  },
+  "conditions": {
+    "configured_baseline": "Project MLX config with its effective KV-cache options retained.",
+    "matched_baseline": "Same greedy generation settings with explicit KV-cache options removed.",
+    "speculative": "Matched baseline plus the configured local draft model and draft-token count.",
+    "configured_baseline_effective_kv_options": {
+      "kv_bits": 4
+    }
+  },
+  "workload": {
+    "prompt": "Explain in one paragraph how speculative decoding can reduce language-model inference latency.",
+    "max_tokens": 128,
+    "temperature": 0.0,
+    "warmup_rounds_per_mode": 1,
+    "iterations_per_mode": 5,
+    "order": "alternating forward/reverse mode order per round"
+  },
+  "memory": {
+    "before_model_load": {
+      "process_rss_bytes": 255361024,
+      "metal_active_bytes": 8,
+      "metal_peak_bytes": 8
+    },
+    "after_target_load": {
+      "process_rss_bytes": 1289568256,
+      "metal_active_bytes": 871558152,
+      "metal_peak_bytes": 871558152
+    },
+    "after_draft_load": {
+      "process_rss_bytes": 1629372416,
+      "metal_active_bytes": 1152719624,
+      "metal_peak_bytes": 1152719624
+    },
+    "note": "Per-trial MLX peak includes resident target and draft weights in all modes; RSS also includes the Python/MLX runtime."
+  },
+  "warmup_results_excluded_from_statistics": {
+    "configured_baseline": [
+      {
+        "output_tokens": 123,
+        "tokens_per_second": 112.52391133055619
+      }
+    ],
+    "matched_baseline": [
+      {
+        "output_tokens": 123,
+        "tokens_per_second": 110.9212783125209
+      }
+    ],
+    "speculative": [
+      {
+        "output_tokens": 123,
+        "tokens_per_second": 62.21553306887797
+      }
+    ]
+  },
+  "results": {
+    "configured_baseline": {
+      "iterations": 5,
+      "mean_tokens_per_second": 115.33416788980449,
+      "median_tokens_per_second": 115.6015309265267,
+      "tokens_per_second_ci95_mean": {
+        "low": 113.89215331807813,
+        "high": 116.77618246153085
+      },
+      "mean_generation_seconds": 1.066553008405026,
+      "generation_latency_p50_seconds": 1.0639997499529272,
+      "generation_latency_p95_seconds": 1.0790399248246103,
+      "generation_latency_p99_seconds": 1.0797290513850748,
+      "time_to_first_token_p50_seconds": 0.026766166964080185,
+      "mean_output_tokens": 123,
+      "accepted_draft_tokens": 0,
+      "draft_acceptance_rate": 0.0,
+      "trials": [
+        {
+          "mode": "configured_baseline",
+          "output_tokens": 123,
+          "generation_seconds": 1.0755942920222878,
+          "tokens_per_second": 114.35538558757177,
+          "time_to_first_token_seconds": 0.03129479201743379,
+          "accepted_draft_tokens": 0,
+          "process_rss_bytes": 1639284736,
+          "metal_active_bytes": 1153030920,
+          "metal_peak_bytes": 1224563832
+        },
+        {
+          "mode": "configured_baseline",
+          "output_tokens": 123,
+          "generation_seconds": 1.0570923330378719,
+          "tokens_per_second": 116.35691240567662,
+          "time_to_first_token_seconds": 0.026326875027734786,
+          "accepted_draft_tokens": 0,
+          "process_rss_bytes": 1639432192,
+          "metal_active_bytes": 1153030920,
+          "metal_peak_bytes": 1247501468
+        },
+        {
+          "mode": "configured_baseline",
+          "output_tokens": 123,
+          "generation_seconds": 1.0561773339868523,
+          "tokens_per_second": 116.45771599329848,
+          "time_to_first_token_seconds": 0.026766166964080185,
+          "accepted_draft_tokens": 0,
+          "process_rss_bytes": 1639432192,
+          "metal_active_bytes": 1153030920,
+          "metal_peak_bytes": 1247501468
+        },
+        {
+          "mode": "configured_baseline",
+          "output_tokens": 123,
+          "generation_seconds": 1.0639997499529272,
+          "tokens_per_second": 115.6015309265267,
+          "time_to_first_token_seconds": 0.026225749985314906,
+          "accepted_draft_tokens": 0,
+          "process_rss_bytes": 1639497728,
+          "metal_active_bytes": 1153030920,
+          "metal_peak_bytes": 1247501468
+        },
+        {
+          "mode": "configured_baseline",
+          "output_tokens": 123,
+          "generation_seconds": 1.079901333025191,
+          "tokens_per_second": 113.89929453594884,
+          "time_to_first_token_seconds": 0.026839541038498282,
+          "accepted_draft_tokens": 0,
+          "process_rss_bytes": 1639514112,
+          "metal_active_bytes": 1153030920,
+          "metal_peak_bytes": 1247501468
+        }
+      ]
+    },
+    "matched_baseline": {
+      "iterations": 5,
+      "mean_tokens_per_second": 115.73023788909775,
+      "median_tokens_per_second": 115.81039883573033,
+      "tokens_per_second_ci95_mean": {
+        "low": 114.57352394573975,
+        "high": 116.88695183245575
+      },
+      "mean_generation_seconds": 1.0628717247978785,
+      "generation_latency_p50_seconds": 1.0620807909872383,
+      "generation_latency_p95_seconds": 1.0736023500212468,
+      "generation_latency_p99_seconds": 1.0749695700244046,
+      "time_to_first_token_p50_seconds": 0.02675066702067852,
+      "mean_output_tokens": 123,
+      "accepted_draft_tokens": 0,
+      "draft_acceptance_rate": 0.0,
+      "trials": [
+        {
+          "mode": "matched_baseline",
+          "output_tokens": 123,
+          "generation_seconds": 1.0753113750251941,
+          "tokens_per_second": 114.38547276328975,
+          "time_to_first_token_seconds": 0.026314084010664374,
+          "accepted_draft_tokens": 0,
+          "process_rss_bytes": 1639268352,
+          "metal_active_bytes": 1153030920,
+          "metal_peak_bytes": 1247501468
+        },
+        {
+          "mode": "matched_baseline",
+          "output_tokens": 123,
+          "generation_seconds": 1.0620807909872383,
+          "tokens_per_second": 115.81039883573033,
+          "time_to_first_token_seconds": 0.02777604095172137,
+          "accepted_draft_tokens": 0,
+          "process_rss_bytes": 1639448576,
+          "metal_active_bytes": 1153030920,
+          "metal_peak_bytes": 1247485084
+        },
+        {
+          "mode": "matched_baseline",
+          "output_tokens": 123,
+          "generation_seconds": 1.0538079169928096,
+          "tokens_per_second": 116.71956342005662,
+          "time_to_first_token_seconds": 0.026259167003445327,
+          "accepted_draft_tokens": 0,
+          "process_rss_bytes": 1639432192,
+          "metal_active_bytes": 1153030920,
+          "metal_peak_bytes": 1247501468
+        },
+        {
+          "mode": "matched_baseline",
+          "output_tokens": 123,
+          "generation_seconds": 1.0563922909786925,
+          "tokens_per_second": 116.4340189249648,
+          "time_to_first_token_seconds": 0.028226041002199054,
+          "accepted_draft_tokens": 0,
+          "process_rss_bytes": 1639514112,
+          "metal_active_bytes": 1153030920,
+          "metal_peak_bytes": 1247485084
+        },
+        {
+          "mode": "matched_baseline",
+          "output_tokens": 123,
+          "generation_seconds": 1.0667662500054576,
+          "tokens_per_second": 115.30173550144724,
+          "time_to_first_token_seconds": 0.02675066702067852,
+          "accepted_draft_tokens": 0,
+          "process_rss_bytes": 1639464960,
+          "metal_active_bytes": 1153030920,
+          "metal_peak_bytes": 1247501468
+        }
+      ]
+    },
+    "speculative": {
+      "iterations": 5,
+      "mean_tokens_per_second": 87.69664921263609,
+      "median_tokens_per_second": 87.81170550513906,
+      "tokens_per_second_ci95_mean": {
+        "low": 87.31975367551011,
+        "high": 88.07354474976206
+      },
+      "mean_generation_seconds": 1.4025756002170966,
+      "generation_latency_p50_seconds": 1.4007244170061313,
+      "generation_latency_p95_seconds": 1.4082130498136394,
+      "generation_latency_p99_seconds": 1.408463776379358,
+      "time_to_first_token_p50_seconds": 0.055025999958161265,
+      "mean_output_tokens": 123,
+      "accepted_draft_tokens": 385,
+      "draft_acceptance_rate": 0.6260162601626016,
+      "trials": [
+        {
+          "mode": "speculative",
+          "output_tokens": 123,
+          "generation_seconds": 1.4069594169850461,
+          "tokens_per_second": 87.42256422973095,
+          "time_to_first_token_seconds": 0.055025999958161265,
+          "accepted_draft_tokens": 77,
+          "process_rss_bytes": 1639219200,
+          "metal_active_bytes": 1154849548,
+          "metal_peak_bytes": 1247124796
+        },
+        {
+          "mode": "speculative",
+          "output_tokens": 123,
+          "generation_seconds": 1.4085264580207877,
+          "tokens_per_second": 87.32530319156044,
+          "time_to_first_token_seconds": 0.05715345800854266,
+          "accepted_draft_tokens": 77,
+          "process_rss_bytes": 1639366656,
+          "metal_active_bytes": 1154849548,
+          "metal_peak_bytes": 1246420264
+        },
+        {
+          "mode": "speculative",
+          "output_tokens": 123,
+          "generation_seconds": 1.3988052920321934,
+          "tokens_per_second": 87.93218091225891,
+          "time_to_first_token_seconds": 0.054775333032011986,
+          "accepted_draft_tokens": 77,
+          "process_rss_bytes": 1639383040,
+          "metal_active_bytes": 1154849548,
+          "metal_peak_bytes": 1247354172
+        },
+        {
+          "mode": "speculative",
+          "output_tokens": 123,
+          "generation_seconds": 1.397862417041324,
+          "tokens_per_second": 87.9914922244911,
+          "time_to_first_token_seconds": 0.05600170901743695,
+          "accepted_draft_tokens": 77,
+          "process_rss_bytes": 1639432192,
+          "metal_active_bytes": 1154849548,
+          "metal_peak_bytes": 1246944572
+        },
+        {
+          "mode": "speculative",
+          "output_tokens": 123,
+          "generation_seconds": 1.4007244170061313,
+          "tokens_per_second": 87.81170550513906,
+          "time_to_first_token_seconds": 0.05486795800970867,
+          "accepted_draft_tokens": 77,
+          "process_rss_bytes": 1639432192,
+          "metal_active_bytes": 1154849548,
+          "metal_peak_bytes": 1246682408
+        }
+      ]
+    }
+  },
+  "comparison": {
+    "speculative_vs_configured_baseline": {
+      "paired_iterations": 5,
+      "mean_paired_speedup": 0.7604308935383324,
+      "paired_speedup_ci95": {
+        "low": 0.7505110997236724,
+        "high": 0.7703506873529924
+      },
+      "mean_paired_gain_percent": -23.95691064616676,
+      "paired_gain_percent_ci95": {
+        "low": -24.948890027632764,
+        "high": -22.96493126470076
+      }
+    },
+    "speculative_vs_matched_baseline": {
+      "paired_iterations": 5,
+      "mean_paired_speedup": 0.7577963107101471,
+      "paired_speedup_ci95": {
+        "low": 0.7517629369467127,
+        "high": 0.7638296844735815
+      },
+      "mean_paired_gain_percent": -24.22036892898529,
+      "paired_gain_percent_ci95": {
+        "low": -24.82370630532873,
+        "high": -23.617031552641855
+      }
+    },
+    "output_exact_match_fraction_vs_configured_baseline": {
+      "configured_baseline": 1.0,
+      "matched_baseline": 1.0,
+      "speculative": 1.0
+    }
+  }
+}
