@@ -21,20 +21,26 @@ import platform
 
 # Try to import shard-loader module
 try:
+    import importlib.machinery
     import importlib.util
-    spec = importlib.util.spec_from_file_location(
+    loader = importlib.machinery.SourceFileLoader(
         "shard_loader",
-        Path(__file__).parent / "shard-loader.py"
+        str(Path(__file__).parent / "shard-loader.py")
     )
+    spec = importlib.util.spec_from_loader("shard_loader", loader)
+    if spec is None:
+        raise ImportError("Unable to create an import spec for shard-loader.py")
     shard_loader_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(shard_loader_module)
-    SHARD_LOADER_AVAILABLE = True
+    loader.exec_module(shard_loader_module)
+    shard_loader_available = True
     ShardedModelInfo = shard_loader_module.ShardedModelInfo
     ShardedModelConverter = shard_loader_module.ShardedModelConverter
 except Exception:
-    SHARD_LOADER_AVAILABLE = False
+    shard_loader_available = False
     ShardedModelInfo = None
     ShardedModelConverter = None
+
+SHARD_LOADER_AVAILABLE = shard_loader_available
 
 # Setup logging
 logging.basicConfig(
@@ -208,7 +214,7 @@ def detect_model_format(file_path: str) -> Tuple[str, bool]:
             return ('mlx', True)
 
         # Check for sharded models
-        if SHARD_LOADER_AVAILABLE:
+        if SHARD_LOADER_AVAILABLE and ShardedModelInfo is not None:
             try:
                 info = ShardedModelInfo(file_path)
                 if info.is_sharded:
@@ -241,7 +247,7 @@ def detect_model_format(file_path: str) -> Tuple[str, bool]:
         return ('npz', True)  # MLX format
     else:
         # Try to detect sharded model by checking parent directory
-        if SHARD_LOADER_AVAILABLE:
+        if SHARD_LOADER_AVAILABLE and ShardedModelInfo is not None:
             try:
                 info = ShardedModelInfo(path.parent)
                 if info.is_sharded:
@@ -308,7 +314,7 @@ def validate_mlx(mlx_path: Path) -> bool:
 # Streaming Subprocess Helpers
 # ==============================================================================
 
-def run_with_streaming(cmd: list, progress: ProgressReporter, 
+def run_with_streaming(cmd: list[str], progress: ProgressReporter,
                        start_pct: int = 10, end_pct: int = 90) -> Tuple[bool, str]:
     """Run a subprocess with real-time output streaming and progress updates."""
     logger.info(f"Running: {' '.join(str(c) for c in cmd[:5])}...")
@@ -326,6 +332,11 @@ def run_with_streaming(cmd: list, progress: ProgressReporter,
         output_lines = []
         line_count = 0
         
+        if process.stdout is None:
+            process.kill()
+            process.wait()
+            raise RuntimeError("Subprocess stdout pipe was not created")
+
         for line in iter(process.stdout.readline, ''):
             line = line.strip()
             if line:
@@ -502,6 +513,23 @@ def check_mlx_dependencies() -> bool:
         return False
 
 
+def _quantize_mlx_weights(input_path: Path, output_path: Path, bits: int) -> None:
+    """Quantize an MLX-loadable model and save its weights as safetensors."""
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+    from mlx_lm.utils import load_model, quantize_model as mlx_quantize
+
+    model_dir = input_path if input_path.is_dir() else input_path.parent
+    model, config = load_model(model_dir)
+    model, config = mlx_quantize(model, config, group_size=64, bits=bits)
+    weights = dict(tree_flatten(model.parameters()))
+    metadata = {
+        "format": "mlx",
+        "quantization": json.dumps(config.get("quantization", {}), sort_keys=True),
+    }
+    mx.save_safetensors(str(output_path), weights, metadata=metadata)
+
+
 def convert_with_mlx(
     input_path: Path,
     output_path: Path,
@@ -517,8 +545,6 @@ def convert_with_mlx(
         return False
     
     try:
-        from mlx_lm.utils import quantize_model as mlx_quantize
-        
         # Check input format
         fmt, valid = detect_model_format(str(input_path))
         if not valid:
@@ -554,7 +580,7 @@ def convert_with_mlx(
         }
         bits = quant_map.get(quantization, 4)
         
-        mlx_quantize(str(input_path), str(output_path), q_bits=bits)
+        _quantize_mlx_weights(input_path, output_path, bits)
         
         progress.step(f"✓ Quantized to {bits}-bit", 100)
         return validate_mlx(output_path)
@@ -575,11 +601,9 @@ def quantize_with_mlx(
         return False
     
     try:
-        from mlx_lm.utils import quantize_model as mlx_quantize
-        
         progress.step(f"Quantizing to {bits}-bit with MLX...", 10)
         
-        mlx_quantize(str(input_path), str(output_path), q_bits=bits)
+        _quantize_mlx_weights(input_path, output_path, bits)
         
         progress.step("✓ Quantization complete", 100)
         return validate_mlx(output_path)
@@ -598,7 +622,10 @@ def merge_shards_to_temp(
     progress: ProgressReporter
 ) -> Optional[Path]:
     """Merge sharded model into a temporary directory for conversion."""
-    if not SHARD_LOADER_AVAILABLE:
+    if (
+        not SHARD_LOADER_AVAILABLE
+        or ShardedModelConverter is None
+    ):
         logger.error("Shard loader not available")
         return None
     
@@ -895,7 +922,11 @@ Examples:
         return 0 if success else 1
     
     elif args.command == 'shards':
-        if not SHARD_LOADER_AVAILABLE:
+        if (
+            not SHARD_LOADER_AVAILABLE
+            or ShardedModelInfo is None
+            or ShardedModelConverter is None
+        ):
             logger.error("Shard loader not available")
             return 1
         

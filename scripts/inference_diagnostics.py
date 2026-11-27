@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import time
+import importlib
 import argparse
 import platform
 import subprocess
@@ -227,8 +228,8 @@ def _diagnose_windows():
     findings = []
 
     try:
-        import wmi
-        c = wmi.WMI()
+        wmi_module = importlib.import_module("wmi")
+        c = getattr(wmi_module, "WMI")()
         processor = c.Win32_Processor()[0]
         findings.append({"check": "cpu", "model": processor.Name, "cores": processor.NumberOfCores})
     except Exception:
@@ -348,7 +349,7 @@ if __name__ == '__main__':
         print(f"   Prompt: {args.prompt[:60]}...")
         print(f"   Max tokens: {args.max_tokens}, Runs: {args.runs}\n")
 
-        result = profile_inference(args.port, args.prompt, args.max_tokens, runs=args.runs)
+        result = profile_inference(args.port, args.prompt, args.max_tokens, num_runs=args.runs)
         print(f"\n📊 Results:")
         print(json.dumps(result, indent=2))
 

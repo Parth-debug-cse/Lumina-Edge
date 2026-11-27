@@ -53,7 +53,10 @@ def get_memory_stats() -> int:
                         return int(line.split()[1]) // 1024
         elif system == 'windows':
             import ctypes
-            kernel32 = ctypes.windll.kernel32
+            windll = getattr(ctypes, 'windll', None)
+            if windll is None:
+                return 0
+            kernel32 = windll.kernel32
             c_ulong = ctypes.c_ulong
             class MemoryStatus(ctypes.Structure):
                 _fields_ = [

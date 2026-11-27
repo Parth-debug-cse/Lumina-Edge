@@ -1,0 +1,10 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "exclude": [
+    "**/.venv",
+    "**/node_modules",
+    "**/dist",
+    "**/__pycache__"
+  ]
+}

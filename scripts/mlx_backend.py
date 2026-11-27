@@ -13,6 +13,7 @@ import subprocess
 import platform
 import gc
 import math
+import inspect
 
 # ==============================================================================
 # PRE-IMPORT SETUP: Metal env vars and memory limit (must be before mlx import)
@@ -91,14 +92,17 @@ if _explicit_memory_limit is not None:
 
 if _memory_limits:
     _memory_limit = min(_memory_limits)
-    if hasattr(mx.metal, 'set_memory_limit'):
+    _memory_limit_setter = getattr(mx, 'set_memory_limit', None)
+    if not callable(_memory_limit_setter):
+        _memory_limit_setter = getattr(getattr(mx, 'metal', None), 'set_memory_limit', None)
+    if callable(_memory_limit_setter):
         try:
-            mx.metal.set_memory_limit(_memory_limit)
+            _memory_limit_setter(_memory_limit)
             print(f'[MLX] Metal memory limit set to {_memory_limit / (1024**3):.2f} GiB', flush=True)
         except Exception as exc:
             print(f'[MLX] Failed to set Metal memory limit: {exc}', flush=True)
     else:
-        print('[MLX] This MLX version does not expose mx.metal.set_memory_limit', flush=True)
+        print('[MLX] This MLX version does not expose a Metal memory-limit API', flush=True)
 
 # Module-level flags for model load state (used by HTTP handlers)
 MODEL_LOADED = False
@@ -130,17 +134,18 @@ def _set_offline_env(model_path=None):
         os.environ['TRANSFORMERS_OFFLINE'] = '1'
 
 
+def _supports_speculative_generation(parameters):
+    has_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+    return 'draft_model' in parameters and ('num_draft_tokens' in parameters or has_kwargs)
+
+
 # Detect API support at module level — KV quantization and max_kv_size parameter
 try:
-    import inspect as _inspect
-    _gen_sig = _inspect.signature(mlx_lm.stream_generate)
+    _gen_sig = inspect.signature(mlx_lm.stream_generate)
     _supports_kv_asym = 'key_bits' in _gen_sig.parameters
     _supports_kv_sym = 'kv_bits' in _gen_sig.parameters
     _supports_max_kv = 'max_kv_size' in _gen_sig.parameters
-    _supports_draft_model = (
-        'draft_model' in _gen_sig.parameters
-        and 'num_draft_tokens' in _gen_sig.parameters
-    )
+    _supports_draft_model = _supports_speculative_generation(_gen_sig.parameters)
     if _supports_kv_asym:
         print('[MLX] Asymmetric KV quantization supported: K=8bit, V=4bit', flush=True)
     elif _supports_kv_sym:
@@ -234,6 +239,15 @@ def _tokenizers_compatible(target_tokenizer, draft_tokenizer):
     )
 
 
+def _load_mlx_model_and_tokenizer(model_path, adapter_path=None):
+    """Load an MLX model without requesting the optional config return value."""
+    if adapter_path is None:
+        loaded = mlx_lm.load(model_path)
+    else:
+        loaded = mlx_lm.load(model_path, adapter_path=adapter_path)
+    return loaded[0], loaded[1]
+
+
 def _load_speculative_draft(config, target_tokenizer):
     """Load an explicitly configured, tokenizer-compatible local draft model."""
     settings = config.get('mlx_speculative_decoding', {})
@@ -260,7 +274,7 @@ def _load_speculative_draft(config, target_tokenizer):
         draft_tokens = int(settings.get('num_draft_tokens', 3))
         if not 1 <= draft_tokens <= 16:
             raise ValueError('num_draft_tokens must be between 1 and 16')
-        draft_model, draft_tokenizer = mlx_lm.load(draft_path)
+        draft_model, draft_tokenizer = _load_mlx_model_and_tokenizer(draft_path)
         if not _tokenizers_compatible(target_tokenizer, draft_tokenizer):
             print('[MLX] Draft tokenizer vocabulary/special-token IDs do not match; using normal generation', flush=True)
             return None
@@ -331,17 +345,53 @@ def get_mlx_generation_kwargs(config, prompt=None, override_temp=None, override_
     if _supports_sampler:
         try:
             from mlx_lm.sample_utils import make_sampler
-            sampler = make_sampler(
-                temperature=temperature,
-                top_p=top_p,
-                min_p=min_p if min_p > 0 else None,
-                repetition_penalty=repetition_penalty if repetition_penalty != 1.0 else None,
-                repetition_context_size=repetition_context_size if repetition_context_size != 20 else None,
+            sampler_parameters = inspect.signature(make_sampler).parameters
+            accepts_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in sampler_parameters.values()
             )
-            kwargs['sampler'] = sampler
+            sampler_kwargs = {}
+            if 'temperature' in sampler_parameters:
+                sampler_kwargs['temperature'] = temperature
+            elif 'temp' in sampler_parameters:
+                sampler_kwargs['temp'] = temperature
+            elif accepts_kwargs:
+                sampler_kwargs['temperature'] = temperature
+            for name, value in (('top_p', top_p), ('min_p', min_p)):
+                if name in sampler_parameters or accepts_kwargs:
+                    sampler_kwargs[name] = value
+            if repetition_penalty != 1.0:
+                for name, value in (
+                    ('repetition_penalty', repetition_penalty),
+                    ('repetition_context_size', repetition_context_size),
+                ):
+                    if name in sampler_parameters:
+                        sampler_kwargs[name] = value
+
+            kwargs['sampler'] = make_sampler(**sampler_kwargs)
+
+            if repetition_penalty != 1.0 and 'repetition_penalty' not in sampler_kwargs:
+                try:
+                    from mlx_lm.sample_utils import make_logits_processors
+                    processor_parameters = inspect.signature(make_logits_processors).parameters
+                    processor_kwargs = {}
+                    if 'repetition_penalty' in processor_parameters:
+                        processor_kwargs['repetition_penalty'] = repetition_penalty
+                    if 'repetition_context_size' in processor_parameters:
+                        processor_kwargs['repetition_context_size'] = repetition_context_size
+                    if processor_kwargs:
+                        processors = make_logits_processors(**processor_kwargs)
+                        stream_parameters = inspect.signature(mlx_lm.stream_generate).parameters
+                        stream_accepts_kwargs = any(
+                            parameter.kind == inspect.Parameter.VAR_KEYWORD
+                            for parameter in stream_parameters.values()
+                        )
+                        if processors and ('logits_processors' in stream_parameters or stream_accepts_kwargs):
+                            kwargs['logits_processors'] = processors
+                except (ImportError, TypeError, ValueError) as exc:
+                    print(f'[MLX] Repetition penalty is unavailable in this mlx_lm version: {exc}', flush=True)
         except Exception as e:
-            # BUG MLX-4 FIX: Log the failure so we know sampling fell back to defaults
-            print(f'[MLX] Sampler creation failed, using defaults: {e}', flush=True)
+            print(f'[MLX] Sampler creation failed; using generation defaults: {e}', flush=True)
     else:
         # BUG MLX-7 FIX: When sampler API is not supported (mlx_lm < 0.28),
         # pass bare kwargs so the user's config values are actually respected
@@ -518,7 +568,7 @@ def run_benchmark(model_path):
 
     mx.eval(mx.zeros((1,)))
     load_start = time.time()
-    model, tokenizer = mlx_lm.load(model_path)
+    model, tokenizer = _load_mlx_model_and_tokenizer(model_path)
     load_time = time.time() - load_start
     print(f"✓ Model loaded in {load_time:.2f}s")
 
@@ -612,6 +662,9 @@ def launch_api_direct(model_path, port):
 
     print(f'[MLX Direct] Loading model: {os.path.basename(abs_model_path)}', flush=True)
     load_start = time.time()
+    model = None
+    tokenizer = None
+    speculative_draft = None
     try:
         # BUG MLX-5 FIX: Use case-insensitive check for .gguf extension
         if abs_model_path.lower().endswith('.gguf'):
@@ -630,9 +683,11 @@ def launch_api_direct(model_path, port):
                 print(f'[MLX Direct] Loading LoRA adapter: {adapter_path}', flush=True)
 
         if adapter_path and os.path.exists(os.path.expanduser(adapter_path)):
-            model, tokenizer = mlx_lm.load(abs_model_path, adapter_path=os.path.expanduser(adapter_path))
+            model, tokenizer = _load_mlx_model_and_tokenizer(
+                abs_model_path, adapter_path=os.path.expanduser(adapter_path)
+            )
         else:
-            model, tokenizer = mlx_lm.load(abs_model_path)
+            model, tokenizer = _load_mlx_model_and_tokenizer(abs_model_path)
         speculative_draft = _load_speculative_draft(config, tokenizer)
         load_time = time.time() - load_start
         MODEL_LOADED = True
@@ -781,6 +836,9 @@ def launch_api_direct(model_path, port):
             if not MODEL_LOADED:
                 error_msg = MODEL_LOAD_ERROR or "Model not loaded"
                 self._send_json(503, json.dumps({"error": "Model not loaded", "detail": error_msg}))
+                return
+            if model is None or tokenizer is None:
+                self._send_json(503, json.dumps({"error": "Model initialization is incomplete"}))
                 return
 
             try:
@@ -1140,6 +1198,9 @@ def launch_api_direct(model_path, port):
 
         def _stream_response(self, prompt, temperature, max_tokens, top_p, repetition_penalty, has_tools=False):
             """Stream tokens via SSE as they are generated."""
+            if model is None or tokenizer is None:
+                self._send_json(503, json.dumps({"error": "Model initialization is incomplete"}))
+                return
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Cache-Control', 'no-cache')
@@ -1238,6 +1299,9 @@ def launch_api_direct(model_path, port):
 
         def _blocking_response(self, prompt, temperature, max_tokens, top_p, repetition_penalty, has_tools=False):
             """Non-streaming response — accumulate all tokens then return."""
+            if model is None or tokenizer is None:
+                self._send_json(503, json.dumps({"error": "Model initialization is incomplete"}))
+                return
             full_text = ""
             try:
                 gen_kwargs = get_mlx_generation_kwargs(
@@ -1278,8 +1342,8 @@ def launch_api_direct(model_path, port):
                 tool_calls = self._parse_tool_calls(full_text, has_tools) if has_tools else None
 
                 try:
-                    prompt_tokens = len(tokenizer.encode(prompt)) if tokenizer else 0
-                    completion_tokens = len(tokenizer.encode(full_text)) if tokenizer else 0
+                    prompt_tokens = len(tokenizer.encode(prompt))
+                    completion_tokens = len(tokenizer.encode(full_text))
                     total_tokens = prompt_tokens + completion_tokens
                 except Exception as e:
                     prompt_tokens = len(prompt) // 4
@@ -1383,7 +1447,7 @@ def launch_core(model_path, json_output=False):
         print(f'{{"status": "core_ready", "model": "{model_path}"}}')
 
     print("Loading model for chat...")
-    model, tokenizer = mlx_lm.load(model_path)
+    model, tokenizer = _load_mlx_model_and_tokenizer(model_path)
     speculative_draft = _load_speculative_draft(config, tokenizer)
     print("\nLumina Edge MLX Chat (type /exit to quit)\n")
 

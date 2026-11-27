@@ -22,7 +22,7 @@ import statistics
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Dict, List, Optional, TextIO, Tuple
 
 
 def find_llama_server(bin_dir: str) -> Optional[str]:
@@ -35,7 +35,7 @@ def find_llama_server(bin_dir: str) -> Optional[str]:
 
 
 def start_server(bin_dir: str, model_path: str, port: int, gpu_layers: int,
-                 ctx_size: int = 2048, threads: int = 4) -> Optional[subprocess.Popen]:
+                 ctx_size: int = 2048, threads: int = 4) -> Optional[Tuple[subprocess.Popen, TextIO]]:
     """Start llama-server on a given port with specified GPU layer count."""
     server_path = find_llama_server(bin_dir)
     if not server_path:
@@ -56,11 +56,14 @@ def start_server(bin_dir: str, model_path: str, port: int, gpu_layers: int,
     ]
 
     log_file = os.path.join(tempfile.gettempdir(), f"lumina_bench_{port}.log")
+    lf = None
     try:
         lf = open(log_file, 'w')
         proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, text=True)
-        return (proc, lf)
+        return proc, lf
     except Exception as e:
+        if lf is not None:
+            lf.close()
         print(f"Error starting server: {e}")
         return None
 
@@ -187,17 +190,22 @@ def _process_memory_bytes(pid: int) -> Dict[str, Optional[int]]:
 
 
 def _summarize_runs(valid: List[Dict]) -> Dict:
+    if not valid:
+        raise ValueError('cannot summarize an empty benchmark sample')
     latencies = [float(run["elapsed_s"]) for run in valid]
     throughputs = [float(run["tokens_per_sec"]) for run in valid]
+    p50, p95, p99 = (_percentile(latencies, quantile) for quantile in (0.50, 0.95, 0.99))
+    if p50 is None or p95 is None or p99 is None:
+        raise ValueError('latency percentiles require at least one sample')
     return {
         "avg_tokens_per_sec": round(statistics.mean(throughputs), 2),
         "median_tokens_per_sec": round(statistics.median(throughputs), 2),
         "throughput_ci95": _confidence_interval_95(throughputs),
         "avg_latency_s": round(statistics.mean(latencies), 3),
         "median_latency_s": round(statistics.median(latencies), 3),
-        "latency_p50_s": round(_percentile(latencies, 0.50), 3),
-        "latency_p95_s": round(_percentile(latencies, 0.95), 3),
-        "latency_p99_s": round(_percentile(latencies, 0.99), 3),
+        "latency_p50_s": round(p50, 3),
+        "latency_p95_s": round(p95, 3),
+        "latency_p99_s": round(p99, 3),
         "avg_ms_per_token": round(statistics.mean(
             float(run["ms_per_token"]) for run in valid
         ), 2),
@@ -205,7 +213,7 @@ def _summarize_runs(valid: List[Dict]) -> Dict:
 
 
 def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
-                         gpu_configs: List[int] = None, ctx_size: int = 2048,
+                         gpu_configs: Optional[List[int]] = None, ctx_size: int = 2048,
                          threads: int = 4, max_tokens: int = 64,
                          warmup_runs: int = 1, bench_runs: int = 3,
                          prompt: str = "Write a short poem about the sea.") -> Dict:
@@ -231,15 +239,11 @@ def benchmark_gpu_layers(bin_dir: str, model_path: str, base_port: int = 8100,
         print(f"  ⏳ Testing {mode_label} (n_gpu_layers={gpu_layers}) on port {port}...")
 
         proc_and_lf = start_server(bin_dir, model_path, port, gpu_layers, ctx_size, threads)
-        if not proc_and_lf:
-            lf = None
-            proc = None
-        else:
-            proc, lf = proc_and_lf
-        if not proc:
+        if proc_and_lf is None:
             print(f"  ✗ Failed to start server for {mode_label}")
             results.append({"gpu_layers": gpu_layers, "label": mode_label, "error": "Failed to start server"})
             continue
+        proc, lf = proc_and_lf
 
         if not wait_for_server(port, timeout=60):
             print(f"  ✗ Server not ready for {mode_label}")

@@ -99,8 +99,10 @@ def recommend_ctx_size(model_path, available_mem_gb, kv_quant="q8_0", gpu_layers
     if "error" in baseline:
         return baseline
 
-    weight_mem = baseline["weight_memory_gb"]
-    kv_per_token = baseline["kv_bytes_per_token"]
+    weight_mem = baseline.get("weight_memory_gb")
+    kv_per_token = baseline.get("kv_bytes_per_token")
+    if not isinstance(weight_mem, (int, float)) or not isinstance(kv_per_token, (int, float)):
+        return {"error": "Could not determine model memory requirements"}
 
     # Available memory for KV cache = total - weights - overhead - headroom
     headroom = available_mem_gb * (headroom_pct / 100)

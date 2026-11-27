@@ -12,6 +12,7 @@ import argparse
 import platform
 import subprocess
 from pathlib import Path
+from typing import Union
 
 
 def get_cpu_info():
@@ -107,7 +108,7 @@ def get_cpu_info():
 
 def get_memory_info():
     """Get RAM and swap info - cross-platform."""
-    result = {
+    result: dict[str, Union[int, float]] = {
         "total_gb": 0,
         "used_gb": 0,
         "available_gb": 0,

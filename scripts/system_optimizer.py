@@ -9,12 +9,15 @@ import sys
 import json
 import platform
 import subprocess
+from importlib import import_module
+from typing import Any, Dict
+
 import psutil
 
 class SystemOptimizer:
     def __init__(self):
-        self.system_info = {}
-        self.optimized_config = {}
+        self.system_info: Dict[str, Any] = {}
+        self.optimized_config: Dict[str, Any] = {}
         self.detect_system()
         
     def detect_system(self):
@@ -76,6 +79,9 @@ class SystemOptimizer:
                         physical_cores = cores
                         
             # Use lscpu for more accurate info
+            cores_per_socket = 0
+            sockets = 0
+            threads_per_core = 0
             try:
                 lscpu_output = subprocess.check_output(['lscpu'], text=True)
                 for line in lscpu_output.split('\n'):
@@ -83,17 +89,20 @@ class SystemOptimizer:
                         cores_per_socket = int(line.split(':')[1].strip())
                     elif 'Socket(s):' in line:
                         sockets = int(line.split(':')[1].strip())
-                        physical_cores = cores_per_socket * sockets
                     elif 'Thread(s) per core:' in line:
                         threads_per_core = int(line.split(':')[1].strip())
-                        logical_cores = physical_cores * threads_per_core
+
+                if cores_per_socket > 0 and sockets > 0:
+                    physical_cores = cores_per_socket * sockets
+                if physical_cores > 0 and threads_per_core > 0:
+                    logical_cores = physical_cores * threads_per_core
             except Exception:
                 pass
                 
             cpu_info = {
                 'physical_cores': physical_cores,
                 'logical_cores': logical_cores,
-                'threads_per_core': logical_cores // physical_cores if physical_cores > 0 else 1,
+                'threads_per_core': logical_cores // max(physical_cores, 1),
                 'frequency': self._get_cpu_frequency(),
                 'cache_sizes': self._get_cache_sizes(),
                 'features': self._get_cpu_features(),
@@ -126,7 +135,11 @@ class SystemOptimizer:
             cache_sizes = {}
             for cache in ['L1', 'L2', 'L3']:
                 try:
-                    size = subprocess.check_output(['sysctl', '-n', f'hw.{cache.lower()}cachesize'], text=True).strip()
+                    size = subprocess.check_output(
+                        ['sysctl', '-n', f'hw.{cache.lower()}cachesize'],
+                        text=True,
+                        stderr=subprocess.DEVNULL,
+                    ).strip()
                     cache_sizes[cache] = int(size)
                 except Exception:
                     pass
@@ -134,7 +147,7 @@ class SystemOptimizer:
             cpu_info = {
                 'physical_cores': physical_cores,
                 'logical_cores': logical_cores,
-                'threads_per_core': logical_cores // physical_cores,
+                'threads_per_core': logical_cores // max(physical_cores, 1),
                 'frequency_mhz': frequency_mhz,
                 'cache_sizes': cache_sizes,
                 'architecture': platform.machine(),
@@ -152,7 +165,7 @@ class SystemOptimizer:
         cpu_info = {}
         
         try:
-            import wmi  # May not be available
+            wmi = import_module('wmi')  # Windows-only; fall back to psutil elsewhere
             
             c = wmi.WMI()
             processor = c.Win32_Processor()[0]
@@ -168,11 +181,14 @@ class SystemOptimizer:
             
         except Exception:
             # Fallback to psutil
+            physical_cores = psutil.cpu_count(logical=False) or 1
+            logical_cores = psutil.cpu_count(logical=True) or physical_cores
+            frequency = psutil.cpu_freq()
             cpu_info = {
-                'physical_cores': psutil.cpu_count(logical=False),
-                'logical_cores': psutil.cpu_count(logical=True),
-                'threads_per_core': psutil.cpu_count(logical=True) // psutil.cpu_count(logical=False),
-                'frequency_mhz': psutil.cpu_freq().current if psutil.cpu_freq() else 0
+                'physical_cores': physical_cores,
+                'logical_cores': logical_cores,
+                'threads_per_core': logical_cores // max(physical_cores, 1),
+                'frequency_mhz': frequency.current if frequency and frequency.current else 0
             }
             
         return cpu_info
@@ -528,7 +544,7 @@ class SystemOptimizer:
             )
         else:
             config['use_mlock'] = True
-            config['split_mode'] = 'layer' if config['gpu_type'] == 'nvidia' else 'row'
+            config['split_mode'] = 'layer' if config.get('gpu_type') == 'nvidia' else 'row'
             
         # Safety: don't mlock if available RAM < 1.5x model headroom estimate
         available_gb = self.system_info.get('memory', {}).get('available_gb', 0)
@@ -571,6 +587,7 @@ class SystemOptimizer:
             config_path = os.path.join(os.path.dirname(__file__), '..', 'config.json')
             
         try:
+            existing_config = {}
             if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
                     existing_config = json.load(f)

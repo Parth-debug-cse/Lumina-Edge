@@ -127,11 +127,12 @@ class ModelManager:
 
     def get_human_size(self, size_bytes: int) -> str:
         """Convert bytes to human-readable KB/MB/GB."""
+        size = float(size_bytes)
         for unit in ['B', 'KB', 'MB', 'GB']:
-            if size_bytes < 1024:
-                return f"{size_bytes:.1f} {unit}"
-            size_bytes /= 1024
-        return f"{size_bytes:.1f} TB"
+            if size < 1024:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} TB"
 
     def download_file(self, url: str, dest_path: Path) -> bool:
         """Download file with progress bar using urllib."""

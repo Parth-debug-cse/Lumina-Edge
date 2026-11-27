@@ -82,12 +82,12 @@ resolve_ports() {
 stop_existing() {
     log "Stopping any existing Lumina processes..."
     if [[ -f "$PID_FILE" ]]; then
-        while read pid cmd; do
+        while IFS=' ' read -r pid _cmd; do
             if [[ -n "$pid" ]] && ps -p "$pid" 2>/dev/null > /dev/null; then
                 kill "$pid" 2>/dev/null || true
             fi
         done < "$PID_FILE"
-        > "$PID_FILE"
+        : > "$PID_FILE"
     fi
     pkill -f 'mlx_backend.*api' 2>/dev/null || true
     pkill -f 'api-server.js' 2>/dev/null || true
@@ -119,6 +119,8 @@ optimize_system() {
         fi
         if [[ "${LUMINA_PURGE_MEMORY:-0}" == "1" && -x "$MACOS_SCRIPTS/purge_and_prep.sh" ]]; then
             log "  Purging inactive memory (explicitly enabled)..."
+            # The launcher owns the log file, so redirect output before privilege elevation.
+            # shellcheck disable=SC2024
             sudo -n env LUMINA_PURGE_MEMORY=1 bash "$MACOS_SCRIPTS/purge_and_prep.sh" >> "$RUNDIR/optimizer.log" 2>&1 || \
                 log "  Memory purge skipped (requires non-interactive sudo permission)"
         else
@@ -177,7 +179,7 @@ start_api_server() {
     API_LOG="$RUNDIR/api_server.log"
     local _prev_dir
     _prev_dir="$(pwd)"
-    cd "$UI_DIR"
+    cd "$UI_DIR" || { log_err "Failed to enter UI directory: $UI_DIR"; return 1; }
 
     local SECONDARY_PORT
     SECONDARY_PORT=$(get_config api_port_secondary 8081)
@@ -188,10 +190,10 @@ start_api_server() {
     local api_pid=$!
     echo "$api_pid api_server" >> "$PID_FILE"
     log "  API server PID: $api_pid"
-    cd "$_prev_dir"
+    cd "$_prev_dir" || { log_err "Failed to return to $_prev_dir"; return 1; }
 
     log "  Waiting for API server..."
-    for i in $(seq 1 30); do
+    for _ in {1..30}; do
         if curl -s --max-time 2 "http://127.0.0.1:$SECONDARY_PORT/api/health" 2>/dev/null | grep -q 'ok'; then
             log_ok "API gateway ready (primary: $API_PORT, mgmt: $SECONDARY_PORT)"
             return 0
@@ -218,17 +220,17 @@ start_ui() {
     UI_LOG="$RUNDIR/vite.log"
     local _prev_dir
     _prev_dir="$(pwd)"
-    cd "$UI_DIR"
+    cd "$UI_DIR" || { log_err "Failed to enter UI directory: $UI_DIR"; return 1; }
 
     npm run dev >> "$UI_LOG" 2>&1 &
     local ui_pid=$!
-    cd "$_prev_dir"
+    cd "$_prev_dir" || { log_err "Failed to return to $_prev_dir"; return 1; }
 
     echo "$ui_pid vite" >> "$PID_FILE"
     log "  Vite PID: $ui_pid"
 
     log "  Waiting for Vite dev server..."
-    for i in $(seq 1 20); do
+    for _ in {1..20}; do
         if curl -s --max-time 2 "http://localhost:$UI_PORT/" 2>/dev/null | grep -q '<html'; then
             log_ok "Lumina Core UI ready at http://localhost:$UI_PORT"
             return 0

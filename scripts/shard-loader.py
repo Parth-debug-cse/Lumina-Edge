@@ -16,15 +16,21 @@ from collections import defaultdict
 try:
     import safetensors
     from safetensors.torch import load_file as load_safetensors
-    SAFETENSORS_AVAILABLE = True
+    safetensors_available = True
 except ImportError:
-    SAFETENSORS_AVAILABLE = False
+    safetensors_available = False
+    load_safetensors = None
+
+SAFETENSORS_AVAILABLE = safetensors_available
 
 try:
     import torch
-    TORCH_AVAILABLE = True
+    torch_available = True
 except ImportError:
-    TORCH_AVAILABLE = False
+    torch_available = False
+    torch = None
+
+TORCH_AVAILABLE = torch_available
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -169,12 +175,12 @@ class ShardedModelConverter:
             
             try:
                 if self.model_info.shard_format == 'safetensors':
-                    if not SAFETENSORS_AVAILABLE:
+                    if not SAFETENSORS_AVAILABLE or load_safetensors is None:
                         raise ImportError("safetensors not available")
                     shard_data = load_safetensors(str(shard_path))
                 
                 elif self.model_info.shard_format == 'pytorch':
-                    if not TORCH_AVAILABLE:
+                    if not TORCH_AVAILABLE or torch is None:
                         raise ImportError("torch not available")
                     shard_data = torch.load(str(shard_path), map_location='cpu', weights_only=True)
                 
@@ -196,12 +202,12 @@ class ShardedModelConverter:
         """Load a single non-sharded model file"""
         try:
             if str(self.model_info.model_path).endswith('.safetensors'):
-                if not SAFETENSORS_AVAILABLE:
+                if not SAFETENSORS_AVAILABLE or load_safetensors is None:
                     raise ImportError("safetensors not available")
                 return load_safetensors(str(self.model_info.model_path))
             
             elif str(self.model_info.model_path).endswith(('.bin', '.pt')):
-                if not TORCH_AVAILABLE:
+                if not TORCH_AVAILABLE or torch is None:
                     raise ImportError("torch not available")
                 return torch.load(str(self.model_info.model_path), map_location='cpu', weights_only=True)
             

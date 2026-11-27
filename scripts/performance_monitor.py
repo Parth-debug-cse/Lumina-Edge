@@ -73,6 +73,7 @@ class PerformanceMonitor:
                 
                 # Calculate tokens/sec
                 current_time = time.time()
+                elapsed = 0.0
                 if self.start_time:
                     elapsed = current_time - self.start_time
                     tokens_per_sec = self.total_tokens / elapsed if elapsed > 0 else 0

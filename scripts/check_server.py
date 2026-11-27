@@ -26,6 +26,26 @@ def check_server():
 
     try:
         import requests
+    except ImportError:
+        # Fallback to urllib if requests is not installed
+        import urllib.request
+        import urllib.error
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{api_port}/health", timeout=3)
+            print(f"✓ Server is running on port {api_port}")
+            return True
+        except urllib.error.URLError:
+            print(f"✗ Server not responding on port {api_port}")
+            print(f"\nTo start the server, run:")
+            print(f"  Windows: powershell -ExecutionPolicy Bypass -File core\\launch_api.ps1")
+            print(f"  Linux:   ./core/launch_api.sh")
+            print(f"  macOS:   ./start_lumina.sh")
+            return False
+        except Exception as e:
+            print(f"✗ Error: {e}")
+            return False
+
+    try:
         response = requests.get(f"http://127.0.0.1:{api_port}/health", timeout=3)
         if response.status_code == 200:
             print(f"✓ Server is running on port {api_port}")
@@ -46,24 +66,6 @@ def check_server():
     except requests.exceptions.Timeout:
         print(f"✗ Connection timed out (server may be starting)")
         return False
-    except ImportError:
-        # Fallback to urllib if requests is not installed
-        import urllib.request
-        import urllib.error
-        try:
-            urllib.request.urlopen(f"http://127.0.0.1:{api_port}/health", timeout=3)
-            print(f"✓ Server is running on port {api_port}")
-            return True
-        except urllib.error.URLError:
-            print(f"✗ Server not responding on port {api_port}")
-            print(f"\nTo start the server, run:")
-            print(f"  Windows: powershell -ExecutionPolicy Bypass -File core\\launch_api.ps1")
-            print(f"  Linux:   ./core/launch_api.sh")
-            print(f"  macOS:   ./start_lumina.sh")
-            return False
-        except Exception as e:
-            print(f"✗ Error: {e}")
-            return False
 
 
 if __name__ == "__main__":

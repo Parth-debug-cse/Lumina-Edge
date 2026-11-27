@@ -1,0 +1,4 @@
+# Shared Linux/Windows runtime dependencies for conversion, Scout, and Screen tools.
+-r scripts/requirements-converter.txt
+-r lumina_scout/requirements.txt
+-r lumina_screen/requirements.txt

@@ -39,16 +39,30 @@ cd Lumina-Edge
 
 | OS | Requirements |
 |----|-------------|
-| Windows | Node.js 16+, Python 3.8+, [Vulkan Runtime](https://vulkan.lunarg.com/) |
-| Linux | Python 3.8+, cmake, build-essential, Vulkan drivers |
-| macOS | Python 3.8+, Xcode CLI tools, Apple Silicon (M1–M4), Homebrew |
+| Windows | Node.js 22.12+, Python 3.10+, [Vulkan Runtime](https://vulkan.lunarg.com/) |
+| Linux | Python 3.10+, Node.js 22.12+, cmake, build-essential, Vulkan drivers |
+| macOS | Python 3.10+, Node.js 22.12+, Xcode CLI tools, Apple Silicon, Homebrew |
+
+Create and activate a virtual environment before installing dependencies (recommended; avoids changing system Python):
+
+```bash
+# Linux / macOS
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Windows PowerShell
+# py -m venv .venv
+# .venv\Scripts\Activate.ps1
+
+python -m pip install --upgrade pip
+```
 
 ```bash
 # Linux / Windows
-pip install --break-system-packages -r requirements.txt
+python -m pip install -r requirements.txt
 
 # macOS (Apple Silicon)
-pip install --break-system-packages -r scripts/requirements-macos.txt
+python -m pip install -r scripts/requirements-macos.txt -r lumina_screen/requirements.txt
 ```
 
 **Windows / Linux:** download the matching `llama.cpp` release from [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases/latest) and extract directly into `bin/` (no subfolders).

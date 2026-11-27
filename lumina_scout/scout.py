@@ -5,6 +5,7 @@ Lumina Scout public API — called by Lumina Edge UI routes.
 
 import os
 import re
+from typing import Optional
 
 SCOUT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -36,9 +37,9 @@ def get_hardware_info() -> dict:
 def get_recommendations(
     top: int = 10,
     profile: str = "general",
-    quant: str = None,
-    min_speed: float = None,
-    gpu_override: str = None,
+    quant: Optional[str] = None,
+    min_speed: Optional[float] = None,
+    gpu_override: Optional[str] = None,
     cpu_only: bool = False,
     refresh: bool = False,
 ) -> list:
@@ -82,7 +83,7 @@ def get_recommendations(
     return result
 
 
-def get_plan(model_query: str, quant: str = None, context_length: int = 4096) -> dict:
+def get_plan(model_query: str, quant: Optional[str] = None, context_length: int = 4096) -> dict:
     """Given a model query like 'llama 3 70b', return per-quant VRAM, KV cache, and GPU compat table."""
     m = re.search(r'(\d+\.?\d*)\s*[bB]', model_query, re.IGNORECASE)
     if not m:
