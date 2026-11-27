@@ -1,15 +1,16 @@
-import { useState, useEffect, useCallback } from 'react'
+import { lazy, Suspense, useState, useEffect, useCallback } from 'react'
 import { MessageSquare, Cpu, Activity, ScanLine, Bot, Radar, Clock, Plug, SlidersHorizontal, HardDrive, Zap, BarChart3, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
-import ModelManager   from './components/ModelManager.jsx'
-import SettingsPanel  from './components/SettingsPanel.jsx'
-import SessionHistory from './components/SessionHistory.jsx'
-import DiagnosticsPanel from './components/DiagnosticsPanel.jsx'
-import LuminaScreenPanel from './components/LuminaScreenPanel.jsx'
-import AgentPanel from './components/AgentPanel.jsx'
-import ScoutPanel from './components/ScoutPanel.jsx'
-import ApiDocs from './components/ApiDocs.jsx'
-import SystemMonitor from './components/SystemMonitor.jsx'
 import { checkServerHealth } from './utils/api.js'
+
+const ModelManager = lazy(() => import('./components/ModelManager.jsx'))
+const SettingsPanel = lazy(() => import('./components/SettingsPanel.jsx'))
+const SessionHistory = lazy(() => import('./components/SessionHistory.jsx'))
+const DiagnosticsPanel = lazy(() => import('./components/DiagnosticsPanel.jsx'))
+const LuminaScreenPanel = lazy(() => import('./components/LuminaScreenPanel.jsx'))
+const AgentPanel = lazy(() => import('./components/AgentPanel.jsx'))
+const ScoutPanel = lazy(() => import('./components/ScoutPanel.jsx'))
+const ApiDocs = lazy(() => import('./components/ApiDocs.jsx'))
+const SystemMonitor = lazy(() => import('./components/SystemMonitor.jsx'))
 
 // 9 nav items — each maps to a panel component with a lucide icon
 const NAV = [
@@ -268,7 +269,13 @@ export default function App() {
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-          {renderPanel()}
+          <Suspense fallback={(
+            <div role="status" aria-live="polite" style={{ padding: 24, color: 'var(--text-secondary)' }}>
+              Loading panel…
+            </div>
+          )}>
+            {renderPanel()}
+          </Suspense>
         </div>
       </div>
 
@@ -308,10 +315,12 @@ export default function App() {
 
       {/* System Monitor Overlay */}
       {showMonitor && (
-        <SystemMonitor
-          onClose={() => setShowMonitor(false)}
-          toast={addToast}
-        />
+        <Suspense fallback={null}>
+          <SystemMonitor
+            onClose={() => setShowMonitor(false)}
+            toast={addToast}
+          />
+        </Suspense>
       )}
     </>
   )

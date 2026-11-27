@@ -35,6 +35,10 @@ Write-Host "  ======================================" -ForegroundColor Cyan
 Write-Host ""
 
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
+$systemTuningEnabled = $env:LUMINA_SYSTEM_TUNING -eq "1"
+if (-not $systemTuningEnabled) {
+    Write-Status "Host-wide power, service, filesystem, and network changes are disabled by default; set LUMINA_SYSTEM_TUNING=1 to opt in" "info"
+}
 
 if (-not $isAdmin) {
     Write-Status "Not running as Administrator — some optimizations will be skipped" "warn"
@@ -51,7 +55,7 @@ try {
     } elseif ($currentPlan -match "e9a42b02-d5df-448d-aa00-03f14749eb61") {
         Write-Status "Power plan: Ultimate Performance (already set)" "ok"
     } else {
-        if ($isAdmin) {
+        if ($isAdmin -and $systemTuningEnabled) {
             $highPerfGuid = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
             $result = powercfg /setactive $highPerfGuid 2>&1
             if ($LASTEXITCODE -eq 0) {
@@ -60,7 +64,7 @@ try {
                 Write-Status "Could not set High Performance power plan" "warn"
             }
         } else {
-            Write-Status "Run as Administrator to set High Performance power plan" "warn"
+            Write-Status "Power plan unchanged; requires Administrator and LUMINA_SYSTEM_TUNING=1" "info"
         }
     }
 } catch {
@@ -74,12 +78,12 @@ try {
     if ($idleDisable -match "0x00000001") {
         Write-Status "CPU idle states: Disabled (performance mode)" "ok"
     } else {
-        if ($isAdmin) {
+        if ($isAdmin -and $systemTuningEnabled) {
             powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR IDLEDISABLE 1 2>$null
             powercfg /setactive SCHEME_CURRENT 2>$null | Out-Null
             Write-Status "CPU idle states disabled for AC power" "ok"
         } else {
-            Write-Status "Run as Administrator to disable CPU idle states" "warn"
+            Write-Status "CPU idle states unchanged; requires Administrator and LUMINA_SYSTEM_TUNING=1" "info"
         }
     }
 } catch {
@@ -140,7 +144,7 @@ try {
 # ── 6. FILE SYSTEM CACHE OPTIMIZATION ────────────────────────────────────────
 Write-Status "Optimizing file system cache..." "info"
 try {
-    if ($isAdmin) {
+    if ($isAdmin -and $systemTuningEnabled) {
         $result = fsutil behavior set memoryusage 2 2>&1
         if ($LASTEXITCODE -eq 0) {
             Write-Status "File system cache optimized for applications" "ok"
@@ -148,7 +152,7 @@ try {
             Write-Status "Could not optimize file system cache (fsutil returned error)" "warn"
         }
     } else {
-        Write-Status "Run as Administrator to optimize file system cache" "warn"
+        Write-Status "Filesystem cache policy unchanged; requires Administrator and LUMINA_SYSTEM_TUNING=1" "info"
     }
 } catch {
     Write-Status "Could not optimize file system cache: $_" "warn"
@@ -159,12 +163,12 @@ Write-Status "Checking Windows Search indexing..." "info"
 try {
     $searchService = Get-Service -Name "WSearch" -ErrorAction SilentlyContinue
     if ($searchService -and $searchService.Status -eq "Running") {
-        if ($isAdmin) {
+        if ($isAdmin -and $systemTuningEnabled) {
             Stop-Service -Name "WSearch" -Force -ErrorAction SilentlyContinue | Out-Null
             Write-Status "Windows Search indexing temporarily stopped" "ok"
             Write-Status "   (Will auto-restart on next boot or can be manually started)" "info"
         } else {
-            Write-Status "Run as Administrator to temporarily stop Windows Search" "warn"
+            Write-Status "Windows Search unchanged; requires Administrator and LUMINA_SYSTEM_TUNING=1" "info"
         }
     } else {
         Write-Status "Windows Search not running or not installed" "info"
@@ -176,7 +180,7 @@ try {
 # ── 8. NETWORK OPTIMIZATION (for API mode) ────────────────────────────────────
 Write-Status "Optimizing network settings..." "info"
 try {
-    if ($isAdmin) {
+    if ($isAdmin -and $systemTuningEnabled) {
         $tcpParams = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -Name "TcpAckFrequency" -ErrorAction SilentlyContinue
         if (-not $tcpParams) {
             Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -Name "TcpAckFrequency" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue | Out-Null
@@ -185,26 +189,28 @@ try {
             Write-Status "TCP already optimized" "ok"
         }
     } else {
-        Write-Status "Run as Administrator to optimize network settings" "warn"
+        Write-Status "Network settings unchanged; requires Administrator and LUMINA_SYSTEM_TUNING=1" "info"
     }
 } catch {
     Write-Status "Could not optimize network settings: $_" "warn"
 }
 
 # ── 9. TEMP CLEANUP ───────────────────────────────────────────────────────────
-Write-Status "Cleaning temporary files..." "info"
-try {
-    $tempDirs = @($env:TEMP, "C:\Windows\Temp")
-    foreach ($dir in $tempDirs) {
-        if (Test-Path $dir) {
-            Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) } |
+if ($env:LUMINA_CLEAN_TEMP -eq "1") {
+    Write-Status "Cleaning temporary files older than 7 days..." "info"
+    try {
+        $userTemp = [System.IO.Path]::GetFullPath($env:TEMP)
+        if (Test-Path $userTemp -PathType Container) {
+            Get-ChildItem -LiteralPath $userTemp -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) -and -not ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) } |
                 Remove-Item -Force -ErrorAction SilentlyContinue | Out-Null
         }
+        Write-Status "Stale files in the current user's temporary directory cleaned where possible" "ok"
+    } catch {
+        Write-Status "Could not clean temporary files: $_" "warn"
     }
-    Write-Status "Temporary files older than 7 days cleaned" "ok"
-} catch {
-    Write-Status "Could not clean temporary files: $_" "warn"
+} else {
+    Write-Status "Temporary file cleanup skipped (set LUMINA_CLEAN_TEMP=1 to opt in)" "info"
 }
 
 Write-Host ""

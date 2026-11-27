@@ -18,24 +18,15 @@ if [[ $EUID -ne 0 ]]; then
 fi
 # Everything below requires root — vm_stat, purge, mdutil, tmutil all need it
 
-echo "${LUMINA_PREFIX} === Purge & Prep — flushing system caches ==="
+echo "${LUMINA_PREFIX} === Purge inactive memory (explicit opt-in) ==="
+if [[ "${LUMINA_PURGE_MEMORY:-0}" != "1" ]]; then
+    echo "${LUMINA_PREFIX} Skipped. Set LUMINA_PURGE_MEMORY=1 to opt in."
+    exit 0
+fi
 
-# Spotlight indexing consumes CPU/memory — disable during inference
-echo "${LUMINA_PREFIX} Disabling Spotlight indexing..."
-sudo mdutil -a -i off 2>/dev/null || echo "${LUMINA_PREFIX} WARNING: Could not disable Spotlight (may already be off or unavailable)."
-
-# Time Machine backups spike I/O — stop any in-progress backup
-echo "${LUMINA_PREFIX} Stopping Time Machine backups..."
-sudo tmutil stopbackup 2>/dev/null || echo "${LUMINA_PREFIX} WARNING: Could not stop Time Machine backup (none in progress or unavailable)."
-
-# purge flushes disk cache + inactive memory — only works if SIP allows it; silent failure is OK
-echo "${LUMINA_PREFIX} Purging disk cache and inactive memory..."
-sudo purge 2>/dev/null || echo "${LUMINA_PREFIX} WARNING: purge command failed (may require SIP-permitted terminal)."
-
-# DNS cache flush — frees a small amount of memory + prevents stale resolver lookups
-echo "${LUMINA_PREFIX} Flushing DNS cache..."
-sudo dscacheutil -flushcache 2>/dev/null || echo "${LUMINA_PREFIX} WARNING: dscacheutil flush failed."
-sudo killall -HUP mDNSResponder 2>/dev/null || echo "${LUMINA_PREFIX} WARNING: Could not restart mDNSResponder."
+# Purge is a system-wide cache action and may be restricted by macOS security policy.
+echo "${LUMINA_PREFIX} Purging inactive memory..."
+purge 2>/dev/null || echo "${LUMINA_PREFIX} WARNING: purge command failed or was restricted by the OS."
 
 echo ""
 echo "${LUMINA_PREFIX} === Post-flush VM statistics ==="

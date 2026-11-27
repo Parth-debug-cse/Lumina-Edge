@@ -111,15 +111,18 @@ optimize_system() {
     MACOS_SCRIPTS="$SCRIPTS/macos"
 
     if [[ -d "$MACOS_SCRIPTS" ]]; then
-        if [[ -x "$MACOS_SCRIPTS/kill_memory_hogs.sh" ]]; then
-            log "  Killing memory hogs..."
+        if [[ "${LUMINA_STOP_BACKGROUND_SERVICES:-0}" == "1" && -x "$MACOS_SCRIPTS/kill_memory_hogs.sh" ]]; then
+            log "  Stopping selected background processes (explicitly enabled)..."
             bash "$MACOS_SCRIPTS/kill_memory_hogs.sh" >> "$RUNDIR/optimizer.log" 2>&1 || true
+        else
+            log "  Background process cleanup skipped (set LUMINA_STOP_BACKGROUND_SERVICES=1 to opt in)"
         fi
-        if [[ -x "$MACOS_SCRIPTS/purge_and_prep.sh" ]]; then
-            log "  Purging disk cache and memory..."
-            # sudo purge drops filesystem caches — needs admin, may fail without passwordless sudo
-            sudo bash "$MACOS_SCRIPTS/purge_and_prep.sh" >> "$RUNDIR/optimizer.log" 2>&1 || \
-                log "  purge_and_prep.sh skipped (sudo required or not available)"
+        if [[ "${LUMINA_PURGE_MEMORY:-0}" == "1" && -x "$MACOS_SCRIPTS/purge_and_prep.sh" ]]; then
+            log "  Purging inactive memory (explicitly enabled)..."
+            sudo -n env LUMINA_PURGE_MEMORY=1 bash "$MACOS_SCRIPTS/purge_and_prep.sh" >> "$RUNDIR/optimizer.log" 2>&1 || \
+                log "  Memory purge skipped (requires non-interactive sudo permission)"
+        else
+            log "  Memory purge skipped (set LUMINA_PURGE_MEMORY=1 to opt in)"
         fi
     fi
 
@@ -130,13 +133,14 @@ optimize_system() {
         "$PYTHON" "$OPTIMIZER" optimize >> "$RUNDIR/optimizer.log" 2>&1 || true
     fi
 
-    # macOS-specific: disable sudden motion sensor (not a real SMS, it's a Mac Pro thing)
-    sudo pmset -a sms 0 2>/dev/null || true
-    # Force memory compressor into mode 4 (aggressive decompression when under memory pressure)
-    sudo sysctl -w vm.compressor_mode=4 2>/dev/null || true
+    if [[ "${LUMINA_SYSTEM_TUNING:-0}" == "1" ]]; then
+        sudo -n pmset -a sms 0 2>/dev/null || true
+        sudo -n sysctl -w vm.compressor_mode=4 2>/dev/null || true
+        defaults write NSGlobalDomain NSAppSleepDisabled -bool YES 2>/dev/null || true
+    else
+        log "  Host power, compressor, and App Nap settings unchanged (set LUMINA_SYSTEM_TUNING=1 to opt in)"
+    fi
     renice -n -10 $$ 2>/dev/null || true
-    # Prevent App Nap from throttling background processes
-    defaults write NSGlobalDomain NSAppSleepDisabled -bool YES 2>/dev/null || true
 
     # MLX/Metal env vars for best GPU throughput
     export MTL_HUD_ENABLED=0

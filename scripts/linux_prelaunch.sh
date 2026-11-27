@@ -26,6 +26,9 @@ else
     echo "[MEM] Cache drop skipped (set LUMINA_DROP_CACHES=1 to opt in)"
 fi
 
+if [[ "${LUMINA_SYSTEM_TUNING:-0}" == "1" ]]; then
+    echo "[SYS] Applying opt-in host-level power and memory tuning..."
+
 # ── 1. CPU GOVERNOR ────────────────────────────────────────────────────────────
 # Check current governor; if not 'performance', try to set it
 # cpupower is the cleanest method; fallback is writing to each CPU's sysfs
@@ -96,6 +99,9 @@ fi
 # Reduce writeback frequency to avoid I/O contention during model load
 echo "500" | sudo -n tee /proc/sys/vm/dirty_writeback_centisecs &>/dev/null || true
 echo "20" | sudo -n tee /proc/sys/vm/dirty_ratio &>/dev/null || true
+else
+    echo "[SYS] Host power/memory tuning skipped (set LUMINA_SYSTEM_TUNING=1 to opt in)"
+fi
 
 # ── 6. INTEL iGPU: ENABLE VULKAN ENVIRONMENT ───────────────────────────────────
 # Mesa/ANV Vulkan env vars for Intel Iris Plus — read by llama-server at init
@@ -126,9 +132,13 @@ fi
 
 # ── 8. MEMORY COMPACTION ───────────────────────────────────────────────────────
 # Compact memory before model load to create contiguous pages for mmap
-echo "1" | sudo -n tee /proc/sys/vm/compact_memory &>/dev/null && \
-    echo "[MEM] ✓ Memory compacted" || \
-    echo "[MEM] ⚠ Memory compaction skipped (sudo required)"
+if [[ "${LUMINA_SYSTEM_TUNING:-0}" == "1" ]]; then
+    echo "1" | sudo -n tee /proc/sys/vm/compact_memory &>/dev/null && \
+        echo "[MEM] ✓ Memory compacted" || \
+        echo "[MEM] ⚠ Memory compaction skipped (sudo required)"
+else
+    echo "[MEM] Memory compaction skipped (set LUMINA_SYSTEM_TUNING=1 to opt in)"
+fi
 
 # ── 9. SCHEDULER TUNING ────────────────────────────────────────────────────────
 if command -v chrt &>/dev/null; then

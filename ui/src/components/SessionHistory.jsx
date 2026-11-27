@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   getSessions, deleteSession, exportAsJSON, exportAsMarkdown,
 } from '../utils/storage.js'
+import { buildSessionSearchIndex, searchSessionIds } from '../utils/session-search.js'
 import ExportButtons from './ExportButtons.jsx'
 
 function formatDate(iso) {
@@ -11,16 +12,106 @@ function formatDate(iso) {
 
 export default function SessionHistory({ toast }) {
   const [sessions, setSessions] = useState(getSessions)  // Load from localStorage on mount
-  const [search, setSearch]     = useState('')
+  const [search, setSearch] = useState('')
   const [selected, setSelected] = useState(null)
+  const [workerMatches, setWorkerMatches] = useState(null)
+  const [workerUnavailable, setWorkerUnavailable] = useState(false)
+  const workerRef = useRef(null)
+  const searchRequestRef = useRef(0)
 
   const refresh = () => setSessions(getSessions())
-
-  // Filter by title or message content (case-insensitive)
-  const filtered = sessions.filter(s =>
-    !search || s.title.toLowerCase().includes(search.toLowerCase()) ||
-    s.messages.some(m => m.content.toLowerCase().includes(search.toLowerCase()))
+  const useSearchWorker = useMemo(() => (
+    !workerUnavailable && (
+      sessions.length >= 100
+      || sessions.reduce((count, session) => count + (Array.isArray(session.messages) ? session.messages.length : 0), 0) >= 1000
+    )
+  ), [sessions, workerUnavailable])
+  const inlineIndex = useMemo(
+    () => useSearchWorker ? null : buildSessionSearchIndex(sessions),
+    [sessions, useSearchWorker]
   )
+  const inlineMatches = useMemo(
+    () => inlineIndex ? new Set(searchSessionIds(inlineIndex, search)) : null,
+    [inlineIndex, search]
+  )
+
+  useEffect(() => {
+    if (!useSearchWorker) {
+      workerRef.current?.terminate()
+      workerRef.current = null
+      setWorkerMatches(null)
+      return undefined
+    }
+
+    let worker
+    try {
+      worker = new Worker(new URL('../workers/session-search.worker.js', import.meta.url), { type: 'module' })
+    } catch {
+      setWorkerUnavailable(true)
+      setWorkerMatches(null)
+      return undefined
+    }
+
+    workerRef.current = worker
+    const failWorker = () => {
+      worker.terminate()
+      if (workerRef.current === worker) {
+        workerRef.current = null
+        setWorkerUnavailable(true)
+        setWorkerMatches(null)
+      }
+    }
+    worker.onmessage = ({ data }) => {
+      if (data.requestId === searchRequestRef.current && Array.isArray(data.ids)) {
+        setWorkerMatches(new Set(data.ids))
+      }
+    }
+    worker.onerror = event => {
+      event.preventDefault()
+      failWorker()
+    }
+    worker.onmessageerror = failWorker
+
+    try {
+      worker.postMessage({
+        type: 'index',
+        sessions: sessions.map(session => ({
+          id: session.id,
+          title: session.title,
+          messages: Array.isArray(session.messages)
+            ? session.messages.map(message => ({ content: String(message?.content || '') }))
+            : [],
+        })),
+      })
+    } catch {
+      failWorker()
+    }
+
+    return () => {
+      worker.terminate()
+      if (workerRef.current === worker) workerRef.current = null
+    }
+  }, [sessions, useSearchWorker])
+
+  useEffect(() => {
+    const worker = workerRef.current
+    if (!useSearchWorker || !worker) return
+    const requestId = ++searchRequestRef.current
+    setWorkerMatches(null)
+    try {
+      worker.postMessage({ type: 'search', query: search, requestId })
+    } catch {
+      worker.terminate()
+      workerRef.current = null
+      setWorkerUnavailable(true)
+    }
+  }, [search, sessions, useSearchWorker])
+
+  const filtered = useMemo(() => {
+    const matches = useSearchWorker ? workerMatches : inlineMatches
+    if (!matches) return []
+    return sessions.filter(session => matches.has(session.id))
+  }, [inlineMatches, sessions, useSearchWorker, workerMatches])
 
   const del = (id) => {
     deleteSession(id)
@@ -57,11 +148,13 @@ export default function SessionHistory({ toast }) {
             {filtered.length === 0 && (
               <div className="empty-state">
                 <div className="empty-icon" style={{ fontFamily: 'var(--font-mono)' }}>{'{ }'}</div>
-                <div className="empty-title">{sessions.length === 0 ? 'No sessions yet' : 'No matches'}</div>
+                <div className="empty-title">
+                  {sessions.length === 0 ? 'No sessions yet' : useSearchWorker && workerMatches === null ? 'Searching history…' : 'No matches'}
+                </div>
                 <div className="empty-body">
                   {sessions.length === 0
                     ? 'Your chat sessions will appear here.'
-                    : 'Try a different search term.'}
+                    : useSearchWorker && workerMatches === null ? 'Large history is being searched in the background.' : 'Try a different search term.'}
                 </div>
               </div>
             )}

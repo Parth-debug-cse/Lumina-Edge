@@ -81,7 +81,7 @@ chmod +x linux.sh mac.sh start_api.sh bin/llama-*
 windows.bat     # Windows
 ```
 
-All three start the backend (llama-server or MLX), the API gateway, and the Vite UI dev server, then open your browser automatically. Override ports with `LUMINA_API_PORT` / `LUMINA_UI_PORT` env vars (Linux also supports `LUMINA_NOSWAP=1` to disable swap for the session); the Linux/macOS scripts also take `--help` for options. Linux cache dropping is opt-in with `LUMINA_DROP_CACHES=1` and may require passwordless sudo; it discards only reclaimable kernel caches, not user files, and can make subsequent disk reads slower. Service suspension is also opt-in via `LUMINA_STOP_BACKGROUND_SERVICES=1`.
+All three start the backend (llama-server or MLX), the API gateway, and the Vite UI dev server, then open your browser automatically. Override ports with `LUMINA_API_PORT` / `LUMINA_UI_PORT` env vars (Linux also supports `LUMINA_NOSWAP=1` to disable swap for the session); the Linux/macOS scripts also take `--help` for options. Host-wide tuning is skipped by default; set `LUMINA_SYSTEM_TUNING=1` to allow platform optimizer changes. Linux cache dropping is separately opt-in with `LUMINA_DROP_CACHES=1` and may require passwordless sudo; it discards reclaimable kernel caches, not user files, and can make subsequent disk reads slower. macOS background-process stopping and memory purge require `LUMINA_STOP_BACKGROUND_SERVICES=1` and `LUMINA_PURGE_MEMORY=1`; Windows temporary-file cleanup requires `LUMINA_CLEAN_TEMP=1`.
 
 **Windows — backend only:**
 

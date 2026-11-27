@@ -14,6 +14,11 @@ set -e
 # Log prefix for all output
 LUMINA_PREFIX="[lumina]"
 
+if [[ "${LUMINA_STOP_BACKGROUND_SERVICES:-0}" != "1" ]]; then
+    echo "${LUMINA_PREFIX} Skipped. Set LUMINA_STOP_BACKGROUND_SERVICES=1 to opt in."
+    exit 0
+fi
+
 echo "${LUMINA_PREFIX} === Killing memory-hungry background processes ==="
 
 # User-safe processes — killall (SIGTERM then SIGKILL) stops these gracefully
@@ -48,13 +53,13 @@ echo ""
 # Crash reporters respawn on SIGTERM — use SIGKILL (-KILL) to actually stop them
 echo "${LUMINA_PREFIX} Killing crash-reporting processes (SIGKILL)..."
 
-if sudo killall -KILL ReportCrash 2>/dev/null; then
+if sudo -n killall -KILL ReportCrash 2>/dev/null; then
     echo "${LUMINA_PREFIX}  KILLED: ReportCrash"
 else
     echo "${LUMINA_PREFIX}  Skipped: ReportCrash (not running)"
 fi
 
-if sudo killall -KILL fmfd 2>/dev/null; then
+if sudo -n killall -KILL fmfd 2>/dev/null; then
     echo "${LUMINA_PREFIX}  KILLED: fmfd"
 else
     echo "${LUMINA_PREFIX}  Skipped: fmfd (not running)"
