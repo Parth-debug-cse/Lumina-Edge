@@ -9,6 +9,7 @@ import os
 import subprocess
 import platform
 import json
+from typing import Any
 
 
 def is_apple_silicon():
@@ -50,7 +51,7 @@ def purge_inactive_memory():
     return False
 
 
-def stop_memory_hungry_services():
+def stop_memory_hungry_services() -> list[str]:
     """
     Temporarily stop macOS services that compete for unified memory.
     These are re-enabled on next login or via resume_services().
@@ -77,7 +78,7 @@ def stop_memory_hungry_services():
     return stopped
 
 
-def resume_services(stopped_services):
+def resume_services(stopped_services: list[str]) -> None:
     """Resume previously stopped background services via SIGCONT."""
     for service in stopped_services:
         try:
@@ -189,7 +190,7 @@ def get_total_memory_gb():
         return 0
 
 
-def optimize_for_mlx():
+def optimize_for_mlx() -> dict[str, Any]:
     """
     Configure process-local Metal settings. Host-wide actions require explicit opt-in.
     """
@@ -197,7 +198,7 @@ def optimize_for_mlx():
         print('Not Apple Silicon — skipping MLX optimization')
         return {'skipped': True}
 
-    results = {
+    results: dict[str, Any] = {
         'platform': 'apple_silicon',
         'memory_pressure_before': get_memory_pressure(),
         'metal_device': get_metal_device_info(),
@@ -235,7 +236,7 @@ def optimize_for_mlx():
     return results
 
 
-def cleanup_after_inference(stopped_services=None):
+def cleanup_after_inference(stopped_services: list[str] | None = None) -> None:
     """Restore system state after inference completes."""
     if stopped_services:
         resume_services(stopped_services)

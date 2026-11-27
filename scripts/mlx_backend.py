@@ -14,21 +14,24 @@ import platform
 import gc
 import math
 import inspect
+from collections.abc import Mapping
+from typing import Any
 
 # ==============================================================================
 # PRE-IMPORT SETUP: Metal env vars and memory limit (must be before mlx import)
 # ==============================================================================
 
-def _load_config_early():
+def _load_config_early() -> dict[str, Any]:
     """Load config early for pre-import settings (Metal env, memory limit)."""
     config_path = os.path.join(os.path.dirname(__file__), "..", "config.json")
     try:
         with open(config_path, "r") as f:
-            return json.load(f)
+            config = json.load(f)
+        return config if isinstance(config, dict) else {}
     except Exception:
         return {}
 
-_early_config = _load_config_early()
+_early_config: dict[str, Any] = _load_config_early()
 
 # C: Metal environment variables - set BEFORE mlx import if enabled
 # These disable Metal validation layers and enable pre-warming for faster first inference
@@ -48,7 +51,7 @@ except ImportError:
 
 # Set the MLX allocator cap before loading model weights. The explicit byte cap,
 # when present, can only lower the configured RAM fraction; invalid values are ignored.
-def _total_system_memory_bytes():
+def _total_system_memory_bytes() -> int | None:
     try:
         import psutil
         return int(psutil.virtual_memory().total)
@@ -105,14 +108,14 @@ if _memory_limits:
         print('[MLX] This MLX version does not expose a Metal memory-limit API', flush=True)
 
 # Module-level flags for model load state (used by HTTP handlers)
-MODEL_LOADED = False
-MODEL_LOAD_ERROR = None
+_model_loaded = False
+_model_load_error: str | None = None
 # BUG MLX-1 FIX: _server_start_time_global is updated at the start of
 # launch_api_direct() so the /health endpoint always has a valid timestamp
 _server_start_time_global = time.time()
 
 
-def _set_offline_env(model_path=None):
+def _set_offline_env(model_path: str | None = None) -> None:
     """
     Set environment variables to prevent HuggingFace Hub network access.
     Only sets OFFLINE mode if all required tokenizer files exist locally.
@@ -134,7 +137,7 @@ def _set_offline_env(model_path=None):
         os.environ['TRANSFORMERS_OFFLINE'] = '1'
 
 
-def _supports_speculative_generation(parameters):
+def _supports_speculative_generation(parameters: Mapping[str, inspect.Parameter]) -> bool:
     has_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
     return 'draft_model' in parameters and ('num_draft_tokens' in parameters or has_kwargs)
 
@@ -179,13 +182,19 @@ if not _supports_sampler:
     print('[MLX] Using bare kwargs for sampling (mlx_lm < 0.28)', flush=True)
 
 
-def _get_kv_kwargs(mlx_kv_quant_config=None, mlx_kv_quant_native=None, mlx_max_kv_size=None, kv_bits=None, kv_group_size=None):
+def _get_kv_kwargs(
+    mlx_kv_quant_config: dict[str, Any] | None = None,
+    mlx_kv_quant_native: dict[str, Any] | None = None,
+    mlx_max_kv_size: int | None = None,
+    kv_bits: int | None = None,
+    kv_group_size: int | None = None,
+) -> dict[str, Any]:
     """
     Get KV quantization and cache kwargs based on mlx_lm support and config.
     Priority: mlx_kv_quant_native (if enabled) > top-level kv_bits/kv_group_size > built-in default.
     Default: kv_bits=4 (4-bit KV cache quantization for both K and V).
     """
-    kwargs = {'kv_bits': 4}
+    kwargs: dict[str, Any] = {'kv_bits': 4}
 
     # F: Native KV quantization takes precedence if enabled
     if mlx_kv_quant_native and mlx_kv_quant_native.get('enabled', False):
@@ -211,7 +220,7 @@ def _get_kv_kwargs(mlx_kv_quant_config=None, mlx_kv_quant_native=None, mlx_max_k
     return kwargs
 
 
-def _tokenizer_vocab(tokenizer):
+def _tokenizer_vocab(tokenizer: Any) -> dict[Any, Any] | None:
     """Return a comparable token-to-id mapping, or None when unavailable."""
     get_vocab = getattr(tokenizer, 'get_vocab', None)
     if not callable(get_vocab):
@@ -225,7 +234,7 @@ def _tokenizer_vocab(tokenizer):
     return vocab
 
 
-def _tokenizers_compatible(target_tokenizer, draft_tokenizer):
+def _tokenizers_compatible(target_tokenizer: Any, draft_tokenizer: Any) -> bool:
     """Require identical token IDs before sharing prompts with a draft model."""
     target_vocab = _tokenizer_vocab(target_tokenizer)
     draft_vocab = _tokenizer_vocab(draft_tokenizer)
@@ -239,7 +248,9 @@ def _tokenizers_compatible(target_tokenizer, draft_tokenizer):
     )
 
 
-def _load_mlx_model_and_tokenizer(model_path, adapter_path=None):
+def _load_mlx_model_and_tokenizer(
+    model_path: str, adapter_path: str | None = None
+) -> tuple[Any, Any]:
     """Load an MLX model without requesting the optional config return value."""
     if adapter_path is None:
         loaded = mlx_lm.load(model_path)
@@ -248,7 +259,9 @@ def _load_mlx_model_and_tokenizer(model_path, adapter_path=None):
     return loaded[0], loaded[1]
 
 
-def _load_speculative_draft(config, target_tokenizer):
+def _load_speculative_draft(
+    config: dict[str, Any], target_tokenizer: Any
+) -> dict[str, Any] | None:
     """Load an explicitly configured, tokenizer-compatible local draft model."""
     settings = config.get('mlx_speculative_decoding', {})
     if not isinstance(settings, dict) or not settings.get('enabled', False):
@@ -285,7 +298,9 @@ def _load_speculative_draft(config, target_tokenizer):
         return None
 
 
-def _stream_generate(gen_kwargs, speculative_draft=None):
+def _stream_generate(
+    gen_kwargs: dict[str, Any], speculative_draft: dict[str, Any] | None = None
+) -> Any:
     """Generate normally or use supported draft decoding with compatible cache options."""
     if not speculative_draft or not _supports_draft_model:
         return mlx_lm.stream_generate(**gen_kwargs)
@@ -304,7 +319,13 @@ def _stream_generate(gen_kwargs, speculative_draft=None):
         return mlx_lm.stream_generate(**gen_kwargs)
 
 
-def get_mlx_generation_kwargs(config, prompt=None, override_temp=None, override_top_p=None, override_max_tokens=None):
+def get_mlx_generation_kwargs(
+    config: dict[str, Any],
+    prompt: Any | None = None,
+    override_temp: float | None = None,
+    override_top_p: float | None = None,
+    override_max_tokens: int | None = None,
+) -> dict[str, Any]:
     """
     Build complete generation kwargs from config.
 
@@ -336,7 +357,7 @@ def get_mlx_generation_kwargs(config, prompt=None, override_temp=None, override_
         config.get('kv_group_size')
     )
 
-    kwargs = {
+    kwargs: dict[str, Any] = {
         'max_tokens': max_tokens,
         **kv_kwargs,
     }
@@ -444,7 +465,7 @@ def _get_system_memory_gb():
     return 8.0  # safe fallback
 
 
-def _detect_apple_silicon_tier():
+def _detect_apple_silicon_tier() -> dict[str, Any]:
     """
     Detect Apple Silicon chip tier.
     Returns dict with chip_name, gpu_cores, memory_gb, tier (base/pro/max/ultra)
@@ -486,7 +507,7 @@ def _detect_apple_silicon_tier():
             pass
 
         # Classify tier from memory (good proxy for chip tier)
-        mem = info['memory_gb']
+        mem = float(info['memory_gb'])
         if mem >= 192:
             info['tier'] = 'ultra'
         elif mem >= 64:
@@ -504,7 +525,7 @@ def _detect_apple_silicon_tier():
     return info
 
 
-def load_config():
+def load_config() -> dict[str, Any]:
     """Load configuration from config.json with comprehensive defaults."""
     config_path = os.path.join(os.path.dirname(__file__), "..", "config.json")
     defaults = {
@@ -535,6 +556,8 @@ def load_config():
     try:
         with open(config_path, "r") as f:
             config = json.load(f)
+            if not isinstance(config, dict):
+                return defaults
             for key, val in defaults.items():
                 if key not in config:
                     config[key] = val
@@ -543,16 +566,16 @@ def load_config():
         return defaults
 
 
-def _parse_stop_tokens(stop_tokens_str):
+def _parse_stop_tokens(stop_tokens_str: str | list[str] | None) -> list[str]:
     """Parse comma-separated stop tokens string into list."""
     if not stop_tokens_str:
         return []
     if isinstance(stop_tokens_str, list):
-        return stop_tokens_str
-    return [t.strip() for t in stop_tokens_str.split(',') if t.strip()]
+        return [token for token in stop_tokens_str if isinstance(token, str)]
+    return [token.strip() for token in stop_tokens_str.split(',') if token.strip()]
 
 
-def run_benchmark(model_path):
+def run_benchmark(model_path: str) -> None:
     """Benchmark MLX model: load time, tokens/sec, peak memory."""
     print("\n[MLX BENCHMARK]")
 
@@ -562,7 +585,7 @@ def run_benchmark(model_path):
     _set_metal_env()
 
     cache_dir = config.get("mlx_model_cache", "~/.cache/lumina-mlx/")
-    if cache_dir:
+    if isinstance(cache_dir, str) and cache_dir:
         os.environ["HF_HOME"] = os.path.expanduser(cache_dir)
         os.environ["TRANSFORMERS_CACHE"] = os.path.expanduser(cache_dir)
 
@@ -607,7 +630,7 @@ def run_benchmark(model_path):
     print(f"✓ Tokens/sec: {tps:.2f}\n")
 
 
-def launch_api_direct(model_path, port):
+def launch_api_direct(model_path: str, port: int) -> None:
     """
     Direct generation mode — bypasses mlx_lm HTTP server entirely.
     Spawns a lightweight HTTP server using only Python stdlib + MLX.
@@ -625,18 +648,18 @@ def launch_api_direct(model_path, port):
     # BUG MLX-1 FIX: Initialize _server_start_time immediately at function entry
     global _server_start_time_global
     _server_start_time_global = time.time()
-    global MODEL_LOADED, MODEL_LOAD_ERROR
-    MODEL_LOADED = False
-    MODEL_LOAD_ERROR = None
+    global _model_loaded, _model_load_error
+    _model_loaded = False
+    _model_load_error = None
 
     if not os.path.exists(abs_model_path):
-        MODEL_LOAD_ERROR = f"Model path does not exist: {abs_model_path}"
-        print(f'[MLX Direct] ERROR: {MODEL_LOAD_ERROR}', flush=True)
+        _model_load_error = f"Model path does not exist: {abs_model_path}"
+        print(f'[MLX Direct] ERROR: {_model_load_error}', flush=True)
         return
 
     if not os.path.exists(os.path.join(abs_model_path, 'config.json')):
-        MODEL_LOAD_ERROR = f"Not a valid MLX model directory (missing config.json): {abs_model_path}"
-        print(f'[MLX Direct] ERROR: {MODEL_LOAD_ERROR}', flush=True)
+        _model_load_error = f"Not a valid MLX model directory (missing config.json): {abs_model_path}"
+        print(f'[MLX Direct] ERROR: {_model_load_error}', flush=True)
         return
 
     if platform.system() == 'Darwin':
@@ -650,7 +673,7 @@ def launch_api_direct(model_path, port):
     config = load_config()
 
     cache_dir = config.get("mlx_model_cache", "~/.cache/lumina-mlx/")
-    if cache_dir:
+    if isinstance(cache_dir, str) and cache_dir:
         os.environ["HF_HOME"] = os.path.expanduser(cache_dir)
         os.environ["TRANSFORMERS_CACHE"] = os.path.expanduser(cache_dir)
 
@@ -670,7 +693,8 @@ def launch_api_direct(model_path, port):
         if abs_model_path.lower().endswith('.gguf'):
             raise ValueError(f"GGUF models are not supported on macOS. Use safetensors or MLX format.")
 
-        adapter_path = config.get('mlx_adapter_path', '').strip()
+        configured_adapter_path = config.get('mlx_adapter_path', '')
+        adapter_path = configured_adapter_path.strip() if isinstance(configured_adapter_path, str) else ''
         adapter_warning = None
 
         if adapter_path:
@@ -690,17 +714,17 @@ def launch_api_direct(model_path, port):
             model, tokenizer = _load_mlx_model_and_tokenizer(abs_model_path)
         speculative_draft = _load_speculative_draft(config, tokenizer)
         load_time = time.time() - load_start
-        MODEL_LOADED = True
+        _model_loaded = True
         print(f'[MLX Direct] Model loaded in {load_time:.1f}s', flush=True)
         if adapter_path:
             print(f'[MLX Direct] LoRA adapter active: {adapter_path}', flush=True)
     except Exception as e:
-        MODEL_LOADED = False
-        MODEL_LOAD_ERROR = str(e)
+        _model_loaded = False
+        _model_load_error = str(e)
         print(f'[MLX Direct] ERROR: Model loading failed: {e}', flush=True)
 
-    _MAX_TOKENS_CEILING = 2048
-    if MODEL_LOADED:
+    max_tokens_ceiling = 2048
+    if _model_loaded:
         try:
             if hasattr(mx, 'metal') and hasattr(mx.metal, 'get_active_memory'):
                 mem_used = mx.metal.get_active_memory() / (1024**3)
@@ -718,7 +742,7 @@ def launch_api_direct(model_path, port):
     else:
         mem_used = 0.0
 
-    mlx_config = {
+    mlx_config: dict[str, Any] = {
         'top_p': float(config.get('top_p', 0.9)),
         'repetition_penalty': float(config.get('repeat_penalty', 1.1)),
         'max_tokens': int(config.get('mlx_max_tokens', 2048)),
@@ -730,8 +754,8 @@ def launch_api_direct(model_path, port):
     model_name_lower = os.path.basename(abs_model_path).lower()
     IS_1_5B = '1.5b' in model_name_lower
     if IS_1_5B:
-        mlx_config['max_tokens'] = min(mlx_config['max_tokens'], 256)
-        _MAX_TOKENS_CEILING = 256
+        mlx_config['max_tokens'] = min(int(mlx_config['max_tokens']), 256)
+        max_tokens_ceiling = 256
         print('[MLX Direct] 1.5B model detected: max_tokens=256, temperature=0.1', flush=True)
 
     class MLXHandler(http.server.BaseHTTPRequestHandler):
@@ -740,6 +764,7 @@ def launch_api_direct(model_path, port):
         Handles /v1/chat/completions (streaming + non-streaming),
         /v1/models, /health, /health/memory, and CORS preflight.
         """
+        _last_user_msg: str = ''
         protocol_version = 'HTTP/1.1'
 
         def handle_one_request(self):
@@ -760,8 +785,8 @@ def launch_api_direct(model_path, port):
 
         def do_GET(self):
             if self.path == '/v1/models' or self.path.startswith('/v1/models'):
-                if not MODEL_LOADED:
-                    error_msg = MODEL_LOAD_ERROR or "Model not loaded"
+                if not _model_loaded:
+                    error_msg = _model_load_error or "Model not loaded"
                     response = json.dumps({
                         "error": "Model not loaded", "detail": error_msg,
                         "object": "list", "data": []
@@ -782,14 +807,14 @@ def launch_api_direct(model_path, port):
                 self._send_json(200, response)
             elif self.path == '/health':
                 health_status = {
-                    "status": "ok" if MODEL_LOADED else "error",
-                    "model_loaded": MODEL_LOADED,
-                    "model": os.path.basename(abs_model_path) if MODEL_LOADED else None,
+                    "status": "ok" if _model_loaded else "error",
+                    "model_loaded": _model_loaded,
+                    "model": os.path.basename(abs_model_path) if _model_loaded else None,
                     "uptime": int(time.time() - _server_start_time_global)
                 }
-                if MODEL_LOAD_ERROR:
-                    health_status["error"] = MODEL_LOAD_ERROR
-                self._send_json(200 if MODEL_LOADED else 503, json.dumps(health_status))
+                if _model_load_error:
+                    health_status["error"] = _model_load_error
+                self._send_json(200 if _model_loaded else 503, json.dumps(health_status))
             elif self.path == '/health/memory':
                 try:
                     if hasattr(mx, 'metal') and hasattr(mx.metal, 'get_active_memory'):
@@ -804,8 +829,8 @@ def launch_api_direct(model_path, port):
                 mem_status = {
                     "memory_used_gb": round(current_mem, 1),
                     "memory_total_gb": round(_get_system_memory_gb(), 1),
-                    "model_loaded": MODEL_LOADED,
-                    "model": os.path.basename(abs_model_path) if MODEL_LOADED else None
+                    "model_loaded": _model_loaded,
+                    "model": os.path.basename(abs_model_path) if _model_loaded else None
                 }
                 self._send_json(200, json.dumps(mem_status))
             else:
@@ -833,8 +858,8 @@ def launch_api_direct(model_path, port):
                 self._send_json(404, json.dumps({"error": "not found"}))
                 return
 
-            if not MODEL_LOADED:
-                error_msg = MODEL_LOAD_ERROR or "Model not loaded"
+            if not _model_loaded:
+                error_msg = _model_load_error or "Model not loaded"
                 self._send_json(503, json.dumps({"error": "Model not loaded", "detail": error_msg}))
                 return
             if model is None or tokenizer is None:
@@ -878,9 +903,9 @@ def launch_api_direct(model_path, port):
                 temperature = float(request.get('temperature', config.get('temperature', 0.7)))
 
             max_tokens = int(request.get('max_tokens', mlx_config['max_tokens']))
-            if max_tokens > _MAX_TOKENS_CEILING:
-                print(f'[MLX Direct] Clamping max_tokens from {max_tokens} to {_MAX_TOKENS_CEILING} (memory safety)', flush=True)
-                max_tokens = _MAX_TOKENS_CEILING
+            if max_tokens > max_tokens_ceiling:
+                print(f'[MLX Direct] Clamping max_tokens from {max_tokens} to {max_tokens_ceiling} (memory safety)', flush=True)
+                max_tokens = max_tokens_ceiling
             stream = request.get('stream', True)
             top_p = float(request.get('top_p', mlx_config['top_p']))
             repetition_penalty = float(request.get('repetition_penalty', mlx_config['repetition_penalty']))

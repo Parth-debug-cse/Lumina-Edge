@@ -4,26 +4,36 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "mlx_backend.py"
 
 
 class FakeTokenizer:
-    bos_token_id = 1
-    eos_token_id = 2
-    pad_token_id = 0
-    unk_token_id = 3
+    bos_token_id: int = 1
+    eos_token_id: int = 2
+    pad_token_id: int = 0
+    unk_token_id: int = 3
 
-    def __init__(self, vocab=None):
-        self.vocab = vocab or {"<pad>": 0, "<s>": 1, "</s>": 2, "<unk>": 3, "hello": 4}
+    def __init__(self, vocab: dict[str, int] | None = None) -> None:
+        self.vocab: dict[str, int] = vocab or {"<pad>": 0, "<s>": 1, "</s>": 2, "<unk>": 3, "hello": 4}
 
-    def get_vocab(self):
+    def get_vocab(self) -> dict[str, int]:
         return self.vocab
 
 
 class MLXSpeculativeTests(unittest.TestCase):
-    def setUp(self):
+    def __init__(self, methodName: str = "runTest") -> None:
+        super().__init__(methodName)
+        self.calls: list[dict[str, Any]] = []
+        self.sampler_calls: list[dict[str, Any]] = []
+        self.processor_calls: list[dict[str, Any]] = []
+        self.original_modules: dict[str, ModuleType | None] = {}
+        self.backend: ModuleType = types.ModuleType("mlx_backend_uninitialized")
+
+    def setUp(self) -> None:
         self.calls = []
         self.sampler_calls = []
         self.processor_calls = []
@@ -87,7 +97,7 @@ class MLXSpeculativeTests(unittest.TestCase):
         self.backend = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.backend)
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         sys.modules.pop("mlx_backend_spec_test", None)
         for name, module in self.original_modules.items():
             if module is None:
