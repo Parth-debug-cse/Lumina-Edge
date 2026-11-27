@@ -323,7 +323,9 @@ A ~150-line raw Python agent — no LangChain, no AutoGen. Give it a plain-Engli
 
 **Tools:** `run_shell`, `read_file`, `write_file`, `http_get`, `report`.
 
-**Security:** `run_shell` runs with the same privileges as the host process. Trusted local machines only — never expose the API port to untrusted networks while Agent is active.
+**Security:** `run_shell` is disabled by default. Explicitly enable host command execution with `LUMINA_AGENT_ALLOW_SHELL=1`; enabled commands still run with the host process's privileges. `LUMINA_TOOL_TIMEOUT` accepts 1–300 seconds (default 30), output is bounded, and timed-out process trees are terminated where the platform permits. Keep the API bound to trusted local networks while the Agent is active.
+
+**Router lifecycle:** `max_concurrent_models` defaults to 2. `model_idle_unload_seconds` defaults to 0 (disabled); a positive value unloads an idle model only after its in-flight inference count reaches zero. Manual unload rejects busy/loading models rather than interrupting requests.
 
 ---
 

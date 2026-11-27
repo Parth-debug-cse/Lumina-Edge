@@ -242,6 +242,113 @@ const inferenceLimiter = createConcurrencyLimiter({
   queueTimeoutMs: Number.parseInt(config.inference_queue_timeout_ms, 10) || 30_000,
 });
 const chatRateLimiter = createSlidingWindowRateLimiter({ limit: rateLimitPerMinute, windowMs: 60_000 });
+let pendingModelLoads = 0;
+
+function maxConcurrentModels() {
+  const configured = Number.parseInt(loadConfig().max_concurrent_models, 10);
+  return Number.isInteger(configured) && configured > 0 ? configured : 2;
+}
+
+function occupiedModelSlots() {
+  const occupied = Array.from(routerModels.values()).filter(model =>
+    ['loading', 'ready', 'unloading'].includes(model.status)
+    || (model.process && model.process.exitCode === null && model.process.signalCode === null)
+  ).length;
+  return occupied + pendingModelLoads;
+}
+
+function scheduleIdleModelUnload(modelInfo) {
+  const idleSeconds = Number.parseInt(loadConfig().model_idle_unload_seconds, 10);
+  if (!Number.isInteger(idleSeconds) || idleSeconds <= 0 || modelInfo.status !== 'ready') return;
+  if (modelInfo.autoUnloadTimer) clearTimeout(modelInfo.autoUnloadTimer);
+
+  const idleMs = Math.min(idleSeconds, 2_147_483) * 1000;
+  const remaining = Math.max(0, idleMs - (Date.now() - (modelInfo.lastUsedAtMs || Date.now())));
+  modelInfo.autoUnloadTimer = setTimeout(() => {
+    modelInfo.autoUnloadTimer = null;
+    if (modelInfo.status !== 'ready' || (modelInfo.active_requests || 0) > 0) return;
+    if (Date.now() - (modelInfo.lastUsedAtMs || Date.now()) < idleMs) {
+      scheduleIdleModelUnload(modelInfo);
+      return;
+    }
+    beginModelUnload(modelInfo, modelInfo.id, 'idle-timeout');
+  }, remaining);
+  modelInfo.autoUnloadTimer.unref?.();
+}
+
+function beginModelUnload(modelInfo, id, reason = 'manual') {
+  if ((modelInfo.active_requests || 0) > 0 || modelInfo.status === 'loading') return false;
+  if (modelInfo.status === 'unloading') return true;
+  if (modelInfo.readyCheckInterval) clearInterval(modelInfo.readyCheckInterval);
+  if (modelInfo.failsafeTimer) clearTimeout(modelInfo.failsafeTimer);
+  if (modelInfo.autoUnloadTimer) clearTimeout(modelInfo.autoUnloadTimer);
+
+  const proc = modelInfo.process;
+  modelInfo.status = 'unloading';
+  broadcastModelStatus(id, 'unloading', modelInfo.port);
+  if (!proc || proc.exitCode !== null || proc.signalCode !== null) {
+    modelInfo.status = 'unloaded';
+    routerModels.delete(id);
+    broadcastModelStatus(id, 'unloaded', modelInfo.port);
+    return true;
+  }
+
+  let finalized = false;
+  let killTimer = null;
+  let exitTimeout = null;
+  const finalize = () => {
+    if (finalized) return;
+    finalized = true;
+    if (killTimer) clearTimeout(killTimer);
+    if (exitTimeout) clearTimeout(exitTimeout);
+    modelInfo.status = 'unloaded';
+    routerModels.delete(id);
+    broadcastModelStatus(id, 'unloaded', modelInfo.port);
+    console.log(`[Router Unload] Model ${id} exited (${reason})`);
+  };
+  proc.once('close', finalize);
+
+  try {
+    proc.kill('SIGTERM');
+  } catch (error) {
+    console.warn(`[Router Unload] SIGTERM failed for ${id}: ${error.message}`);
+  }
+
+  killTimer = setTimeout(() => {
+    if (proc.exitCode === null && proc.signalCode === null) {
+      try { proc.kill('SIGKILL'); } catch (error) {
+        console.warn(`[Router Unload] SIGKILL failed for ${id}: ${error.message}`);
+      }
+    }
+  }, 5000);
+  exitTimeout = setTimeout(() => {
+    if (proc.exitCode !== null || proc.signalCode !== null) finalize();
+    else console.error(`[Router Unload] Process ${id} did not exit after SIGKILL; retaining model slot`);
+  }, 10000);
+  killTimer.unref?.();
+  exitTimeout.unref?.();
+  return true;
+}
+
+function acquireModelRequest(modelInfo) {
+  if (!modelInfo || modelInfo.status !== 'ready') return null;
+  if (modelInfo.autoUnloadTimer) clearTimeout(modelInfo.autoUnloadTimer);
+  modelInfo.autoUnloadTimer = null;
+  modelInfo.active_requests = (modelInfo.active_requests || 0) + 1;
+  modelInfo.inference_count = (modelInfo.inference_count || 0) + 1;
+  modelInfo.lastUsedAtMs = Date.now();
+  modelInfo.last_used_at = new Date(modelInfo.lastUsedAtMs).toISOString();
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    modelInfo.active_requests = Math.max(0, (modelInfo.active_requests || 0) - 1);
+    modelInfo.lastUsedAtMs = Date.now();
+    modelInfo.last_used_at = new Date(modelInfo.lastUsedAtMs).toISOString();
+    scheduleIdleModelUnload(modelInfo);
+  };
+}
 
 function authenticateGatewayRequest(req, res, next) {
   const route = (req.originalUrl || req.url || '').split('?')[0];
@@ -1285,13 +1392,17 @@ apiRouter.get('/router/status', (req, res) => {
     total_models: models.length,
     ready_models: models.filter(m => m.status === 'ready').length,
     routing_policy: routingPolicy,
-    total_inferences: models.reduce((sum, m) => sum + m.inference_count, 0),
+    max_concurrent_models: maxConcurrentModels(),
+    pending_model_loads: pendingModelLoads,
+    total_inferences: models.reduce((sum, m) => sum + (m.inference_count || 0), 0),
     models: models.map(m => ({
       id: m.id,
       name: m.name,
       port: m.port,
       status: m.status,
       inference_count: m.inference_count,
+      active_requests: m.active_requests || 0,
+      last_used_at: m.last_used_at || null,
       pid: m.process?.pid || null
     }))
   });
@@ -1304,7 +1415,9 @@ apiRouter.get('/router/models', (req, res) => {
     name: m.name,
     port: m.port,
     status: m.status,
-    inference_count: m.inference_count
+    inference_count: m.inference_count,
+    active_requests: m.active_requests || 0,
+    last_used_at: m.last_used_at || null
   }));
   res.json({ models });
 });
@@ -1429,19 +1542,32 @@ apiRouter.post('/router/load', async (req, res) => {
     flash_attn: config.flash_attn
   });
 
-  // Find available port (starts at nextPort, searches upward)
-  let port = await findAvailablePort();
+  const modelLimit = maxConcurrentModels();
+  if (occupiedModelSlots() >= modelLimit) {
+    return res.status(429).json({
+      error: 'Maximum concurrent model count reached',
+      max_concurrent_models: modelLimit,
+      active_models: occupiedModelSlots(),
+    });
+  }
 
-  // If port is occupied, kill zombie process and retry once
-  if (!await isPortFree(port)) {
-    console.log(`[Router Load] Port ${port} is occupied, attempting cleanup...`);
-    await killProcessOnPort(port);
-    // Give the OS a moment to release the port
-    await new Promise(r => setTimeout(r, 500));
+  // Reserve a slot before awaiting port allocation so concurrent load calls
+  // cannot exceed the configured model limit.
+  pendingModelLoads += 1;
+  let port;
+  try {
+    port = await findAvailablePort();
+
     if (!await isPortFree(port)) {
-      console.log(`[Router Load] Port ${port} still occupied after cleanup, finding another...`);
-      port = await findAvailablePort();
+      console.log(`[Router Load] Port ${port} is occupied, attempting cleanup...`);
+      await killProcessOnPort(port);
+      await new Promise(r => setTimeout(r, 500));
+      if (!await isPortFree(port)) port = await findAvailablePort();
     }
+  } catch (error) {
+    return res.status(503).json({ error: 'Unable to allocate a model port', detail: error.message });
+  } finally {
+    pendingModelLoads = Math.max(0, pendingModelLoads - 1);
   }
   console.log(`[Router Load] Using port: ${port}`);
 
@@ -1453,7 +1579,10 @@ apiRouter.post('/router/load', async (req, res) => {
     path: targetPath, 
     port, 
     status: 'loading',
-    inference_count: 0,  // BUG-C1 FIX: was missing — caused NaN in /api/router/status total_inferences
+    inference_count: 0,
+    active_requests: 0,
+    lastUsedAtMs: Date.now(),
+    last_used_at: new Date().toISOString(),
     loaded_at: new Date().toISOString()
   };
   routerModels.set(id, modelInfo);
@@ -1476,6 +1605,7 @@ apiRouter.post('/router/load', async (req, res) => {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, OMP_NUM_THREADS: undefined, OMP_PROC_BIND: undefined, GOMP_SPINCOUNT: undefined, MALLOC_ARENA_MAX: undefined }
       });
+      modelInfo.process = proc;
 
       proc.stdout.on('data', (data) => {
         console.log(`[MLX stdout]: ${data}`);
@@ -1492,7 +1622,7 @@ apiRouter.post('/router/load', async (req, res) => {
 
       proc.on('close', (code) => {
         console.log(`[MLX] Process exited with code ${code}`);
-        if (modelInfo.status !== 'unloaded') {
+        if (!['unloading', 'unloaded'].includes(modelInfo.status)) {
           modelInfo.status = 'error';
         }
       });
@@ -1555,6 +1685,9 @@ apiRouter.post('/router/load', async (req, res) => {
 
       modelInfo.process = proc;
       modelInfo.status = 'ready';
+      modelInfo.lastUsedAtMs = Date.now();
+      modelInfo.last_used_at = new Date(modelInfo.lastUsedAtMs).toISOString();
+      scheduleIdleModelUnload(modelInfo);
       return res.json({ success: true, message: `Model loaded on port ${port}`, port, id });
 
     } catch (err) {
@@ -1810,8 +1943,11 @@ modelInfo.process = proc;
       const resp = await fetch(`http://127.0.0.1:${port}/v1/models`);
       if (resp.ok) {
         modelInfo.status = 'ready';
+        modelInfo.lastUsedAtMs = Date.now();
+        modelInfo.last_used_at = new Date(modelInfo.lastUsedAtMs).toISOString();
         clearInterval(checkReady);
         clearTimeout(failsafeTimer);
+        scheduleIdleModelUnload(modelInfo);
         console.log(`[Router] Model ${modelInfo.name} is ready on port ${port}`);
         broadcastModelStatus(id, 'ready', port);
       }
@@ -1833,79 +1969,51 @@ modelInfo.process = proc;
   res.json({ status: 'success', id, port });
 });
 
-// Graceful unload: SIGTERM → 5s → SIGKILL escalation
+// Graceful unload: never terminate a model while a request is using it.
 apiRouter.delete('/router/unload/:id', (req, res) => {
-  const modelInfo = routerModels.get(req.params.id);
+  const id = req.params.id;
+  const modelInfo = routerModels.get(id);
   if (!modelInfo) return res.status(404).json({ error: 'Not found' });
-
-  // Clear polling interval and failsafe timer
-  if (modelInfo.readyCheckInterval) clearInterval(modelInfo.readyCheckInterval);
-  if (modelInfo.failsafeTimer) clearTimeout(modelInfo.failsafeTimer);
-
-  if (modelInfo.process) {
-    const proc = modelInfo.process;
-    const pid = proc.pid;
-    modelInfo.status = 'unloading';
-
-    // Send SIGTERM first
-    try { proc.kill('SIGTERM'); } catch (e) { /* already dead */ }
-
-    // Escalate to SIGKILL after 5s if still running
-    const killTimer = setTimeout(() => {
-      try {
-        proc.kill('SIGKILL');
-        console.log(`[Router Unload] SIGKILL sent to PID ${pid} after timeout`);
-      } catch (e) { /* already dead */ }
-    }, 5000);
-
-    // Wait for exit (up to 8s total), then clean up
-    const exitTimeout = setTimeout(() => {
-      clearTimeout(killTimer);
-      routerModels.delete(req.params.id);
-      console.log(`[Router Unload] Force-removed model ${req.params.id}`);
-    }, 8000);
-
-    proc.on('close', () => {
-      clearTimeout(killTimer);
-      clearTimeout(exitTimeout);
-      routerModels.delete(req.params.id);
-      console.log(`[Router Unload] Model ${req.params.id} (PID ${pid}) exited cleanly`);
-    });
-  } else {
-    routerModels.delete(req.params.id);
+  if (modelInfo.status === 'loading') {
+    return res.status(409).json({ error: 'Model is still loading; retry unload after startup completes' });
   }
-
-  res.json({ status: 'unloading', id: req.params.id });
+  if ((modelInfo.active_requests || 0) > 0) {
+    return res.status(409).json({
+      error: 'Model has active inference requests',
+      active_requests: modelInfo.active_requests,
+    });
+  }
+  if (!beginModelUnload(modelInfo, id)) {
+    return res.status(409).json({ error: 'Model could not be unloaded in its current state' });
+  }
+  res.json({ status: 'unloading', id });
 });
 
-// Bulk unload all models
 apiRouter.delete('/router/unload-all', (req, res) => {
-  const ids = Array.from(routerModels.keys());
-  let unloaded = 0;
+  let unloading = 0;
+  let skippedActive = 0;
+  let skippedLoading = 0;
 
-  for (const id of ids) {
-    const modelInfo = routerModels.get(id);
-    if (!modelInfo) continue;
-
-    if (modelInfo.readyCheckInterval) clearInterval(modelInfo.readyCheckInterval);
-    if (modelInfo.failsafeTimer) clearTimeout(modelInfo.failsafeTimer);
-
-    if (modelInfo.process) {
-      const proc = modelInfo.process;
-      try { proc.kill('SIGTERM'); } catch (e) { /* already dead */ }
-
-      // Escalate to SIGKILL after 5s
-      setTimeout(() => {
-        try { proc.kill('SIGKILL'); } catch (e) { /* already dead */ }
-      }, 5000);
+  for (const [id, modelInfo] of routerModels) {
+    if (modelInfo.status === 'loading') {
+      skippedLoading += 1;
+      continue;
     }
-
-    routerModels.delete(id);
-    unloaded++;
+    if ((modelInfo.active_requests || 0) > 0) {
+      skippedActive += 1;
+      continue;
+    }
+    if (beginModelUnload(modelInfo, id, 'unload-all')) unloading += 1;
   }
 
-  console.log(`[Router Unload-All] Unloading ${unloaded} models`);
-  res.json({ status: 'success', unloaded });
+  console.log(`[Router Unload-All] Unloading ${unloading}; skipped ${skippedActive} busy and ${skippedLoading} loading models`);
+  res.json({
+    status: 'success',
+    unloaded: unloading,
+    unloading,
+    skipped_active_requests: skippedActive,
+    skipped_loading: skippedLoading,
+  });
 });
 
 // === MODEL DOWNLOAD ===
@@ -2788,21 +2896,33 @@ async function runStartupPipeline() {
       }
 
       if (targetModel) {
+        if (occupiedModelSlots() >= maxConcurrentModels()) {
+          console.warn('[Startup] Model limit reached; skipping startup auto-load');
+          return;
+        }
         console.log(`[Startup] Auto-loading model: ${targetModel.name}`);
         
-        // Use the /api/router/load logic inline
         const id = Math.random().toString(36).substring(7);
         // BUG-C3 FIX: Was `const port = nextPort++` — no availability check.
         // If the startup port was already in use, llama-server/MLX would fail silently
         // and the model would be stuck in status:'error' with no diagnostic.
-        const port = await findAvailablePort();
+        pendingModelLoads += 1;
+        let port;
+        try {
+          port = await findAvailablePort();
+        } finally {
+          pendingModelLoads = Math.max(0, pendingModelLoads - 1);
+        }
         
         const modelInfo = {
           id,
           name: path.basename(targetModel.path),
           port,
           status: 'loading',
-          inference_count: 0
+          inference_count: 0,
+          active_requests: 0,
+          lastUsedAtMs: Date.now(),
+          last_used_at: new Date().toISOString()
         };
         
         routerModels.set(id, modelInfo);
@@ -2831,6 +2951,7 @@ async function runStartupPipeline() {
               stdio: ['ignore', 'pipe', 'pipe'],
               env: { ...process.env, OMP_NUM_THREADS: undefined, OMP_PROC_BIND: undefined, GOMP_SPINCOUNT: undefined, MALLOC_ARENA_MAX: undefined }
             });
+            modelInfo.process = proc;
 
             proc.stdout.on('data', (data) => {
               console.log(`[MLX stdout]: ${data}`);
@@ -2847,7 +2968,7 @@ async function runStartupPipeline() {
 
             proc.on('close', (code) => {
               console.log(`[MLX] Process exited with code ${code}`);
-              if (modelInfo.status !== 'unloaded') {
+              if (!['unloading', 'unloaded'].includes(modelInfo.status)) {
                 modelInfo.status = 'error';
               }
             });
@@ -3037,7 +3158,7 @@ proc.on('error', (err) => {
 
 proc.on('close', (code) => {
   console.log(`[llama-server] Process exited with code ${code}`);
-  if (modelInfo.status !== 'unloaded' && modelInfo.status !== 'error') {
+  if (!['unloading', 'unloaded', 'error'].includes(modelInfo.status)) {
     modelInfo.status = 'error';
   }
 });
@@ -3083,8 +3204,11 @@ if (os.platform() === 'linux' && proc.pid) {
             const resp = await fetch(`http://127.0.0.1:${port}/v1/models`);
             if (resp.ok) {
               modelInfo.status = 'ready';
+              modelInfo.lastUsedAtMs = Date.now();
+              modelInfo.last_used_at = new Date(modelInfo.lastUsedAtMs).toISOString();
               clearInterval(checkReady);
               clearTimeout(failsafeTimer);
+              scheduleIdleModelUnload(modelInfo);
               console.log(`[Startup] ✓ Model '${targetModel.name}' loaded and ready on port ${port}`);
             }
           } catch (e) { }
@@ -3253,6 +3377,14 @@ function formatToolSystemPrompt(tools) {
 // direct backend (MLX on LUMINA_MLX_PORT or llama-server).
 // Tool-call injection: if tools array is present, injects as system prompt, forces non-streaming.
 app.post('/v1/chat/completions', chatRateLimiter, validateChatRequest, inferenceLimiter, async (req, res) => {
+  let releaseModelRequest = null;
+  const backendController = new AbortController();
+  const backendTimeout = setTimeout(() => backendController.abort(), 300_000);
+  backendTimeout.unref?.();
+  req.once('aborted', () => backendController.abort());
+  res.once('close', () => {
+    if (!res.writableEnded) backendController.abort();
+  });
   try {
     const readyModel = Array.from(routerModels.values()).find(m => m.status === 'ready');
     if (!readyModel) {
@@ -3282,15 +3414,12 @@ app.post('/v1/chat/completions', chatRateLimiter, validateChatRequest, inference
         try {
           // BUG-C5 FIX (no-model streaming path): No timeout meant a hung backend held
           // the connection open indefinitely, leaking a file descriptor and response object.
-          const _ac_s1 = new AbortController();
-          const _at_s1 = setTimeout(() => _ac_s1.abort(), 300_000); // 5-min max
           const response = await fetch(targetUrl, {
             method: 'POST',
             headers: headers,
             body: JSON.stringify(body),
-            signal: _ac_s1.signal,
+            signal: backendController.signal,
           });
-          clearTimeout(_at_s1);
 
           if (!response.ok) {
             const errorText = await response.text();
@@ -3326,7 +3455,8 @@ app.post('/v1/chat/completions', chatRateLimiter, validateChatRequest, inference
         const response = await fetch(targetUrl, {
           method: 'POST',
           headers: headers,
-          body: JSON.stringify(body)
+          body: JSON.stringify(body),
+          signal: backendController.signal,
         });
 
         if (!response.ok) {
@@ -3341,6 +3471,11 @@ app.post('/v1/chat/completions', chatRateLimiter, validateChatRequest, inference
         return res.status(502).json({ error: `Backend error: ${err.message}` });
       }
       return;
+    }
+
+    releaseModelRequest = acquireModelRequest(readyModel);
+    if (!releaseModelRequest) {
+      return res.status(503).json({ error: 'Selected model is no longer available' });
     }
 
     const targetPort = readyModel.port;
@@ -3389,15 +3524,12 @@ app.post('/v1/chat/completions', chatRateLimiter, validateChatRequest, inference
       try {
         // BUG-C5 FIX (ready-model streaming path): No timeout meant a hung backend held
         // the connection open indefinitely, leaking a file descriptor and response object.
-        const _ac_s2 = new AbortController();
-        const _at_s2 = setTimeout(() => _ac_s2.abort(), 300_000); // 5-min max
         const response = await fetch(targetUrl, {
           method: 'POST',
           headers: headers,
           body: JSON.stringify(body),
-          signal: _ac_s2.signal,
+          signal: backendController.signal,
         });
-        clearTimeout(_at_s2);
 
         if (!response.ok) {
           const errorText = await response.text();
@@ -3434,7 +3566,8 @@ app.post('/v1/chat/completions', chatRateLimiter, validateChatRequest, inference
     const response = await fetch(targetUrl, {
       method: 'POST',
       headers: headers,
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: backendController.signal,
     });
 
     // BUG-C6 FIX: response.json() was called before checking response.ok.
@@ -3464,7 +3597,12 @@ app.post('/v1/chat/completions', chatRateLimiter, validateChatRequest, inference
     res.status(response.status).json(responseData);
   } catch (err) {
     console.error('[/v1/chat/completions] Error:', err.message);
-    res.status(500).json({ error: 'Chat completions failed', message: err.message });
+    if (!res.headersSent) res.status(500).json({ error: 'Chat completions failed', message: err.message });
+    else if (!res.writableEnded) res.end();
+  } finally {
+    clearTimeout(backendTimeout);
+    backendController.abort();
+    if (releaseModelRequest) releaseModelRequest();
   }
 });
 
@@ -3475,17 +3613,28 @@ app.all(/^\/v1\/.*/, async (req, res) => {
   if (!readyModel) {
     return res.status(502).json({ error: 'No models currently loaded. Port 8000 is inactive.' });
   }
+  const releaseModelRequest = acquireModelRequest(readyModel);
+  if (!releaseModelRequest) return res.status(503).json({ error: 'Selected model is no longer available' });
 
   const targetUrl = `http://127.0.0.1:${readyModel.port}${req.originalUrl}`;
   const headers = { ...req.headers };
   delete headers.host;
   delete headers['content-length']; // Let fetch recalculate this
 
+  const backendController = new AbortController();
+  const backendTimeout = setTimeout(() => backendController.abort(), 300_000);
+  backendTimeout.unref?.();
+  req.once('aborted', () => backendController.abort());
+  res.once('close', () => {
+    if (!res.writableEnded) backendController.abort();
+  });
+
   try {
     console.log(`[API Proxy] Fetching: ${targetUrl}`);
     const fetchOptions = {
       method: req.method,
       headers: headers,
+      signal: backendController.signal,
     };
 
     if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body) {
@@ -3531,7 +3680,12 @@ app.all(/^\/v1\/.*/, async (req, res) => {
     res.end();
   } catch (err) {
     console.error(`[API Proxy] Error: ${err.message}`);
-    res.status(500).json({ error: 'Proxy failed', message: err.message });
+    if (!res.headersSent) res.status(500).json({ error: 'Proxy failed', message: err.message });
+    else if (!res.writableEnded) res.end();
+  } finally {
+    clearTimeout(backendTimeout);
+    backendController.abort();
+    releaseModelRequest();
   }
 });
 
